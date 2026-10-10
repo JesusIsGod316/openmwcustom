@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <limits>
 #include <set>
+#include <span>
 #include <type_traits>
 #include <vector>
 
@@ -83,6 +84,9 @@ namespace RenderVsg
                 table.clear();
             mLightRecords.clear();
             mActorInstanceSlots.clear();
+            mPopulationChunks.clear();
+            mPopulationChunkKeys.clear();
+            mPopulationDiscoveryRequired = true;
             clearDirty();
             mEpoch = epoch;
             mWorldRevision = revision;
@@ -220,6 +224,22 @@ namespace RenderVsg
         [[nodiscard]] std::uint64_t actorPlanSerial() const noexcept { return mActorPlanSerial; }
         [[nodiscard]] const DeltaStats& stats() const noexcept { return mStats; }
 
+        // Consumer-specific debt: clearing another table's dirty range, or
+        // skipping a GUI-only frame, must not acknowledge population changes.
+        [[nodiscard]] bool populationDiscoveryRequired() const noexcept { return mPopulationDiscoveryRequired; }
+        [[nodiscard]] std::span<const RenderCore::ChunkHandle> populationChunks() const noexcept
+        {
+            return mPopulationChunks;
+        }
+        [[nodiscard]] bool acknowledgePopulations(const RenderCore::RenderWorld& world) noexcept
+        {
+            if (!current(world)) return false;
+            mPopulationChunks.clear();
+            mPopulationChunkKeys.clear();
+            mPopulationDiscoveryRequired = false;
+            return true;
+        }
+
         [[nodiscard]] const DirtyRange& dirty(Kind kind) const noexcept
         {
             return mDirty[index(kind)];
@@ -314,6 +334,13 @@ namespace RenderVsg
                 else
                     mActorInstanceSlots.erase(handle.slot());
             }
+            if constexpr (std::is_same_v<Record, RenderCore::ChunkRecord>)
+            {
+                const auto key = (static_cast<std::uint64_t>(handle.generation()) << 32u) | handle.slot();
+                if (mPopulationChunkKeys.insert(key).second) mPopulationChunks.push_back(handle);
+            }
+            if (kind == Kind::Mesh || kind == Kind::Model || kind == Kind::Material || kind == Kind::Texture)
+                mPopulationDiscoveryRequired = true;
             mDirty[index(kind)].include(handle.slot());
             return true;
         }
@@ -323,6 +350,9 @@ namespace RenderVsg
         std::array<DirtyRange, TableCount> mDirty;
         std::vector<RenderCore::LightRecord> mLightRecords;
         std::set<std::uint32_t> mActorInstanceSlots;
+        std::vector<RenderCore::ChunkHandle> mPopulationChunks;
+        std::set<std::uint64_t> mPopulationChunkKeys;
+        bool mPopulationDiscoveryRequired = true;
         RenderCore::WorldEpoch mEpoch;
         RenderCore::RenderWorldRevision mWorldRevision;
         RenderCore::UpdateSequence mLastSequence;

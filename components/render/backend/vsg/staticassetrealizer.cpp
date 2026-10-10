@@ -345,7 +345,8 @@ namespace RenderVsg
     bool updateDeformedAssetRealization(const RenderCore::RenderWorld& world,
         const StaticAssetPlan& plan, const MeshPayloadResolver& resolve,
         std::vector<StaticRealizationResult::MutableDrawStreams>& streams,
-        std::span<const glm::mat4> placements, bool persistentStreams)
+        std::span<const glm::mat4> placements, bool persistentStreams,
+        std::span<const RenderCore::ModelNodeIndex> gpuNodes)
     {
         if (streams.size() != plan.draws.size() || (!placements.empty() && placements.size() != streams.size()))
             return false;
@@ -367,7 +368,9 @@ namespace RenderVsg
             // Authored rigid streams were validated when this resident was
             // built. Its immutable dependency contract is checked by the host.
             // Only current deformed streams need vertex-level validation.
-            if (!persistentStreams || (mesh && (mesh->skinned || mesh->morphed)))
+            const bool gpu = std::find(gpuNodes.begin(), gpuNodes.end(), draw.node) != gpuNodes.end();
+            if (gpu && target.sorted) return false;
+            if (!gpu && (!persistentStreams || (mesh && (mesh->skinned || mesh->morphed))))
             {
                 for (const auto& p : payload->positions)
                     if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) return false;
@@ -386,7 +389,8 @@ namespace RenderVsg
             auto& target = streams[i];
             const auto& payload = *payloads[i];
             const auto* mesh = world.get(plan.draws[i].mesh);
-            const bool updateStreams = !persistentStreams || (mesh && (mesh->skinned || mesh->morphed));
+            const bool gpu = std::find(gpuNodes.begin(), gpuNodes.end(), plan.draws[i].node) != gpuNodes.end();
+            const bool updateStreams = !gpu && (!persistentStreams || (mesh && (mesh->skinned || mesh->morphed)));
             bool positionsChanged = false, normalsChanged = false;
             for (std::size_t vertex = 0; updateStreams && vertex < payload.positions.size(); ++vertex)
             {
@@ -427,7 +431,7 @@ namespace RenderVsg
         const StaticAssetPlan& plan, const StaticTextureResolver& textureResolver,
         const MeshPayloadResolver& meshPayloadResolver,
         std::span<const RenderCore::PopulationInstanceRecord> placements, glm::dvec3 placementOrigin,
-        float opacityMultiplier, bool dynamicData) const
+        float opacityMultiplier, bool dynamicData, const GpuDrawBinder& gpuBinder) const
     {
         using namespace RenderCore;
 
@@ -1026,6 +1030,22 @@ namespace RenderVsg
             command->instanceCount
                 = placements.empty() ? 1u : static_cast<std::uint32_t>(placements.size());
             command->firstIndex = draw.surface.firstIndex;
+            if (gpuBinder)
+            {
+                auto bound = gpuBinder(draw.node, *command);
+                if (!bound)
+                {
+                    result.root = {};
+                    result.diagnostics.emplace_back("GPU deformation draw binding requires CPU fallback");
+                    return result;
+                }
+                if (bound != command)
+                {
+                    positions->properties.dataVariance = vsg::STATIC_DATA;
+                    normals->properties.dataVariance = vsg::STATIC_DATA;
+                    command = std::move(bound);
+                }
+            }
             stateGroup->addChild(command);
 
             auto transform = vsg::MatrixTransform::create(toVsg(draw.worldTransform));

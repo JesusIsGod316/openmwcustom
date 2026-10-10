@@ -48,6 +48,8 @@ class ProducerLauncherTests(unittest.TestCase):
         self.assertIn('--gpu-scene-tables', result.stdout)
         self.assertIn('--gpu-cull-indirect', result.stdout)
         self.assertIn('--gpu-cull-compact', result.stdout)
+        self.assertIn('--persistent-populations', result.stdout)
+        self.assertIn('--object-binding-updates', result.stdout)
         self.assertEqual(list(self.package.glob('source-changes.json')), [])
 
     def test_identity_is_from_manifest_and_rechecks_executable(self):
@@ -67,7 +69,8 @@ class ProducerLauncherTests(unittest.TestCase):
             self.module.source_identity(self.package)
 
     def run_sequence(self, single=None, failing=False, supported_continuous=False,
-                     gpu_scene_tables=False, gpu_cull_indirect=False, gpu_cull_compact=False):
+                     gpu_scene_tables=False, gpu_cull_indirect=False, gpu_cull_compact=False, persistent_populations=False,
+                     default_mode=None, object_binding_updates=False):
         before = {p.name: p.read_bytes() for p in self.normal.iterdir()}
         calls = []
         def fake_run(package, user_config, source, name, arm):
@@ -90,6 +93,12 @@ class ProducerLauncherTests(unittest.TestCase):
             argv += ['--gpu-cull-indirect']
         if gpu_cull_compact:
             argv += ['--gpu-cull-compact']
+        if persistent_populations:
+            argv += ['--persistent-populations']
+        if object_binding_updates:
+            argv += ['--object-binding-updates']
+        if default_mode:
+            argv += ['--default-mode', default_mode]
         with patch.object(sys, 'argv', argv), patch.object(self.module.cohort, 'run', side_effect=fake_run):
             if failing:
                 with self.assertRaisesRegex(RuntimeError, 'synthetic'):
@@ -157,8 +166,52 @@ class ProducerLauncherTests(unittest.TestCase):
     def test_failure_keeps_evidence_and_preserves_normal_data(self):
         self.assertEqual(len(self.run_sequence(failing=True)), 1)
 
+    def test_persistent_populations_only_change_stage1_control(self):
+        calls = self.run_sequence(persistent_populations=True)
+        self.assertEqual(calls, [self.module.PERSISTENT_BASE, self.module.PERSISTENT_CANDIDATE,
+                                 self.module.PERSISTENT_CANDIDATE, self.module.PERSISTENT_BASE])
+        baseline = self.module.cohort.selected(calls[0])
+        candidate = self.module.cohort.selected(calls[1])
+        self.assertEqual(candidate, baseline | {'OPENMW_VK_PERSISTENT_POPULATIONS': '1'})
+        self.assertEqual(baseline.get('OPENMW_VK_GPU_CULL_COMPACT'), '1')
+        clean, removed = self.module.cohort.profile.environment({'OPENMW_VK_PERSISTENT_POPULATIONS': '1'}, baseline)
+        self.assertNotIn('OPENMW_VK_PERSISTENT_POPULATIONS', clean)
+        self.assertIn('OPENMW_VK_PERSISTENT_POPULATIONS', removed)
+
     def test_single_smoke_is_explicit(self):
         self.assertEqual(self.run_sequence('candidate'), [self.module.CANDIDATE])
+
+    def test_binding_updates_only_change_the_new_stage1_switch(self):
+        calls = self.run_sequence(object_binding_updates=True)
+        self.assertEqual(calls, [self.module.BINDING_BASE, self.module.BINDING_CANDIDATE,
+                                self.module.BINDING_CANDIDATE, self.module.BINDING_BASE])
+        baseline = self.module.cohort.selected(calls[0])
+        candidate = self.module.cohort.selected(calls[1])
+        self.assertEqual(candidate, baseline | {'OPENMW_VK_OBJECT_BINDING_UPDATES': '1'})
+        self.assertEqual(baseline.get('OPENMW_VK_PERSISTENT_POPULATIONS'), '1')
+        clean, removed = self.module.cohort.profile.environment({'OPENMW_VK_OBJECT_BINDING_UPDATES': '1'}, baseline)
+        self.assertNotIn('OPENMW_VK_OBJECT_BINDING_UPDATES', clean)
+        self.assertIn('OPENMW_VK_OBJECT_BINDING_UPDATES', removed)
+
+    def test_new_installed_default_uses_binding_updates(self):
+        calls = self.run_sequence(default_mode='object-binding-updates')
+        self.assertEqual(calls, [self.module.BINDING_BASE, self.module.BINDING_CANDIDATE,
+                                self.module.BINDING_CANDIDATE, self.module.BINDING_BASE])
+
+    def test_new_installed_default_preserves_earlier_explicit_modes(self):
+        calls = self.run_sequence(default_mode='object-binding-updates', persistent_populations=True)
+        self.assertEqual(calls, [self.module.PERSISTENT_BASE, self.module.PERSISTENT_CANDIDATE,
+                                self.module.PERSISTENT_CANDIDATE, self.module.PERSISTENT_BASE])
+
+    def test_installed_default_is_stage1(self):
+        calls = self.run_sequence(default_mode='persistent-populations')
+        self.assertEqual(calls, [self.module.PERSISTENT_BASE, self.module.PERSISTENT_CANDIDATE,
+                                self.module.PERSISTENT_CANDIDATE, self.module.PERSISTENT_BASE])
+
+    def test_explicit_mode_overrides_installed_default(self):
+        calls = self.run_sequence(default_mode='persistent-populations', gpu_cull_compact=True)
+        self.assertEqual(calls, [self.module.GPU_COMPACT_BASE, self.module.GPU_COMPACT_CANDIDATE,
+                                self.module.GPU_COMPACT_CANDIDATE, self.module.GPU_COMPACT_BASE])
 
 
 if __name__ == '__main__':

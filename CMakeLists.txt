@@ -629,6 +629,12 @@ else ()
         "${OpenMW_BINARY_DIR}" "openmw.cfg.install")
 endif ()
 
+if(WIN32 AND OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+    include(cmake/IsolateVulkanProfile.cmake)
+    isolate_vulkan_profile("${OpenMW_BINARY_DIR}/openmw.cfg")
+    isolate_vulkan_profile("${OpenMW_BINARY_DIR}/openmw.cfg.install")
+endif()
+
 pack_resource_file(${OpenMW_SOURCE_DIR}/files/openmw-cs.cfg
     "${OpenMW_BINARY_DIR}" "defaults-cs.bin")
 
@@ -1267,7 +1273,8 @@ endif()
 
 
 # V3 OPTIMIZATION LAB PACKAGING
-if(WIN32)
+# These are OpenGL lab entrypoints, not VulkanMW's public launchers.
+if(WIN32 AND NOT OPENMW_ENABLE_V4_VULKAN_RUNTIME)
     install(FILES
         "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_Unified_Test.bat"
         "${CMAKE_SOURCE_DIR}/tools/v3/launchers/V3_City_Frametime.bat"

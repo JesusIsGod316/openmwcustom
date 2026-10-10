@@ -146,6 +146,39 @@ namespace RenderCore
 
         const std::vector<MeshBinding>& meshes() const noexcept { return mMeshes; }
 
+        // One native palette contract for both CPU and GPU deformation. Entry
+        // zero is the geometry-space cancellation; remaining entries retain
+        // authored bone weights/inverse binds without truncation/normalization.
+        bool skinPalette(const MeshBinding& binding, const Pose& pose, std::vector<glm::mat4>& output) const
+        {
+            if (!binding.skin || pose.bones.size() != mSkeleton->bones.size()
+                || pose.nodes.size() != mModel->nodes.size()) return false;
+            const auto& skin = *binding.skin;
+            glm::mat4 transform = skin.meshToSkeleton;
+            if (skin.geometryBindTransform)
+            {
+                transform = *skin.geometryBindTransform;
+                if (binding.cancellation.valid())
+                {
+                    const auto& matrix = pose.nodes[binding.cancellation.value()];
+                    const float determinant = glm::determinant(matrix);
+                    if (!std::isfinite(determinant) || std::abs(determinant) <= 1e-8f) return false;
+                    transform *= glm::inverse(matrix);
+                }
+            }
+            if (!semantic_detail::finite(transform)) return false;
+            output.clear();
+            output.reserve(binding.bones.size() + 1);
+            output.push_back(transform);
+            for (std::size_t i = 0; i < binding.bones.size(); ++i)
+            {
+                const auto matrix = pose.bones[binding.bones[i]] * skin.bones[i].inverseBind;
+                if (!semantic_detail::finite(matrix)) return false;
+                output.push_back(matrix);
+            }
+            return true;
+        }
+
         bool deform(const MeshBinding& binding, const Pose& pose, const MorphWeightState* morph,
             MeshPayload& output) const
         {
@@ -168,32 +201,17 @@ namespace RenderCore
                 }
                 return true;
             }
-            if (!binding.skin || pose.bones.size() != mSkeleton->bones.size()
-                || pose.nodes.size() != mModel->nodes.size()) return false;
+            std::vector<glm::mat4> palette;
+            if (!skinPalette(binding, pose, palette)) return false;
             const auto& skin = *binding.skin;
-            glm::mat4 skinTransform = skin.meshToSkeleton;
-            if (skin.geometryBindTransform)
-            {
-                skinTransform = *skin.geometryBindTransform;
-                if (binding.cancellation.valid())
-                {
-                    const auto& matrix = pose.nodes[binding.cancellation.value()];
-                    const float determinant = glm::determinant(matrix);
-                    if (!std::isfinite(determinant) || std::abs(determinant) <= 1e-8f) return false;
-                    skinTransform *= glm::inverse(matrix);
-                }
-            }
-            std::vector<glm::mat4> palette(binding.bones.size());
-            for (std::size_t i = 0; i < palette.size(); ++i)
-                palette[i] = pose.bones[binding.bones[i]] * skin.bones[i].inverseBind;
             const auto blend = [&](const std::vector<SkinInfluence>& influences) {
                 glm::mat4 blended(0.0f);
                 for (const auto& influence : influences)
-                    blended += palette[influence.boneIndex] * influence.weight;
+                    blended += palette[influence.boneIndex + 1] * influence.weight;
                 // Do not normalize/truncate authored weights. RigGeometry
                 // blends affine rows and restores homogeneous w independently.
                 for (int column = 0; column != 4; ++column) blended[column][3] = column == 3 ? 1.f : 0.f;
-                return skinTransform * blended;
+                return palette.front() * blended;
             };
             const auto apply = [&](std::size_t vertex, const glm::mat4& blended) {
                 output.positions[vertex] = glm::vec3(blended * glm::vec4(source.positions[vertex], 1));

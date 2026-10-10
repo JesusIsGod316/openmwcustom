@@ -356,15 +356,19 @@ jobs:
             "status=build green only; hardware runtime acceptance pending"
           ) | Set-Content -LiteralPath "$stage/VULKANMW-PRODUCER-TEST.txt" -Encoding Ascii
           foreach ($required in @(
-            "openmw.exe", "START-VulkanMW-Test.bat", "START-VulkanMW-Producer-Test.bat",
-            "START-VulkanMW-Supported-Producers-Test.bat", "START-VulkanMW-P2-Test.bat", "START-VulkanMW-P3-Test.bat", "START-VulkanMW-P3B-Test.bat", "START-VulkanMW-Play.bat",
+            "openmw.exe", "START-VulkanMW-Test.bat", "START-VulkanMW-Benchmark.bat",
             "architecture-benchmark.py", "architecture-benchmark.lua", "gameplay-diagnostics.py", "diagnosticconfig.py",
             "tools/vulkanmw/run-producer-queues.py", "tools/vulkanmw/run-publication-cohort.py",
-            "tools/vulkanmw/vulkan-profile.py", "tools/vulkanmw/vulkan-play.py",
+            "tools/vulkanmw/vulkan-profile.py", "tools/vulkanmw/vulkan-play.py", "tools/vulkanmw/vulkan-user-profile.py",
             "tools/vulkanmw/vulkan-clean-settings.cfg", "tools/vulkanmw/frame-profile-report.py",
             "tools/v4/cp4/diagnosticconfig.py", "tools/v4/cp4/gameplay-diagnostics.py", "tools/v4/cp4/architecture-benchmark.lua"
           )) {
             if (-not (Test-Path "$stage/$required")) { throw "Package is missing $required" }
+          }
+          $localCfg = Get-Content -LiteralPath "$stage/openmw.cfg" -Raw
+          if ($localCfg.Contains('?userconfig?') -or $localCfg.Contains('?userdata?') -or
+              -not $localCfg.Contains('config="?local?UserProfile"')) {
+            throw 'Experimental package still references the normal writable profile'
           }
       - name: Run real OSG producer capture regression suite
         shell: pwsh

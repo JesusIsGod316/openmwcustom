@@ -12,10 +12,39 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 
 namespace RenderVsg
 {
+    struct GpuPopulationUploadStats
+    {
+        std::size_t changedRows = 0;
+        std::size_t uploadRows = 0;
+        std::size_t uploadBytes = 0;
+    };
+
+    // Prepare is read-only; publication happens only after the whole residency
+    // transaction succeeds. Upload debt survives skipped/failed submissions.
+    // The command-buffer upload copies bytes during recording, not into mapped
+    // memory that an older GPU frame might still read.
+    class PersistentGpuPopulation
+    {
+    public:
+        struct Update
+        {
+            virtual ~Update() = default;
+            GpuPopulationUploadStats stats;
+            glm::dvec3 minimum{};
+            glm::dvec3 maximum{};
+        };
+        virtual ~PersistentGpuPopulation() = default;
+        [[nodiscard]] virtual std::shared_ptr<const Update> prepare(
+            const StaticPopulationPlan& plan, std::string& diagnostic) const = 0;
+        [[nodiscard]] virtual bool publish(std::shared_ptr<const Update> update) noexcept = 0;
+        virtual void submitted() noexcept = 0;
+    };
+
     struct GpuPopulationCullStats
     {
         std::size_t placements = 0;
@@ -27,6 +56,10 @@ namespace RenderVsg
     struct GpuPopulationCullBuild
     {
         vsg::ref_ptr<vsg::Group> compute;
+        // Must execute before ALL views, including VSG shadow pre-renders.
+        // It is not a child of the main-only culling graph.
+        vsg::ref_ptr<vsg::Group> uploads;
+        std::shared_ptr<PersistentGpuPopulation> persistent;
         GpuPopulationCullStats stats;
         bool active = false;
     };
@@ -60,7 +93,8 @@ namespace RenderVsg
         std::uint32_t indirectViewId,
         vsg::ref_ptr<vsg::vec4Array> viewData,
         bool compactCommands,
-        std::string& diagnostic);
+        std::string& diagnostic,
+        bool retainPlacements = false);
 }
 
 #endif

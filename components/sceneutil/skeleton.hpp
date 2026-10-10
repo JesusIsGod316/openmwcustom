@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_NIFOSG_SKELETON_H
 
 #include <osg/Group>
+#include "rendermutation.hpp"
 
 #include <memory>
 #include <unordered_map>
@@ -29,7 +30,7 @@ namespace SceneUtil
     /// @brief Handles the bone matrices for any number of child RigGeometries.
     /// @par Bones should be created as osg::MatrixTransform children of the skeleton.
     /// To be a referenced by a RigGeometry, a bone needs to have a unique name.
-    class Skeleton : public osg::Group
+    class Skeleton : public osg::Group, public RenderMutationSource
     {
     public:
         Skeleton();
@@ -55,6 +56,12 @@ namespace SceneUtil
         void setActive(ActiveType active);
 
         bool getActive() const;
+        unsigned renderMutationMask() const noexcept override { return RenderVisibility; }
+        void setNodeMask(osg::Node::NodeMask mask)
+        {
+            if (getNodeMask() != mask) publishRenderMutation();
+            osg::Node::setNodeMask(mask);
+        }
 
         void traverse(osg::NodeVisitor& nv) override;
 

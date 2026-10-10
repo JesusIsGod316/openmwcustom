@@ -4,6 +4,7 @@
 #include <apps/openmw/mwrender/v4animatedobjectcapture.hpp>
 #include <apps/openmw/mwrender/v4objectcaptureplan.hpp>
 #include <apps/openmw/mwrender/v4persistentobject.hpp>
+#include <apps/openmw/mwrender/animblendcontroller.hpp>
 #include <components/sceneutil/nodecallback.hpp>
 #include <osgUtil/UpdateVisitor>
 #include <components/rendercore/frameproducer.hpp>
@@ -94,6 +95,23 @@ namespace
         const char* name;
         std::optional<std::string> original;
     };
+    struct BindingFlags
+    {
+        ScopedFlag updates{"OPENMW_VK_OBJECT_BINDING_UPDATES"};
+        ScopedFlag driven{"OPENMW_VK_CHANGE_DRIVEN_OBJECTS"};
+        ScopedFlag textures{"OPENMW_V4_LOAD_BOUND_TEXTURES"};
+        BindingFlags() { updates.set("1"); driven.set("1"); textures.set("1"); }
+    };
+    struct SampleTrack final : SceneUtil::KeyframeController
+    {
+        SampleTrack() = default;
+        SampleTrack(const SampleTrack& other, const osg::CopyOp& copy)
+            : SceneUtil::KeyframeController(other, copy), value(other.value) {}
+        META_Object(SceneUtil, SampleTrack)
+        KfTransform value{osg::Vec3f(0,0,0), osg::Quat(), 1.f};
+        KfTransform getCurrentTransformation(osg::NodeVisitor*) override { return value; }
+        osg::Callback* getAsCallback() override { return nullptr; }
+    };
 }
 int main()
 {
@@ -113,6 +131,236 @@ int main()
         require(control.valid() && control.draws.size()==1,"control capture");
         require(control.draws[0].meshData().positions==again->draws[0].meshData().positions,"position parity");
         require(control.draws[0].worldTransform==again->draws[0].worldTransform,"transform parity");
+    });
+    test("binding events update one animated leaf without inspecting 256 siblings", [] {
+        BindingFlags flags; Scene s;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> root=new SceneUtil::PositionAttitudeTransform;
+        auto changed=geometry(); auto* state=changed->getOrCreateStateSet();
+        state->setTextureAttribute(0,texture());
+        osg::ref_ptr<osg::TexMat> texmat=new osg::TexMat; state->setTextureAttribute(0,texmat);
+        osg::ref_ptr<TrackedCallback> callback=new TrackedCallback; changed->setUpdateCallback(callback);
+        root->addChild(changed);
+        for (unsigned i=0;i<256;++i) root->addChild(geometry());
+        unsigned wakes=0;
+        MWRender::V4PersistentObject producer(*root,64u*1024u*1024u,true,[&]{++wakes;});
+        require(producer.eventDriven(),"fixture not admitted to event-driven lane");
+        PersistentDrawWorld world;
+        auto publish=[&] { world.begin(1); auto result=producer.publish("sparse",s.vfs,s.identities,&world);
+            require(result && result->valid(),"sparse publication failed"); return world.finish(); };
+        auto before=publish(); require(before->size()==257 && producer.bindingUpdates==258,"initial binding count");
+        const auto visited=producer.bindingUpdates;
+        texmat->setMatrix(osg::Matrix::translate(.5,.25,0));
+        for(unsigned i=0;i<20;++i) callback->changed();
+        auto after=publish();
+        require(producer.bindingUpdates-visited==1 && producer.bindingNotifications==259,
+            "duplicate mutations were not coalesced or unrelated siblings inspected");
+        require(producer.geometryBuilds==257 && producer.materialUpdates==1 && producer.uvUpdates==1,
+            "leaf update recaptured geometry or unrelated material");
+        MWRender::V4AnimatedObjectCaptureVisitor control("sparse",s.vfs,&s.identities); root->accept(control);
+        auto expected=control.take(); require(expected.valid() && expected.draws.size()==257,"control fixture failed");
+        for(std::uint32_t i=0;i<257;++i)
+        {
+            const auto& draw=after->get(i)->resource->draw(); const auto& reference=expected.draws[i];
+            require(draw.identity==reference.identity && after->get(i)->transform==reference.worldTransform
+                && draw.material==reference.material && draw.meshData().positions==reference.meshData().positions
+                && draw.meshData().texCoordSets==reference.meshData().texCoordSets,"sparse/control draw parity");
+            if(i!=0) require(before->get(i)==after->get(i),"unaffected sibling slot was replaced");
+        }
+        require(before->get(0)->resource->draw().meshData().texCoordSets[0][0]==glm::vec2(0,0),"old frame mutated");
+        const auto updated=producer.bindingUpdates;
+        for(unsigned i=0;i<100;++i) require(publish()==after,"clean frame rebuilt");
+        require(producer.bindingUpdates==updated && producer.bindingInspections==0 && wakes!=0,"clean bindings inspected");
+        world.begin(1); require(world.finish()==after,"sleeping event-owned siblings were retired");
+    });
+    test("overlapping binding events preserve ancestor propagation and absolute transforms", [] {
+        BindingFlags flags; Scene s;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> root=new SceneUtil::PositionAttitudeTransform;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> parent=new SceneUtil::PositionAttitudeTransform;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> child=new SceneUtil::PositionAttitudeTransform;
+        child->addChild(geometry()); parent->addChild(child); root->addChild(parent); root->addChild(geometry());
+        MWRender::V4PersistentObject producer(*root,64u*1024u*1024u,true,[]{});
+        PersistentDrawWorld world;
+        auto publish=[&] { world.begin(1); auto result=producer.publish("nested",s.vfs,s.identities,&world);
+            require(result && result->valid(),"nested publication failed"); return world.finish(); };
+        auto before=publish(); const auto initialUpdates=producer.bindingUpdates;
+        child->setPosition({2,3,4}); parent->setPosition({10,0,0});
+        auto moved=publish();
+        require(producer.bindingUpdates-initialUpdates==3,"overlapping subtrees updated twice or siblings scanned");
+        require(moved->get(0)->transform[3]==glm::vec4(12,3,4,1)
+            && moved->get(1)==before->get(1),"ancestor placement propagation lost");
+        const auto updates=producer.bindingUpdates;
+        child->setReferenceFrame(osg::Transform::ABSOLUTE_RF); auto absolute=publish();
+        require(producer.bindingUpdates-updates==2 && absolute->get(0)->transform[3]==glm::vec4(2,3,4,1),
+            "absolute child inherited stale parent dirty state");
+        world.begin(2); require(producer.publish("nested",s.vfs,s.identities,&world).has_value(),"epoch publication failed");
+        auto reloaded=world.finish(); require(reloaded->size()==2 && reloaded->stream()!=absolute->stream(),"epoch slots reused");
+        require(before->get(0)->transform[3]==glm::vec4(0,0,0,1),"submitted old placement changed");
+    });
+    test("hidden binding material debt survives unrelated updates and unhide", [] {
+        BindingFlags flags; Scene s;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> root=new SceneUtil::PositionAttitudeTransform;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> branch=new SceneUtil::PositionAttitudeTransform;
+        auto g=geometry(); g->getOrCreateStateSet()->setTextureAttribute(0,texture());
+        osg::ref_ptr<osg::TexMat> texmat=new osg::TexMat; g->getStateSet()->setTextureAttribute(0,texmat);
+        osg::ref_ptr<TrackedCallback> cb=new TrackedCallback; g->setUpdateCallback(cb);
+        branch->addChild(g); root->addChild(branch); root->addChild(geometry());
+        MWRender::V4PersistentObject producer(*root,64u*1024u*1024u,true,[]{}); PersistentDrawWorld world;
+        auto publish=[&] { world.begin(1); auto result=producer.publish("hidden-sparse",s.vfs,s.identities,&world);
+            require(result && result->valid(),"hidden publication failed"); return world.finish(); };
+        auto before=publish(); branch->setNodeMask(0); require(!publish()->get(0)->visible,"hide lost");
+        texmat->setMatrix(osg::Matrix::translate(.5,.25,0)); cb->changed();
+        require(!publish()->get(0)->visible && producer.materialUpdates==0,"hidden material updated eagerly");
+        root->setPosition({8,0,0}); publish();
+        branch->setNodeMask(~0u); auto visible=publish();
+        require(visible->get(0)->visible && visible->get(0)->transform[3].x==8
+            && visible->get(0)->resource->draw().meshData().texCoordSets[0][0]==glm::vec2(.5,.25),"hidden debt lost");
+        require(producer.materialUpdates==1 && producer.geometryBuilds==2
+            && before->get(0)->resource->draw().meshData().texCoordSets[0][0]==glm::vec2(0,0),"hidden resource lifetime wrong");
+    });
+    test("non-skinned NIF skeleton containers have tracked lifetime and topology fallback", [] {
+        BindingFlags flags; Scene s;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> root=new SceneUtil::PositionAttitudeTransform;
+        osg::ref_ptr<SceneUtil::Skeleton> skeleton=new SceneUtil::Skeleton;
+        skeleton->addChild(geometry()); root->addChild(skeleton);
+        flags.updates.set(""); MWRender::V4PersistentObject control(*root,64u*1024u*1024u,true,[]{});
+        require(!control.eventDriven(),"control skeleton lane changed"); flags.updates.set("1");
+        MWRender::V4PersistentObject producer(*root,64u*1024u*1024u,true,[]{}); PersistentDrawWorld world;
+        world.begin(1); require(producer.publish("skeleton-body",s.vfs,s.identities,&world).has_value(),"body publication");
+        auto before=world.finish(); require(producer.eventDriven() && before->size()==1,"non-rig skeleton not covered");
+        skeleton->setActive(SceneUtil::Skeleton::Inactive); world.begin(1);
+        producer.publish("skeleton-body",s.vfs,s.identities,&world);
+        require(world.finish()->get(0)->visible,"inactive simulation skeleton hid body");
+        // Virtual childInserted covers edits through an osg::Group pointer too.
+        osg::Group* base=skeleton; base->addChild(geometry()); world.begin(1);
+        require(!producer.publish("skeleton-body",s.vfs,s.identities,&world),"hierarchy edit ignored");
+        require(world.finish()->size()==0 && before->size()==1,"fallback retired submitted snapshot");
+    });
+    test("binding events fail closed for raw transforms LOD unknown callbacks and invalidation", [] {
+        BindingFlags flags; Scene s;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> root=new SceneUtil::PositionAttitudeTransform;
+        osg::ref_ptr<osg::MatrixTransform> raw=new osg::MatrixTransform; raw->addChild(geometry()); root->addChild(raw);
+        MWRender::V4PersistentObject rawProducer(*root,64u*1024u*1024u,true,[]{});
+        require(!rawProducer.eventDriven(),"raw inherited setters bypassed fallback"); root->removeChild(raw);
+        osg::ref_ptr<osg::LOD> lod=new osg::LOD; lod->addChild(geometry(),0,100); root->addChild(lod);
+        ScopedFlag lodFlag("OPENMW_VK_PERSISTENT_EVALUATED_LOD"); lodFlag.set("");
+        MWRender::V4PersistentObject lodProducer(*root,64u*1024u*1024u,true,[]{});
+        require(!lodProducer.supported(),"view-specific LOD silently put on zero-distance path"); root->removeChild(lod);
+        auto g=geometry(); g->setUpdateCallback(new Callback); root->addChild(g);
+        MWRender::V4PersistentObject unknown(*root,64u*1024u*1024u,true,[]{});
+        require(!unknown.supported(),"unknown callback bypassed compatibility");
+        osg::ref_ptr<TrackedCallback> tracked=new TrackedCallback; g->setUpdateCallback(tracked);
+        MWRender::V4PersistentObject producer(*root,64u*1024u*1024u,true,[]{}); PersistentDrawWorld world;
+        world.begin(1); producer.publish("invalidate",s.vfs,s.identities,&world); auto before=world.finish();
+        tracked->mask=SceneUtil::RenderUntracked; tracked->changed(); world.begin(1);
+        require(!producer.publish("invalidate",s.vfs,s.identities,&world) && world.finish()->size()==0
+            && before->size()==1,"unsupported mutation did not retire safely");
+    });
+    test("NIF blend controller publishes changed final poses while continuing equal-pose updates", [] {
+        BindingFlags flags; Scene s;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> root=new SceneUtil::PositionAttitudeTransform;
+        osg::ref_ptr<NifOsg::MatrixTransform> node=new NifOsg::MatrixTransform;
+        osg::ref_ptr<SampleTrack> track=new SampleTrack;
+        osg::ref_ptr<MWRender::NifAnimBlendController> blend=new MWRender::NifAnimBlendController(track,{},{});
+        node->setUpdateCallback(blend); node->addChild(geometry()); root->addChild(node);
+        flags.updates.set(""); MWRender::V4PersistentObject control(*root,64u*1024u*1024u,true,[]{});
+        require(!control.supported(),"control accepted formerly uncovered blend callback"); flags.updates.set("1");
+        unsigned wakes=0; MWRender::V4PersistentObject producer(*root,64u*1024u*1024u,true,[&]{++wakes;});
+        require(producer.eventDriven(),"NIF blend callback not covered");
+        PersistentDrawWorld world;
+        auto publish=[&] { world.begin(1); auto result=producer.publish("blend",s.vfs,s.identities,&world);
+            require(result && result->valid(),"blend publication failed"); return world.finish(); };
+        auto before=publish(); const auto updates=producer.bindingUpdates;
+        osgUtil::UpdateVisitor update; osg::ref_ptr<osg::FrameStamp> stamp=new osg::FrameStamp;
+        stamp->setSimulationTime(1); update.setFrameStamp(stamp);
+        root->accept(update); require(wakes==0 && publish()==before,"equal-pose blend woke producer");
+        track->value.mTranslation=osg::Vec3f(4,5,6); root->accept(update); auto moved=publish();
+        require(wakes==1 && producer.bindingUpdates-updates==2
+            && moved->get(0)->transform[3]==glm::vec4(4,5,6,1),"changed pose not published directly");
+        auto nested=osg::ref_ptr<TrackedCallback>(new TrackedCallback); nested->mask=SceneUtil::RenderTransform;
+        // Install a chain before rebuilding bindings, just as the engine does.
+        producer.invalidate("controller chain replaced"); blend->setNestedCallback(nested);
+        MWRender::V4PersistentObject replacement(*root,64u*1024u*1024u,true,[]{});
+        world.begin(1); replacement.publish("blend",s.vfs,s.identities,&world); world.finish();
+        const auto revision=nested->renderMutationRevision(); root->accept(update);
+        require(nested->renderMutationRevision()==revision+1,"equal-pose publication skipped nested gameplay update");
+        require(before->get(0)->transform[3]==glm::vec4(0,0,0,1),"old pose changed");
+    });
+    test("shared controller signals update every bound recipient and leave other draws untouched", [] {
+        BindingFlags flags; Scene s;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> root=new SceneUtil::PositionAttitudeTransform;
+        osg::ref_ptr<TrackedCallback> shared=new TrackedCallback;
+        for(unsigned i=0;i<3;++i)
+        {
+            auto g=geometry(); if(i<2) g->setUpdateCallback(shared); root->addChild(g);
+        }
+        MWRender::V4PersistentObject producer(*root,64u*1024u*1024u,true,[]{}); PersistentDrawWorld world;
+        world.begin(1); producer.publish("shared",s.vfs,s.identities,&world); auto before=world.finish();
+        const auto updates=producer.bindingUpdates;
+        root->getChild(0)->getStateSet()->getUniform("pass")->set(1);
+        shared->changed(); world.begin(1); producer.publish("shared",s.vfs,s.identities,&world); auto after=world.finish();
+        require(producer.bindingUpdates-updates==2 && producer.materialUpdates==2
+            && after->get(2)==before->get(2),"shared source lost a recipient or inspected another draw");
+        // Destruction of a bound source invalidates without keeping it alive.
+        root->getChild(0)->setUpdateCallback(nullptr); root->getChild(1)->setUpdateCallback(nullptr); shared=nullptr;
+        world.begin(1); require(!producer.publish("shared",s.vfs,s.identities,&world),"destroyed source ignored");
+        require(world.finish()->size()==0 && before->size()==3,"destroyed source retirement invalidated old frame");
+    });
+    test("binding queue memory and retirement are bounded while immutable frames survive", [] {
+        BindingFlags flags; Scene s;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> root=new SceneUtil::PositionAttitudeTransform;
+        root->addChild(geometry()); const auto bytes=MWRender::V4PersistentObject::retainedBytes();
+        std::shared_ptr<const PersistentDrawFrame> old;
+        PersistentDrawWorld world;
+        {
+            MWRender::V4PersistentObject tooSmall(*root,1,true,[]{});
+            require(!tooSmall.supported() && MWRender::V4PersistentObject::retainedBytes()==bytes,"queue ignored budget");
+            MWRender::V4PersistentObject producer(*root,64u*1024u*1024u,true,[]{});
+            world.begin(1); producer.publish("lifetime",s.vfs,s.identities,&world); old=world.finish();
+            require(MWRender::V4PersistentObject::retainedBytes()>bytes && old->size()==1,"producer lease missing");
+        }
+        world.begin(1); require(world.finish()->size()==0 && old->size()==1,"unload retired submitted frame");
+        require(MWRender::V4PersistentObject::retainedBytes()==bytes,"binding queue lease leaked");
+        MWRender::V4PersistentObject replacement(*root,64u*1024u*1024u,true,[]{});
+        world.begin(1); replacement.publish("replacement",s.vfs,s.identities,&world); auto reloaded=world.finish();
+        require(reloaded->get(0)->handle!=old->get(0)->handle,"reloaded slot inherited old generation");
+    });
+    test("binding bookkeeping does not displace mesh admission and quota exhaustion keeps direct producer", [] {
+        BindingFlags flags; Scene s;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> root=new SceneUtil::PositionAttitudeTransform;
+        osg::ref_ptr<SceneUtil::PositionAttitudeTransform> child=new SceneUtil::PositionAttitudeTransform;
+        child->addChild(geometry()); root->addChild(child); root->addChild(geometry());
+        const auto baseline=MWRender::V4PersistentObject::retainedBytes();
+        const auto queueBaseline=MWRender::V4PersistentObject::bindingQueueBytes();
+        std::size_t controlLease=0;
+        flags.updates.set("");
+        {
+            MWRender::V4PersistentObject control(*root,64u*1024u*1024u,true,[]{});
+            controlLease=MWRender::V4PersistentObject::retainedBytes()-baseline;
+            require(control.eventDriven() && !control.hasSparseBindings(),"control producer changed");
+        }
+        flags.updates.set("1");
+        {
+            MWRender::V4PersistentObject sparse(*root,64u*1024u*1024u,true,[]{});
+            const auto queueLease=MWRender::V4PersistentObject::bindingQueueBytes()-queueBaseline;
+            require(sparse.hasSparseBindings() && queueLease==4*256,"sparse bookkeeping lease missing");
+            require(MWRender::V4PersistentObject::retainedBytes()-baseline-queueLease==controlLease,
+                "new metadata displaced the original mesh admission budget");
+        }
+        {
+            MWRender::V4PersistentObject limited(*root,64u*1024u*1024u,true,[]{},0);
+            require(limited.eventDriven() && !limited.hasSparseBindings()
+                && MWRender::V4PersistentObject::bindingQueueBytes()==queueBaseline,"queue quota lost direct ownership");
+            PersistentDrawWorld world;
+            auto publish=[&] { world.begin(1); auto result=limited.publish("quota",s.vfs,s.identities,&world);
+                require(result && result->valid(),"quota fallback publication failed"); return world.finish(); };
+            auto before=publish(); const auto updates=limited.bindingUpdates;
+            child->setPosition({4,5,6}); auto moved=publish();
+            require(limited.bindingUpdates-updates==4 && limited.bindingInspections==0
+                && limited.geometryBuilds==2 && moved->get(0)->transform[3]==glm::vec4(4,5,6,1)
+                && before->get(0)->transform[3]==glm::vec4(0,0,0,1),"full binding update fallback lost a mutation");
+        }
+        require(MWRender::V4PersistentObject::retainedBytes()==baseline
+            && MWRender::V4PersistentObject::bindingQueueBytes()==queueBaseline,"separate bookkeeping lease leaked");
     });
     test("opt-in evaluated LOD retains only the active source branch", [] {
         Scene s;

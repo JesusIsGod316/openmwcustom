@@ -1,5 +1,6 @@
 #include <vsg/vk/PhysicalDevice.h>
 #include "gpupopulationcull.hpp"
+#include "populationbindings.hpp"
 
 #include <vsg/state/BindDescriptorSet.h>
 #include <vsg/commands/BindIndexBuffer.h>
@@ -26,6 +27,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -74,7 +76,12 @@ namespace RenderVsg
                 }
                 if (requiresCreateAndCopy)
                 {
-                    vsg::BufferInfoList combined(arrays);
+                    // Explicit persistent streams have no vsg::Data owner.
+                    // VSG's combined-data helper reassigns every BufferInfo and
+                    // dereferences its data; never pass those GPU-only ranges.
+                    vsg::BufferInfoList combined;
+                    for (const auto& array : arrays)
+                        if (array->data) combined.push_back(array);
                     combined.push_back(indices);
                     vsg::createBufferAndTransferData(context, combined,
                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
@@ -282,6 +289,197 @@ namespace RenderVsg
             return true;
         }
 
+        using PackedPopulationRow = std::array<vsg::vec4, 6>;
+        static_assert(sizeof(PackedPopulationRow) == 96);
+
+        struct PopulationRowUpload
+        {
+            std::size_t slot;
+            PackedPopulationRow packed;
+        };
+        struct PersistentPopulationUpdate final : PersistentGpuPopulation::Update
+        {
+            PopulationBindings::Update bindings;
+            std::vector<PopulationRowUpload> uploads;
+        };
+        struct PopulationUploadState
+        {
+            explicit PopulationUploadState(const StaticPopulationPlan& plan)
+                : bindings(plan.placements), contract(plan), origin(plan.coordinateOrigin)
+            {
+                // No second copy of the producer's entire placement vector.
+                std::vector<RenderCore::PopulationInstanceRecord>().swap(contract.placements);
+            }
+            PopulationBindings bindings;
+            StaticPopulationPlan contract;
+            RenderCore::WorldPosition origin;
+            AssetBounds assetBounds;
+            std::vector<PackedPopulationRow> packed;
+            // GPU rows, then exact unculled translation/rotation/scale streams
+            // for secondary views. Main-view compaction has separate outputs.
+            std::array<vsg::ref_ptr<vsg::BufferInfo>, 4> buffers;
+            std::array<vsg::ref_ptr<vsg::Data>, 4> initialData;
+            std::shared_ptr<const PersistentPopulationUpdate> pending;
+            bool compiled = false;
+        };
+
+        class PersistentPopulation final : public PersistentGpuPopulation
+        {
+        public:
+            explicit PersistentPopulation(std::shared_ptr<PopulationUploadState> state) : mState(std::move(state)) {}
+
+            std::shared_ptr<const Update> prepare(
+                const StaticPopulationPlan& plan, std::string& diagnostic) const override
+            {
+                diagnostic.clear();
+                if (plan.chunk != mState->contract.chunk || plan.kind != mState->contract.kind
+                    || !reusablePopulationAsset(mState->contract, plan))
+                {
+                    diagnostic = "persistent population asset/owner contract changed";
+                    return {};
+                }
+                auto changes = mState->bindings.prepare(plan.placements);
+                if (!changes)
+                {
+                    diagnostic = "persistent population identities, count or traversal semantics changed";
+                    return {};
+                }
+                auto update = std::make_shared<PersistentPopulationUpdate>();
+                update->stats.changedRows = changes->changes.size();
+                update->bindings = std::move(*changes);
+                // A second publication before submission must retain the first
+                // publication's debt. Reordering or skipped frames cannot lose
+                // a row update. Sparse keyed debt is inspired by RTX SlotTable;
+                // this VSG implementation uses ordered command-buffer uploads.
+                std::map<std::size_t, PackedPopulationRow> owed;
+                if (mState->pending)
+                    for (const auto& row : mState->pending->uploads) owed.emplace(row.slot, row.packed);
+                auto scratch = update->bindings.changes.empty() ? vsg::ref_ptr<vsg::vec4Array>{}
+                    : vsg::vec4Array::create(6);
+                for (const auto& change : update->bindings.changes)
+                {
+                    if (!packCompactPlacement(*scratch, 0, mState->assetBounds, change.value, mState->origin))
+                    {
+                        diagnostic = "persistent population update contains non-finite GPU data";
+                        return {};
+                    }
+                    PackedPopulationRow row;
+                    for (std::size_t value = 0; value < row.size(); ++value) row[value] = (*scratch)[value];
+                    owed[change.slot] = row;
+                }
+                // vkCmdUpdateBuffer is for small deltas, not bulk world uploads.
+                // Initial/bulk changes use VSG's staged compile/rebuild path.
+                // A bounded fallback prevents thousands of tiny transfer calls.
+                constexpr std::size_t RowUploadBytes = sizeof(PackedPopulationRow) + 12 + 16 + 12;
+                constexpr std::size_t SmallUploadBudget = 16 * 1024;
+                if (owed.size() > SmallUploadBudget / RowUploadBytes)
+                {
+                    diagnostic = "persistent population update exceeds small-delta upload budget";
+                    return {};
+                }
+                update->uploads.reserve(owed.size());
+                for (const auto& [slot, row] : owed) update->uploads.push_back({slot, row});
+                update->stats.uploadRows = owed.size();
+                update->stats.uploadBytes = owed.size() * RowUploadBytes;
+                // Only cached conservative model bounds are read, never mesh
+                // vertices. Expand float endpoints by an ULP for CPU visibility.
+                update->minimum = glm::dvec3(std::numeric_limits<double>::max());
+                update->maximum = glm::dvec3(std::numeric_limits<double>::lowest());
+                auto replacement = owed.begin();
+                for (std::size_t slot = 0; slot < mState->packed.size(); ++slot)
+                {
+                    const auto& row = replacement != owed.end() && replacement->first == slot
+                        ? (replacement++)->second : mState->packed[slot];
+                    for (glm::length_t axis = 0; axis < 3; ++axis)
+                    {
+                        update->minimum[axis] = std::min(update->minimum[axis], static_cast<double>(
+                            std::nextafter(row[0][axis], -std::numeric_limits<float>::infinity())));
+                        update->maximum[axis] = std::max(update->maximum[axis], static_cast<double>(
+                            std::nextafter(row[1][axis], std::numeric_limits<float>::infinity())));
+                    }
+                }
+                return update;
+            }
+
+            bool publish(std::shared_ptr<const Update> prepared) noexcept override
+            {
+                auto update = std::dynamic_pointer_cast<const PersistentPopulationUpdate>(std::move(prepared));
+                if (!update || !mState->bindings.publish(update->bindings)) return false;
+                for (const auto& row : update->uploads) mState->packed[row.slot] = row.packed;
+                mState->pending = std::move(update);
+                return true;
+            }
+            void submitted() noexcept override { mState->pending.reset(); }
+
+        private:
+            std::shared_ptr<PopulationUploadState> mState;
+        };
+
+        class PopulationUploadCommand final : public vsg::Inherit<vsg::Command, PopulationUploadCommand>
+        {
+        public:
+            explicit PopulationUploadCommand(std::shared_ptr<PopulationUploadState> state) : mState(std::move(state)) {}
+
+            void compile(vsg::Context& context) override
+            {
+                if (mState->compiled) return;
+                for (std::size_t i = 0; i < mState->buffers.size(); ++i)
+                    context.copy(vsg::copyDataToStagingBuffer(context, mState->initialData[i]), mState->buffers[i]);
+                // Staging owns its copied bytes; do not retain the initial CPU
+                // upload arrays in addition to the bounded resident row cache.
+                mState->initialData = {};
+                mState->compiled = true;
+            }
+            void record(vsg::CommandBuffer& commandBuffer) const override
+            {
+                // Host publication is complete before any recording workers
+                // start; they only read this immutable snapshot. Vulkan copies
+                // pData during this call, so acknowledgement after a successful
+                // submission needs no mapped-buffer wait or frame-slot guess.
+                const auto update = mState->pending;
+                if (!update || update->uploads.empty()) return;
+                VkBufferMemoryBarrier barriers[4]{};
+                for (std::size_t i = 0; i < mState->buffers.size(); ++i)
+                {
+                    const auto& buffer = mState->buffers[i];
+                    barriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+                    barriers[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT
+                        | VK_ACCESS_TRANSFER_WRITE_BIT;
+                    barriers[i].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barriers[i].buffer = buffer->buffer->vk(commandBuffer.deviceID);
+                    barriers[i].offset = buffer->offset;
+                    barriers[i].size = buffer->range;
+                }
+                vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    0, 0, nullptr, 4, barriers, 0, nullptr);
+                for (const auto& row : update->uploads)
+                {
+                    const auto write = [&](std::size_t buffer, VkDeviceSize stride, const void* data) {
+                        const auto& target = mState->buffers[buffer];
+                        vkCmdUpdateBuffer(commandBuffer, target->buffer->vk(commandBuffer.deviceID),
+                            target->offset + row.slot * stride, stride, data);
+                    };
+                    write(0, sizeof(PackedPopulationRow), row.packed.data());
+                    write(1, 12, &row.packed[3]);
+                    write(2, 16, &row.packed[4]);
+                    write(3, 12, &row.packed[5]);
+                }
+                for (auto& barrier : barriers)
+                {
+                    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+                }
+                vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                    0, 0, nullptr, 4, barriers, 0, nullptr);
+            }
+
+        private:
+            std::shared_ptr<PopulationUploadState> mState;
+        };
+
         void collectDraws(vsg::Group& group, std::vector<vsg::VertexIndexDraw*>& draws)
         {
             for (auto& child : group.children)
@@ -299,7 +497,8 @@ namespace RenderVsg
         void replaceDraws(vsg::Group& group, const std::vector<vsg::ref_ptr<vsg::BufferInfo>>& indirectRanges,
             std::uint32_t indirectViewId, std::uint32_t placementCount, bool compacted,
             vsg::ref_ptr<vsg::BufferInfo> compactTranslations, vsg::ref_ptr<vsg::BufferInfo> compactRotations,
-            vsg::ref_ptr<vsg::BufferInfo> compactScales, std::size_t& drawIndex)
+            vsg::ref_ptr<vsg::BufferInfo> compactScales, std::size_t& drawIndex,
+            const vsg::BufferInfoList& retainedStreams = {})
         {
             for (auto& child : group.children)
             {
@@ -313,6 +512,9 @@ namespace RenderVsg
                     replacement->firstInstance = direct->firstInstance;
                     replacement->firstBinding = direct->firstBinding;
                     replacement->arrays = direct->arrays;
+                    if (!retainedStreams.empty())
+                        for (std::size_t stream = 0; stream < 3; ++stream)
+                            replacement->arrays[stream + 1] = retainedStreams[stream];
                     replacement->indices = direct->indices;
                     replacement->indirectViewId = indirectViewId;
                     replacement->indirect = indirectRanges.at(drawIndex++);
@@ -326,7 +528,7 @@ namespace RenderVsg
                 }
                 if (auto* nested = dynamic_cast<vsg::Group*>(child.get()))
                     replaceDraws(*nested, indirectRanges, indirectViewId, placementCount, compacted,
-                        compactTranslations, compactRotations, compactScales, drawIndex);
+                        compactTranslations, compactRotations, compactScales, drawIndex, retainedStreams);
             }
         }
 
@@ -620,7 +822,8 @@ void main()
         std::uint32_t indirectViewId,
         vsg::ref_ptr<vsg::vec4Array> viewData,
         bool compactCommands,
-        std::string& diagnostic)
+        std::string& diagnostic,
+        bool retainPlacements)
     {
         GpuPopulationCullBuild result;
         diagnostic.clear();
@@ -757,6 +960,54 @@ void main()
             auto rotationInfo = vsg::BufferInfo::create(rotationBuffer, 0, rotationBytes);
             auto scaleInfo = vsg::BufferInfo::create(scaleBuffer, 0, scaleBytes);
 
+            std::shared_ptr<PopulationUploadState> retained;
+            vsg::BufferInfoList retainedStreams;
+            if (retainPlacements)
+            {
+                retained = std::make_shared<PopulationUploadState>(plan);
+                if (!retained->bindings.valid())
+                {
+                    diagnostic = "persistent GPU placements require unique nonempty source identities; retained P3B";
+                    retained.reset();
+                }
+                else
+                {
+                    retained->assetBounds = *assetBounds;
+                    retained->packed.resize(placementCount);
+                    auto translations = vsg::vec3Array::create(placementCount);
+                    auto rotations = vsg::vec4Array::create(placementCount);
+                    auto scales = vsg::vec3Array::create(placementCount);
+                    for (std::size_t slot = 0; slot < placementCount; ++slot)
+                    {
+                        auto& row = retained->packed[slot];
+                        for (std::size_t value = 0; value < row.size(); ++value)
+                            row[value] = (*compactPlacements)[slot * row.size() + value];
+                        translations->set(slot, vsg::vec3(row[3].x, row[3].y, row[3].z));
+                        rotations->set(slot, row[4]);
+                        scales->set(slot, vsg::vec3(row[5].x, row[5].y, row[5].z));
+                    }
+                    retained->initialData = {compactPlacements, translations, rotations, scales};
+                    const VkDeviceSize sizes[] = {static_cast<VkDeviceSize>(placementCount) * sizeof(PackedPopulationRow),
+                        translationBytes, rotationBytes, scaleBytes};
+                    for (std::size_t stream = 0; stream < retained->buffers.size(); ++stream)
+                    {
+                        auto buffer = vsg::createBufferAndMemory(&device, sizes[stream], VK_BUFFER_USAGE_TRANSFER_DST_BIT
+                            | (stream == 0 ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : VK_BUFFER_USAGE_VERTEX_BUFFER_BIT),
+                            VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                        if (!buffer)
+                        {
+                            diagnostic = "persistent GPU placement storage allocation failed";
+                            return result;
+                        }
+                        retained->buffers[stream] = vsg::BufferInfo::create(buffer, 0, sizes[stream]);
+                    }
+                    retainedStreams = {retained->buffers[1], retained->buffers[2], retained->buffers[3]};
+                    result.uploads = vsg::Group::create();
+                    result.uploads->addChild(PopulationUploadCommand::create(retained));
+                    result.persistent = std::make_shared<PersistentPopulation>(retained);
+                }
+            }
+
             std::vector<vsg::ref_ptr<vsg::BufferInfo>> indirectRanges;
             indirectRanges.reserve(draws.size());
             for (std::size_t draw = 0; draw < draws.size(); ++draw)
@@ -790,8 +1041,11 @@ void main()
                 vsg::DescriptorSetLayouts{cullLayout}, vsg::PushConstantRanges{});
             auto cullPipeline = vsg::ComputePipeline::create(cullPipelineLayout,
                 vsg::ShaderStage::create(VK_SHADER_STAGE_COMPUTE_BIT, "main", compactCullShaderSource()));
+            auto placementDescriptor = retained
+                ? vsg::DescriptorBuffer::create(vsg::BufferInfoList{retained->buffers[0]}, 0, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+                : vsg::DescriptorBuffer::create(compactPlacements, 0, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
             auto cullSet = vsg::DescriptorSet::create(cullLayout, vsg::Descriptors{
-                vsg::DescriptorBuffer::create(compactPlacements, 0, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER),
+                placementDescriptor,
                 vsg::DescriptorBuffer::create(vsg::BufferInfoList{countInfo}, 1, 0,
                     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER),
                 vsg::DescriptorBuffer::create(vsg::BufferInfoList{translationInfo}, 2, 0,
@@ -892,7 +1146,7 @@ void main()
 
             std::size_t replacementIndex = 0;
             replaceDraws(graphicsRoot, indirectRanges, indirectViewId, placementCount, true,
-                translationInfo, rotationInfo, scaleInfo, replacementIndex);
+                translationInfo, rotationInfo, scaleInfo, replacementIndex, retainedStreams);
             if (replacementIndex != draws.size())
             {
                 diagnostic = "P3B compacted indirect draw replacement lost graph identity";

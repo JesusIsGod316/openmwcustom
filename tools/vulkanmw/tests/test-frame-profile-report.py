@@ -34,6 +34,17 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(result['profiled_frames'], 0)
         self.assertEqual(len(result['health_issues']), 1)
 
+    def test_repeated_gpu_scopes_sum_per_source_frame_and_missing_is_not_zero(self):
+        rows = [dict(type='frame_end', frame=n, completed='1', time_us=n*1000) for n in (1, 2, 3)]
+        for source_frame in (1, 2):
+            rows += [dict(type='profile_gpu', frame=99, source_frame=str(source_frame), name='main', ms='12'),
+                     dict(type='profile_gpu', frame=100, source_frame=str(source_frame), name='main', ms='8')]
+        rows.append(dict(type='profile_gpu', frame=101, source_frame='3', name='population_upload', ms='.001'))
+        result = report.summarize(rows)
+        self.assertEqual(result['gpu_interval_ms']['main']['mean'], 20)
+        self.assertEqual(result['gpu_interval_ms']['main']['samples'], 2)
+        self.assertEqual(result['gpu_interval_ms']['population_upload']['mean'], .001)
+
     def test_unhealthy_sample_is_excluded_even_when_root_balances(self):
         rows = [dict(type='frame_end', frame=1, completed='1', time_us=1000),
                 dict(type='profile_total', frame=1, name='frame', inclusive_ms=10,

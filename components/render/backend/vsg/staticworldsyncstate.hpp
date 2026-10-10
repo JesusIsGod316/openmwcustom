@@ -17,18 +17,20 @@ namespace RenderVsg
     class StaticWorldSyncState
     {
     public:
-        [[nodiscard]] bool unchanged(const RenderCore::RenderWorld& world, StaticPlanOptions options)
+        [[nodiscard]] bool unchanged(const RenderCore::RenderWorld& world, StaticPlanOptions options,
+            bool includePopulations = true)
         {
             mPendingRevision = world.staticRevision();
             mPendingSource = &world;
             mFastUnchanged = std::getenv("OPENMW_V4_STATIC_REVISION_GATE") && mSynchronized
                 && mSource == &world && mEpoch == world.epoch() && mOptions == options
-                && mRevision == mPendingRevision;
+                && mRevision == mPendingRevision && mIncludePopulations == includePopulations;
             if (mFastUnchanged) return true;
             mPending.clear();
             mModels.clear();
             mPendingEpoch = world.epoch();
             mPendingOptions = options;
+            mPendingIncludePopulations = includePopulations;
             world.forEachInstance([&](RenderCore::InstanceHandle handle, const RenderCore::InstanceRecord& instance) {
                 // Match the planner's classification, including unsupported
                 // mesh-only records, which must still reach its rejection path.
@@ -38,7 +40,7 @@ namespace RenderVsg
                 if (instance.model)
                     appendModel(world, *instance.model);
             });
-            world.forEachChunk([&](RenderCore::ChunkHandle handle, const RenderCore::ChunkRecord& chunk) {
+            if (includePopulations) world.forEachChunk([&](RenderCore::ChunkHandle handle, const RenderCore::ChunkRecord& chunk) {
                 if (!chunk.population)
                     return;
                 append(world, Kind::Chunk, handle);
@@ -46,7 +48,7 @@ namespace RenderVsg
                     appendModel(world, group.model);
             });
             const bool same = mSynchronized && mEpoch == mPendingEpoch
-                && mOptions == mPendingOptions && mCurrent == mPending;
+                && mOptions == mPendingOptions && mIncludePopulations == mPendingIncludePopulations && mCurrent == mPending;
             // An irrelevant asset publication may advance the conservative
             // token without changing this scene. A complete comparison proves
             // that token current without requiring a redundant realization.
@@ -63,6 +65,7 @@ namespace RenderVsg
             mCurrent.swap(mPending);
             mEpoch = mPendingEpoch;
             mOptions = mPendingOptions;
+            mIncludePopulations = mPendingIncludePopulations;
             mSynchronized = true;
             mRevision = mPendingRevision;
             mSource = mPendingSource;
@@ -123,6 +126,8 @@ namespace RenderVsg
         StaticPlanOptions mPendingOptions;
         bool mSynchronized = false;
         bool mFastUnchanged = false;
+        bool mIncludePopulations = true;
+        bool mPendingIncludePopulations = true;
         RenderCore::RenderWorldRevision mRevision;
         RenderCore::RenderWorldRevision mPendingRevision;
         const RenderCore::RenderWorld* mSource = nullptr;

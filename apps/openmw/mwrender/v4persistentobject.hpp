@@ -8,6 +8,7 @@
 #include <components/sceneutil/positionattitudetransform.hpp>
 #include <components/sceneutil/rendermutation.hpp>
 #include <components/sceneutil/skeleton.hpp>
+#include <components/misc/producerqueue.hpp>
 #include <osg/MatrixTransform>
 #include <osg/LOD>
 #include <osg/PositionAttitudeTransform>
@@ -24,8 +25,11 @@ namespace MWRender
     {
     public:
         explicit V4PersistentObject(osg::Node& root, std::size_t budget = 64u * 1024u * 1024u,
-            bool engineOwnedNif = false, std::function<void()> wake = {})
+            bool engineOwnedNif = false, std::function<void()> wake = {},
+            std::size_t bindingBudget = 8u * 1024u * 1024u)
             : mBudget(budget)
+            , mDirectUpdatesRequested(engineOwnedNif
+                && Misc::environmentFlag<"OPENMW_VK_OBJECT_BINDING_UPDATES">())
         {
             osg::NodePath path;
             mSupported = append(root, NoParent, 0, path);
@@ -34,6 +38,9 @@ namespace MWRender
                 bytes += b.path.capacity() * sizeof(osg::Node*) + b.children.capacity() * sizeof(osg::Node*)
                     + b.controllers.capacity() * sizeof(Controller)
                     + b.lodRanges.capacity() * sizeof(osg::LOD::MinMaxPair);
+            // Sparse-update bookkeeping must not evict an existing mesh lease
+            // into deep compatibility capture. Its independent, bounded lease
+            // can fail back to the existing whole-binding update producer.
             if (mSupported && !charge(bytes))
                 reject("producer budget");
             if (!mSupported) std::vector<Binding>().swap(mNodes);
@@ -52,10 +59,32 @@ namespace MWRender
                     && (!mHasIntrinsicParticles
                         || Misc::environmentFlag<"OPENMW_VK_SUPPORTED_CONTINUOUS_PRODUCERS">());
                 mSubscription->wake = std::move(wake);
-                for (const auto& b : mNodes)
+                if (mDirectUpdatesRequested && chargeBindings(mNodes.size() * 256, bindingBudget))
                 {
-                    if (b.transformSource) b.transformSource->subscribeRenderMutations(mSubscription);
-                    for (const auto& c : b.controllers) c.source->subscribeRenderMutations(mSubscription);
+                    mBindingQueue = std::make_unique<Misc::ProducerQueue>(mNodes.size());
+                    mUpdateRanges.reserve(mNodes.size());
+                }
+                for (auto& b : mNodes)
+                {
+                    auto subscription = mSubscription;
+                    if (mBindingQueue)
+                    {
+                        b.ticket = mBindingQueue->add();
+                        if (!b.ticket) { fallback("binding queue budget"); break; }
+                        b.subscription = std::make_shared<SceneUtil::RenderMutationSource::Subscription>();
+                        const std::weak_ptr<Misc::ProducerQueue::Ticket> ticket = b.ticket;
+                        const std::weak_ptr<SceneUtil::RenderMutationSource::Subscription> owner = mSubscription;
+                        const std::weak_ptr<SceneUtil::RenderMutationSource::Subscription> signal = b.subscription;
+                        b.subscription->wake = [ticket, owner, signal] {
+                            if (auto live = ticket.lock()) live->notify();
+                            if (auto live = owner.lock())
+                                if (auto changed = signal.lock())
+                                    live->notify(changed->invalidated.load(std::memory_order_acquire));
+                        };
+                        subscription = b.subscription;
+                    }
+                    if (b.transformSource) b.transformSource->subscribeRenderMutations(subscription);
+                    for (const auto& c : b.controllers) c.source->subscribeRenderMutations(subscription);
                 }
             }
         }
@@ -63,6 +92,7 @@ namespace MWRender
         {
             if (mOwner) mOwner->retire();
             sBytes.fetch_sub(mCharged, std::memory_order_relaxed);
+            sBindingBytes.fetch_sub(mBindingCharged, std::memory_order_relaxed);
         }
         V4PersistentObject(const V4PersistentObject&) = delete;
         V4PersistentObject& operator=(const V4PersistentObject&) = delete;
@@ -93,9 +123,12 @@ namespace MWRender
             fallback(std::move(reason));
             mPublishingWorld = nullptr;
         }
-        static std::size_t retainedBytes() { return sBytes.load(std::memory_order_relaxed); }
+        static std::size_t bindingQueueBytes() { return sBindingBytes.load(std::memory_order_relaxed); }
+        static std::size_t retainedBytes() { return sBytes.load(std::memory_order_relaxed) + bindingQueueBytes(); }
+        bool hasSparseBindings() const noexcept { return mBindingQueue != nullptr; }
         std::uint64_t geometryBuilds = 0, materialUpdates = 0, uvUpdates = 0, reusedDraws = 0;
         std::uint64_t cleanPublications = 0, bindingInspections = 0;
+        std::uint64_t bindingUpdates = 0, bindingNotifications = 0;
 
         std::optional<V4EffectCaptureResult> publish(const std::string& prefix,
             const VFS::Manager& vfs, NifRender::TextureIdentityCache& identities,
@@ -120,12 +153,41 @@ namespace MWRender
             // a clean publication. The root mask remains an O(1) engine gate.
             const auto rootMask = mNodes.empty() || !mNodes.front().node.valid()
                 ? 0 : mNodes.front().node->getNodeMask();
+            const bool sparse = mBindingQueue && currentOwner && mOwner->eventDriven && mPublished
+                && rootMask == mRootMask && mEnvironmentPreLight == environmentPreLight;
+            mUpdateRanges.clear();
+            if (mBindingQueue)
+            {
+                auto changes = mBindingQueue->take();
+                bindingNotifications += changes.size();
+                if (sparse)
+                {
+                    std::sort(changes.begin(), changes.end(), [](const auto& a, const auto& b) {
+                        return a.token.slot < b.token.slot;
+                    });
+                    for (const auto& change : changes)
+                    {
+                        const auto index = change.token.slot;
+                        if (index >= mNodes.size() || mNodes[index].ticket->token() != change.token)
+                            return fallback("stale binding notification");
+                        const auto end = mNodes[index].subtreeEnd;
+                        // Preorder ranges preserve parent-before-child updates.
+                        // Nested/adjacent dirty subtrees execute once, not once
+                        // per controller, and unaffected siblings are not visited.
+                        if (!mUpdateRanges.empty() && index <= mUpdateRanges.back().end)
+                            mUpdateRanges.back().end = std::max(mUpdateRanges.back().end, end);
+                        else mUpdateRanges.push_back({index, end});
+                    }
+                }
+            }
             if (currentOwner && mPublished && !dirty
                 && rootMask == mRootMask && mEnvironmentPreLight == environmentPreLight)
             {
                 ++cleanPublications;
                 return V4EffectCaptureResult{};
             }
+            if (!sparse) mUpdateRanges.push_back({0, mNodes.size()});
+            const auto generation = ++mUpdateGeneration;
             auto& counters = Debug::GameplayDiagnostics::context;
             Debug::GameplayDiagnostics::CapturePhase phase(counters.nativeBindingMs);
             // Flat pointer/edge guards protect engine attachment replacement.
@@ -151,16 +213,19 @@ namespace MWRender
             }
             V4EffectCaptureResult result;
             if (!persistent) result.draws.reserve(mDrawCount);
-            std::size_t ordinal = 0;
-            for (auto& b : mNodes)
+            for (const auto& range : mUpdateRanges)
+            for (auto index = range.begin; index < range.end; ++index)
             {
+                auto& b = mNodes[index];
+                ++bindingUpdates;
+                b.updateGeneration = generation;
                 b.dirty = 0;
                 bool transformChanged = !b.initialized;
                 b.active = b.node->getNodeMask() != 0;
                 if (b.parent != NoParent)
                 {
                     const auto& p = mNodes[b.parent];
-                    transformChanged |= p.transformChanged;
+                    if (p.updateGeneration == generation) transformChanged |= p.transformChanged;
                     b.active = b.active && p.active && (!p.selection || p.selection->getValue(b.childIndex));
                     if (p.lod)
                     {
@@ -168,13 +233,13 @@ namespace MWRender
                         // TRAVERSE_ACTIVE_CHILDREN NodeVisitor, not a cull
                         // visitor. Its distance range is therefore zero; its
                         // pixel-size fallback selects the greatest minimum.
-                        const float range = p.lodMode == osg::LOD::DISTANCE_FROM_EYE_POINT
+                        const float lodRange = p.lodMode == osg::LOD::DISTANCE_FROM_EYE_POINT
                             ? 0.0f : p.lodFallbackRange;
                         b.active = b.active && b.childIndex < p.lodRanges.size()
-                            && p.lodRanges[b.childIndex].first <= range
-                            && range < p.lodRanges[b.childIndex].second;
+                            && p.lodRanges[b.childIndex].first <= lodRange
+                            && lodRange < p.lodRanges[b.childIndex].second;
                     }
-                    b.dirty = p.dirty;
+                    if (p.updateGeneration == generation) b.dirty = p.dirty;
                 }
                 // Engine movement setters publish revisions. Other supported
                 // OSG transform classes use a cheap matrix-value adapter so an
@@ -207,7 +272,7 @@ namespace MWRender
                 if (state != b.state) b.dirty |= SceneUtil::RenderMaterial | SceneUtil::RenderTexCoords;
                 b.state = state;
                 if (!b.geometry) continue;
-                const auto drawOrdinal = ordinal++;
+                const auto drawOrdinal = b.drawOrdinal;
                 // Dirty state must survive hidden frames until this draw is used.
                 b.pending |= b.dirty;
                 if (!b.active)
@@ -336,9 +401,13 @@ namespace MWRender
             const osg::StateSet* state = nullptr;
             std::vector<const osg::Node*> children;
             std::vector<Controller> controllers;
+            std::shared_ptr<Misc::ProducerQueue::Ticket> ticket;
+            std::shared_ptr<SceneUtil::RenderMutationSource::Subscription> subscription;
             std::vector<std::shared_ptr<NifRender::TextureIdentityCache::Binding>> textureBindings;
             osg::NodePath path;
             std::size_t parent;
+            std::size_t subtreeEnd = 0, drawOrdinal = 0;
+            std::uint64_t updateGeneration = 0;
             std::size_t meshBytes = 0;
             unsigned childIndex;
             unsigned dirty = 0, pending = 0;
@@ -347,6 +416,7 @@ namespace MWRender
             RenderCore::ImmediateEffectDraw draw;
             RenderCore::PersistentDrawHandle handle;
         };
+        struct UpdateRange { std::size_t begin, end; };
         bool reject(std::string reason) { mSupported = false; mFallback = std::move(reason); return false; }
         static void bindTextures(Binding& b, NifRender::TextureIdentityCache& identities)
         {
@@ -365,8 +435,22 @@ namespace MWRender
             if (mSubscription) mSubscription->notify(true);
             if (mPublishingWorld) for (const auto& b : mNodes) mPublishingWorld->remove(b.handle);
             std::vector<Binding>().swap(mNodes); // submitted immutable frames survive
+            mBindingQueue.reset();
+            std::vector<UpdateRange>().swap(mUpdateRanges);
             sBytes.fetch_sub(mCharged, std::memory_order_relaxed); mCharged = 0;
+            sBindingBytes.fetch_sub(mBindingCharged, std::memory_order_relaxed); mBindingCharged = 0;
             return {};
+        }
+        bool chargeBindings(std::size_t bytes, std::size_t budget)
+        {
+            // The optional caller limit may reduce, never enlarge, the engine's
+            // 8 MiB global bookkeeping ceiling. No meshes are retained here.
+            budget = std::min(budget, std::size_t{8u * 1024u * 1024u});
+            auto previous = sBindingBytes.load(std::memory_order_relaxed);
+            do { if (bytes > budget || previous > budget - bytes) return false; }
+            while (!sBindingBytes.compare_exchange_weak(previous, previous + bytes, std::memory_order_relaxed));
+            mBindingCharged = bytes;
+            return true;
         }
         bool charge(std::size_t bytes)
         {
@@ -441,7 +525,7 @@ namespace MWRender
             // arbitrary mutable transforms and skeleton active-state changes
             // remain on the guarded compatibility lane.
             if ((b.transform && !b.transformSource && type != typeid(NifOsg::MatrixTransform))
-                || type == typeid(SceneUtil::Skeleton))
+                || (type == typeid(SceneUtil::Skeleton) && !mDirectUpdatesRequested))
             {
                 mNotificationCovered = false;
                 mQueueFallback = "transform without owned mutation notifications";
@@ -473,22 +557,28 @@ namespace MWRender
                 b.controllers.push_back({c, c->getNestedCallback(), source, source->renderMutationRevision()});
             }
             path.push_back(&node); b.path = path;
-            if (b.geometry) ++mDrawCount;
+            if (b.geometry) b.drawOrdinal = mDrawCount++;
             if (b.group) for (unsigned i = 0; i < b.group->getNumChildren(); ++i) b.children.push_back(b.group->getChild(i));
             const auto index = mNodes.size(); mNodes.push_back(std::move(b));
             if (auto* group = node.asGroup())
                 for (unsigned i = 0; i < group->getNumChildren(); ++i)
                     if (!append(*group->getChild(i), index, i, path)) return false;
+            mNodes[index].subtreeEnd = mNodes.size();
             path.pop_back(); return true;
         }
         inline static std::atomic<std::size_t> sBytes{0};
+        inline static std::atomic<std::size_t> sBindingBytes{0};
         const std::size_t mBudget;
-        std::size_t mCharged = 0, mDrawCount = 0;
+        std::size_t mCharged = 0, mBindingCharged = 0, mDrawCount = 0;
         bool mSupported = false;
         bool mNotificationCovered = true;
         std::string mQueueFallback;
         bool mHasIntrinsicParticles = false;
         bool mChangeDriven = false, mPublished = false, mEnvironmentPreLight = false;
+        const bool mDirectUpdatesRequested;
+        std::uint64_t mUpdateGeneration = 0;
+        std::unique_ptr<Misc::ProducerQueue> mBindingQueue;
+        std::vector<UpdateRange> mUpdateRanges;
         osg::Node::NodeMask mRootMask = 0;
         std::shared_ptr<SceneUtil::RenderMutationSource::Subscription> mSubscription;
         std::shared_ptr<RenderCore::PersistentDrawOwner> mOwner;

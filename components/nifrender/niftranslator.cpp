@@ -1,4 +1,5 @@
 #include "niftranslator.hpp"
+#include "geometrysanitization.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -1118,6 +1119,12 @@ namespace
                     "Geometry contains no supported non-empty primitive sets");
                 return std::nullopt;
             }
+
+            const std::size_t repairedNormals = NifRender::repairNonFiniteNormals(*payload);
+            if (repairedNormals != 0)
+                diagnose(source, NifRender::DiagnosticSeverity::Warning, "geometry.non_finite_normals_repaired",
+                    "Reconstructed " + std::to_string(repairedNormals)
+                        + " non-finite vertex normals from mesh faces; source geometry and finite normals are unchanged");
 
             RenderCore::MeshRecord record;
             record.sourceIdentity

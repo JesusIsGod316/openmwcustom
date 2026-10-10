@@ -375,7 +375,8 @@ namespace RenderVsg
 
     // Geometry/material ownership excludes placement. Compare the complete
     // resource dependency contract, not the chunk revision (which movement
-    // advances). This is only usable for non-instanced, placement-free assets.
+    // advances). Placement-free assets and retained GPU instance streams can
+    // both reuse this contract; neither may assume placements are unchanged.
     [[nodiscard]] inline bool reusablePopulationAsset(
         const StaticPopulationPlan& previous, const StaticPopulationPlan& next)
     {

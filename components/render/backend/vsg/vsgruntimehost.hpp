@@ -190,6 +190,8 @@ namespace RenderVsg
             // P3A main-view compute commands. Other view IDs retain direct
             // instanced draws inside visibility, so shared-scene semantics stay exact.
             vsg::ref_ptr<vsg::Group> gpuCullCompute;
+            vsg::ref_ptr<vsg::Group> gpuUploads;
+            std::shared_ptr<PersistentGpuPopulation> gpuPlacements;
         };
         struct WaterViewRuntime
         {
@@ -229,6 +231,7 @@ namespace RenderVsg
             vsg::ref_ptr<vsg::MatrixTransform> placement;
             vsg::ref_ptr<vsg::Node> published;
             std::vector<StaticRealizationResult::MutableDrawStreams> mutableDraws;
+            std::vector<std::shared_ptr<class GpuDeformation>> gpuDeformations;
         };
         struct ImmediateEffectResident
         {
@@ -280,9 +283,13 @@ namespace RenderVsg
         // Population residents publish/retire their compute graphs with the same
         // generation as their graphics graph.
         vsg::ref_ptr<vsg::Group> mGpuPopulationCullRoot;
+        vsg::ref_ptr<vsg::Group> mGpuPopulationUploadRoot;
+        vsg::ref_ptr<vsg::Group> mGpuDeformationRoot;
+        std::vector<std::shared_ptr<class GpuDeformation>> mScheduledDeformations;
         vsg::ref_ptr<vsg::vec4Array> mGpuPopulationCullViewData;
         bool mGpuPopulationCullEnabled = false;
         bool mGpuPopulationCompactEnabled = false;
+        bool mPersistentGpuPopulationsEnabled = false;
         // Stable holder attached to the shared scene plus separately-owned published
         // dynamic content. Replacement never mutates mSceneRoot child ordering and
         // the old generation stays strongly owned through frame-safe retirement.

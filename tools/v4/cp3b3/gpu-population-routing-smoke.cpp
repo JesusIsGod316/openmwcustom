@@ -93,6 +93,7 @@ namespace
             for (double x : {0.,3.,20.})
             {
                 PopulationInstanceRecord placement;
+                placement.sourceIdentity = "p3-reference:" + std::to_string(plan.placements.size());
                 placement.transform.translation = {x,0,-2};
                 plan.placements.push_back(placement);
             }
@@ -190,21 +191,41 @@ namespace
             buffer->getMemoryOffset(device->deviceID),0,vsg::Data::Properties{},Size*Size*4);
         Pixels bytes(Size*Size*4); std::memcpy(bytes.data(),mapped->dataPointer(),bytes.size()); return bytes;
     }
-    std::vector<Pixels> render(vsg::ref_ptr<vsg::Device> device, bool resource, int mode)
+    std::vector<Pixels> render(vsg::ref_ptr<vsg::Device> device, bool resource, int mode, bool moving = false,
+        bool queued = false)
     {
         World input;
         auto scene = vsg::Group::create(); Frame main(device,scene), secondary(device,scene);
         auto viewData = RenderVsg::createGpuPopulationCullViewData();
         RenderVsg::GpuPopulationCullBuild cull; std::string reason;
         auto asset = input.build(resource, [&](vsg::Group& graph) {
-            if (mode) cull = RenderVsg::enableGpuPopulationCull(input.world,input.plan,graph,*device,main.graph->viewID,viewData,mode==2,reason);
+            if (mode) cull = RenderVsg::enableGpuPopulationCull(input.world,input.plan,graph,*device,main.graph->viewID,viewData,mode>=2,reason,mode==3);
         });
         if (mode)
         {
             require(cull.active, "real P3 builder inactive: " + reason);
-            require(cull.stats.compacted == (mode==2), "real P3B builder did not compact: " + reason);
-            require(cull.stats.placements == 3 && cull.stats.draws == 1 && cull.stats.indirectCommands == (mode==2?1u:3u),
+            require(cull.stats.compacted == (mode>=2), "real P3B builder did not compact: " + reason);
+            require(cull.stats.placements == 3 && cull.stats.draws == 1 && cull.stats.indirectCommands == (mode>=2?1u:3u),
                 "P3 coverage counters do not describe the real draw graph");
+            require(bool(cull.persistent) == (mode==3), "persistent placement path not exercised");
+            if (cull.persistent)
+            {
+                auto invalid = input.plan;
+                invalid.placements.pop_back();
+                require(!cull.persistent->prepare(invalid, reason), "structural deletion must rebuild");
+                invalid = input.plan;
+                invalid.placements[0].sourceIdentity = invalid.placements[1].sourceIdentity;
+                require(!cull.persistent->prepare(invalid, reason), "ambiguous identity must rebuild");
+                invalid = input.plan;
+                invalid.modelRevision = ResourceRevision{invalid.modelRevision.value() + 1};
+                require(!cull.persistent->prepare(invalid, reason), "asset revision must rebuild");
+                invalid = input.plan;
+                invalid.placements[0].transform.translation.x = std::numeric_limits<double>::quiet_NaN();
+                require(!cull.persistent->prepare(invalid, reason), "non-finite placement upload accepted");
+                auto unchanged = cull.persistent->prepare(input.plan, reason);
+                require(unchanged && unchanged->stats.changedRows == 0 && unchanged->stats.uploadBytes == 0,
+                    "failed preparation changed live row bindings");
+            }
             // Negative control: the old post-seal builder must explicitly reject
             // the finished graph, without mutating its live command topology.
             if (resource || std::getenv("OPENMW_V4_PIPELINE_INVENTORIES"))
@@ -216,13 +237,51 @@ namespace
                     "sealed negative control did not diagnose the old routing failure");
             }
         }
-        scene->addChild(asset.root);
+        const auto originalPlan = input.plan;
+        auto cases = vsg::Switch::create();
+        std::vector<RenderVsg::StaticPopulationPlan> plans;
+        if (moving)
+        {
+            for (unsigned step = 0; step < 8; ++step)
+            {
+                auto plan = originalPlan;
+                plan.placements[0].transform.translation.x = step % 2 == 0 ? 1. : -2.;
+                plan.placements[0].transform.scale = {0.5f,1.25f,1.f};
+                // The raw direct fixture does not implement per-placement LOD
+                // rejection. Change its uploaded value while retaining the same
+                // visible set, so exact parity tests the transforms rather than
+                // deliberately comparing two different visibility policies.
+                plan.placements[1].lod.maximumDistance = step % 3 == 0 ? 250.f : 100.f;
+                if (step % 2 == 0) std::reverse(plan.placements.begin(), plan.placements.end());
+                plans.push_back(plan);
+                if (!mode)
+                {
+                    input.plan = plan;
+                    cases->addChild(vsg::MASK_OFF, input.build(resource).root);
+                }
+            }
+            input.plan = originalPlan;
+        }
+        scene->addChild(moving && !mode ? vsg::ref_ptr<vsg::Node>(cases) : vsg::ref_ptr<vsg::Node>(asset.root));
         auto viewer = vsg::Viewer::create();
         const auto family = device->getPhysicalDevice()->getQueueFamily(VK_QUEUE_GRAPHICS_BIT|VK_QUEUE_COMPUTE_BIT);
         auto commands = vsg::CommandGraph::create(device,family);
+        auto preRender = vsg::CommandGraph::create(device,family);
+        preRender->submitOrder = -1; // Same ordering class as a VSG shadow pre-render.
+        preRender->addChild(secondary.target.renderGraph);
+        if (cull.uploads)
+        {
+            auto uploads = vsg::CommandGraph::create(device,family);
+            uploads->submitOrder = -10000;
+            uploads->addChild(cull.uploads);
+            // Submit in reverse recording order on purpose: GPU order must be
+            // established by submitOrder, not worker/host recording order.
+            commands->submitOrder = 0;
+            viewer->assignRecordAndSubmitTaskAndPresentation({commands,preRender,uploads});
+        }
         if (cull.active) commands->addChild(cull.compute);
-        commands->addChild(main.target.renderGraph); commands->addChild(secondary.target.renderGraph);
-        viewer->assignRecordAndSubmitTaskAndPresentation({commands});
+        commands->addChild(main.target.renderGraph);
+        if (!cull.uploads) viewer->assignRecordAndSubmitTaskAndPresentation({commands,preRender});
         require(bool(viewer->compile()), "real P3 shader/draw compilation failed");
         std::vector<Pixels> output;
         unsigned tick = 0;
@@ -230,6 +289,30 @@ namespace
         // The secondary camera must always draw its original direct population.
         for (double x : {0.,20.,100.,0.,20.,100.,0.,20.})
         {
+            if (moving)
+            {
+                if (!mode) cases->setSingleChildOn(tick);
+                else
+                {
+                    if (tick == 3)
+                    {
+                        // Two publications before one submission: the second
+                        // must keep the first row's upload debt, not just its
+                        // own newly changed row. Neither publishes GPU writes.
+                        auto partial = plans[tick];
+                        partial.placements[1].lod.maximumDistance = 100.f;
+                        auto first = cull.persistent->prepare(partial,reason);
+                        require(first && cull.persistent->publish(first), "prepare/publish skipped-frame debt");
+                    }
+                    auto update = cull.persistent->prepare(plans[tick],reason);
+                    require(bool(update), "prepare retained movement: " + reason);
+                    require(update->stats.changedRows <= 2 && update->stats.uploadBytes <= 272,
+                        "retained movement uploaded untouched rows");
+                    if (tick == 3) require(update->stats.changedRows == 1 && update->stats.uploadRows == 2,
+                        "second publication lost the earlier row debt");
+                    require(cull.persistent->publish(update), "publish retained movement");
+                }
+            }
             main.move(x); secondary.move(0);
             RenderVsg::updateGpuPopulationCullViewData(*viewData,main.view);
             require(viewer->advanceToNextFrame(double(++tick)), "advance"); viewer->update();
@@ -238,13 +321,16 @@ namespace
                 for (auto& graph : task->commandGraphs) graph->reset();
                 require(RenderVsg::submitTaskChecked(*task,vsg::ref_ptr<vsg::FrameStamp>(viewer->getFrameStamp())) == VK_SUCCESS, "GPU submit");
             }
+            if (cull.persistent) cull.persistent->submitted();
+            if (queued && tick % 3 != 0 && tick != 8) continue;
             viewer->deviceWaitIdle(); // Test readback only.
             output.push_back(readPixels(device,main,static_cast<unsigned>(family)));
             output.push_back(readPixels(device,secondary,static_cast<unsigned>(family)));
         }
-        require(output.front() != output[4], "fixture did not distinguish visible from empty view");
-        for (std::size_t i=1;i<output.size();i+=2) require(output[i] == output[1], "secondary-view fallback changed with main visibility");
-        std::cout << "PASS real GPU route mode=" << mode << " frames=" << tick << " groups=" << cull.active
+        if (!queued) require(output.front() != output[4], "fixture did not distinguish visible from empty view");
+        if (!moving)
+            for (std::size_t i=1;i<output.size();i+=2) require(output[i] == output[1], "secondary-view fallback changed with main visibility");
+        std::cout << "PASS real GPU route mode=" << mode << " frames=" << tick << " queued=" << queued << " groups=" << cull.active
                   << " compact=" << cull.stats.compacted << " commands=" << cull.stats.indirectCommands << '\n';
         return output;
     }
@@ -263,6 +349,35 @@ namespace
         const auto control = render(device,resource,0);
         require(render(device,resource,1) == control, "P3A pixels differ from exact direct control");
         require(render(device,resource,2) == control, "P3B pixels differ from exact direct control");
+        require(render(device,resource,3) == control, "persistent GPU rows differ from exact direct control");
+        const auto movingControl = render(device,resource,0,true);
+        const auto movingCandidate = render(device,resource,3,true);
+        for (std::size_t image = 0; image < movingControl.size(); ++image)
+            require(movingCandidate[image] == movingControl[image],
+                "retained movement/reorder/LOD pixels differ: frame=" + std::to_string(image/2)
+                    + " view=" + (image%2 ? "secondary" : "main"));
+        const auto queuedControl = render(device,resource,0,true,true);
+        require(render(device,resource,3,true,true) == queuedControl,
+            "queued retained uploads raced a previous frame or changed secondary-view pixels");
+        World bulk;
+        const auto reference = bulk.plan.placements.front();
+        bulk.plan.placements.clear();
+        for (unsigned index = 0; index < 129; ++index)
+        {
+            auto row = reference;
+            row.sourceIdentity = "bulk:" + std::to_string(index);
+            bulk.plan.placements.push_back(row);
+        }
+        RenderVsg::GpuPopulationCullBuild bulkCull;
+        std::string reason;
+        auto bulkGraph = bulk.build(resource, [&](vsg::Group& graph) {
+            bulkCull = RenderVsg::enableGpuPopulationCull(bulk.world,bulk.plan,graph,*device,0,
+                RenderVsg::createGpuPopulationCullViewData(),true,reason,true);
+        });
+        require(bulkGraph.valid() && bulkCull.persistent, "bulk fixture did not bind retained rows");
+        for (auto& row : bulk.plan.placements) row.transform.translation.x += .5;
+        require(!bulkCull.persistent->prepare(bulk.plan,reason) && reason.find("budget") != std::string::npos,
+            "bulk update exceeded the bounded tiny-upload path instead of requesting staged rebuild");
         std::cout << "PASS direct/P3A/P3B exact pixel parity for main and secondary views\n";
     }
 #endif

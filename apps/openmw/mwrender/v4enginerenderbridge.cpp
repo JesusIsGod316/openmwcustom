@@ -519,6 +519,7 @@ namespace MWRender
         const bool cachedObjectAdmission = Misc::environmentFlag<"OPENMW_VK_CACHED_OBJECT_ADMISSION">();
         unsigned reusedObjectAdmissions = 0, skippedObjectAdmissions = 0;
         std::uint64_t cleanObjectPublications = 0, objectBindingInspections = 0;
+        std::uint64_t objectBindingUpdates = 0, objectBindingNotifications = 0;
         unsigned queueFallbackEvents = 0;
         unsigned particleBodySleeps = 0;
         const bool supportedContinuousProducers
@@ -743,6 +744,8 @@ namespace MWRender
                         const auto reuses = producer->reusedDraws;
                         const auto clean = producer->cleanPublications;
                         const auto inspections = producer->bindingInspections;
+                        const auto bindingUpdates = producer->bindingUpdates;
+                        const auto notifications = producer->bindingNotifications;
                         const bool particleBodyCanSleep = supportedContinuousProducers && persistentDraws
                             && animation.previousV4ProducerClass() == V4ProducerClass::SupportedContinuousParticle
                             && !animation.v4ProducerVisitIsDirty() && producer->hasIntrinsicParticles()
@@ -758,6 +761,8 @@ namespace MWRender
                                 Settings::shaders().mApplyLightingToEnvironmentMaps);
                         cleanObjectPublications += producer->cleanPublications - clean;
                         objectBindingInspections += producer->bindingInspections - inspections;
+                        objectBindingUpdates += producer->bindingUpdates - bindingUpdates;
+                        objectBindingNotifications += producer->bindingNotifications - notifications;
                         const bool supportedParticleBody = supportedContinuousProducers
                             && producer->hasIntrinsicParticles() && producer->bodyEventDriven();
                         if (!producer->eventDriven() && !supportedParticleBody
@@ -1700,6 +1705,10 @@ namespace MWRender
             Debug::GameplayDiagnostics::recordEvent("object_producer_work", {
                 {"clean_publications", std::to_string(cleanObjectPublications)},
                 {"binding_inspections", std::to_string(objectBindingInspections)},
+                {"binding_updates", std::to_string(objectBindingUpdates)},
+                {"binding_notifications", std::to_string(objectBindingNotifications)},
+                {"retained_object_bytes", std::to_string(V4PersistentObject::retainedBytes())},
+                {"binding_queue_bytes", std::to_string(V4PersistentObject::bindingQueueBytes())},
                 {"particle_body_sleeps", std::to_string(particleBodySleeps)}});
         if (compatible && persistentDraws) source.persistentDraws = mPersistentDraws.finish();
         return compatible;

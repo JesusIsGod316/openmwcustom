@@ -32,6 +32,10 @@ GPU_CULL_BASE = GPU_TABLE_CANDIDATE + '+gpu-cull-queue'
 GPU_CULL_CANDIDATE = GPU_CULL_BASE + '+gpu-cull-indirect'
 GPU_COMPACT_BASE = GPU_CULL_CANDIDATE
 GPU_COMPACT_CANDIDATE = GPU_COMPACT_BASE + '+gpu-cull-compact'
+PERSISTENT_BASE = GPU_COMPACT_CANDIDATE
+PERSISTENT_CANDIDATE = PERSISTENT_BASE + '+persistent-populations'
+BINDING_BASE = PERSISTENT_CANDIDATE
+BINDING_CANDIDATE = BINDING_BASE + '+object-binding-updates'
 
 
 def source_identity(package):
@@ -63,6 +67,8 @@ def main():
     parser.add_argument('--package', type=Path, default=HERE.parents[1])
     parser.add_argument('--user-config', type=Path, default=cohort.profile.dc.normal_default())
     parser.add_argument('--single', choices=('candidate', 'control'), help='One smoke run, not a performance verdict')
+    parser.add_argument('--default-mode', choices=('queues', 'persistent-populations', 'object-binding-updates'), default='queues',
+                        help='Launcher default when no explicit comparison mode is selected')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--supported-continuous', action='store_true',
                       help='A/B supported actor/particle producers with dirty queues enabled in both arms')
@@ -72,10 +78,20 @@ def main():
                       help='A/B P3 GPU population cull + indirect draw with the complete P2 stack in both arms')
     mode.add_argument('--gpu-cull-compact', action='store_true',
                       help='A/B P3B compact visible transforms + one indirect command per draw with P3A in both arms')
+    mode.add_argument('--persistent-populations', action='store_true',
+                      help='A/B retained population graphs and selective GPU row uploads with P3B enabled in both arms')
+    mode.add_argument('--object-binding-updates', action='store_true',
+                      help='A/B load-bound object update queues and controller coverage with retained populations in both arms')
     args = parser.parse_args()
     package = args.package.resolve()
     source = source_identity(package)
-    if args.gpu_cull_compact:
+    explicit_mode = any((args.supported_continuous, args.gpu_scene_tables, args.gpu_cull_indirect,
+                         args.gpu_cull_compact, args.persistent_populations, args.object_binding_updates))
+    if args.object_binding_updates or (not explicit_mode and args.default_mode == 'object-binding-updates'):
+        baseline, candidate = BINDING_BASE, BINDING_CANDIDATE
+    elif args.persistent_populations or (not explicit_mode and args.default_mode == 'persistent-populations'):
+        baseline, candidate = PERSISTENT_BASE, PERSISTENT_CANDIDATE
+    elif args.gpu_cull_compact:
         baseline, candidate = GPU_COMPACT_BASE, GPU_COMPACT_CANDIDATE
     elif args.gpu_cull_indirect:
         baseline, candidate = GPU_CULL_BASE, GPU_CULL_CANDIDATE

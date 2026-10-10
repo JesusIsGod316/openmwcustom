@@ -75,6 +75,8 @@ namespace MWRender
 
         META_Object(MWRender, NifAnimBlendController)
 
+        unsigned renderMutationMask() const noexcept override;
+        bool run(osg::Object* object, osg::Object* data) override;
         void operator()(NifOsg::MatrixTransform* node, osg::NodeVisitor* nv);
 
         osg::Callback* getAsCallback() { return this; }

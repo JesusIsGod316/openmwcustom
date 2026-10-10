@@ -24,13 +24,15 @@ def summarize(rows):
         raise ValueError('No completed sampled frames')
     cutoff = max(r.get('time_us', 0) for r in frames) - 30_000_000
     steady = {r['frame'] for r in frames if r.get('time_us', 0) >= cutoff}
-    totals, stages, graphs, gpu = defaultdict(dict), defaultdict(dict), defaultdict(dict), defaultdict(list)
+    totals, stages, graphs, gpu = defaultdict(dict), defaultdict(dict), defaultdict(dict), defaultdict(dict)
     problems = []
     unhealthy = set()
     for row in rows:
         kind, frame = row.get('type'), row.get('frame')
         if kind == 'profile_gpu' and int(row['source_frame']) in steady:
-            gpu[row['name']].append(float(row['ms']))
+            source_frame = int(row['source_frame'])
+            scopes = gpu[source_frame]
+            scopes[row['name']] = scopes.get(row['name'], 0) + float(row['ms'])
         if kind in ('profile_gpu_error', 'profile_gpu_dropped', 'profile_gpu_unavailable'):
             problems.append(row)
         if frame not in steady:
@@ -76,7 +78,9 @@ def summarize(rows):
             'calls_per_frame': group(totals, 'calls'),
             'stages_summed_per_frame_ms': group(stages),
             'record_graph_wall_ms_by_submit_order': group(graphs),
-            'gpu_interval_ms': {k: distribution(v) for k, v in gpu.items()}}
+            # Missing GPU queries are missing samples, not zero-cost frames.
+            'gpu_interval_ms': {name: distribution([scopes[name] for scopes in gpu.values() if name in scopes])
+                                for name in sorted({name for scopes in gpu.values() for name in scopes})}}
 
 
 def main():

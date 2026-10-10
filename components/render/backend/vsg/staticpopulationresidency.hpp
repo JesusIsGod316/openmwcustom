@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -46,6 +47,7 @@ namespace RenderVsg
         std::uint64_t serial = 0;
         RenderCore::WorldEpoch worldEpoch;
         RenderCore::RenderWorldRevision worldRevision;
+        const RenderCore::RenderWorld* sourceWorld = nullptr;
         std::vector<StaticPopulationIdentity> orderedPopulations;
         std::vector<StaticPopulationPlan> upserts;
         std::vector<StaticPopulationIdentity> removals;
@@ -54,6 +56,9 @@ namespace RenderVsg
         std::size_t changedOptions = 0;
         std::size_t staleDependencies = 0;
         std::size_t reusedPlans = 0;
+        std::size_t chunksInspected = 0;
+        std::size_t cachedAssetPlans = 0;
+        bool targetedChunks = false;
         bool incremental = false;
         // Bounded first causes, not an unbounded dump of the population.
         std::vector<PopulationStaleCause> causes;
@@ -97,10 +102,12 @@ namespace RenderVsg
             mutation.serial = ++mLastPreparedSerial;
             mutation.worldEpoch = world.epoch();
             mutation.worldRevision = world.revision();
+            mutation.sourceWorld = &world;
             mutation.incremental = true;
             mutation.valid = mutation.worldEpoch.valid() && mutation.worldRevision.valid();
             IdentitySet ordered;
             world.forEachChunk([&](RenderCore::ChunkHandle handle, const RenderCore::ChunkRecord& chunk) {
+                ++mutation.chunksInspected;
                 if (!chunk.population) return;
                 for (const auto& population : chunk.population->groups)
                 {
@@ -132,6 +139,109 @@ namespace RenderVsg
             return mutation;
         }
 
+        // The input is the complete, committed Chunk delta debt from
+        // GpuSceneTables, not a camera-visible subset. Asset/options/epoch
+        // changes retain full discovery. Untouched chunks do not inspect or
+        // reconstruct their model/placement payloads.
+        [[nodiscard]] StaticPopulationMutation prepareChangedChunks(const RenderCore::RenderWorld& world,
+            StaticPlanOptions options, std::span<const RenderCore::ChunkHandle> changedChunks)
+        {
+            if (mSourceWorld != &world || mWorldEpoch != world.epoch() || mAssetRevision != world.assetRevision())
+                return prepareIncremental(world, options);
+            for (const auto& resident : mResidents)
+            {
+                auto effective = options;
+                effective.includeDeformableMeshes = false;
+                effective.herbalismHarvested = false;
+                effective.dayNightSwitchesEnabled = effective.dayNightSwitchesEnabled
+                    && !resident.plan.placements.empty() && (resident.plan.placements.front().semanticFlags
+                        & RenderCore::NightDaySwitchCapabilitySemanticFlag) != 0;
+                if (effective != resident.plan.options) return prepareIncremental(world, options);
+            }
+            StaticPopulationMutation mutation;
+            mutation.serial = ++mLastPreparedSerial;
+            mutation.worldEpoch = world.epoch();
+            mutation.worldRevision = world.revision();
+            mutation.sourceWorld = &world;
+            mutation.incremental = true;
+            mutation.targetedChunks = true;
+            mutation.valid = mutation.worldEpoch.valid() && mutation.worldRevision.valid();
+            const auto chunkKey = [](RenderCore::ChunkHandle handle) {
+                return (static_cast<std::uint64_t>(handle.generation()) << 32u) | handle.slot();
+            };
+            std::unordered_set<std::uint64_t> touched;
+            for (const auto handle : changedChunks) touched.insert(chunkKey(handle));
+            IdentitySet ordered;
+            for (const auto& resident : mResidents)
+            {
+                if (touched.contains(chunkKey(resident.plan.chunk))) continue;
+                const auto identity = populationIdentity(resident.plan);
+                ordered.insert(identity);
+                mutation.orderedPopulations.push_back(identity);
+                ++mutation.reusedPlans;
+            }
+            std::unordered_set<std::uint64_t> inspected;
+            for (const auto handle : changedChunks)
+            {
+                if (!inspected.insert(chunkKey(handle)).second) continue;
+                ++mutation.chunksInspected;
+                const auto* chunk = world.get(handle);
+                if (!chunk || !chunk->population) continue; // retirement, including an old slot generation
+                for (std::size_t groupIndex = 0; groupIndex < chunk->population->groups.size(); ++groupIndex)
+                {
+                    const auto& population = chunk->population->groups[groupIndex];
+                    const StaticPopulationIdentity identity{handle, population.model};
+                    if (!ordered.insert(identity).second) { mutation.valid = false; continue; }
+                    mutation.orderedPopulations.push_back(identity);
+                    const auto* resident = find(identity);
+                    const auto effective = populationPlanOptions(options, population);
+                    mutation.newGroups += !resident;
+                    mutation.changedChunks += resident && resident->plan.chunkRevision != chunk->revision;
+                    mutation.changedOptions += resident && resident->plan.options != effective;
+                    if (resident && resident->plan.options == effective
+                        && staticPopulationPlanCurrent(world, resident->plan, true))
+                    { ++mutation.reusedPlans; continue; }
+                    constexpr auto capabilityMask = RenderCore::NightDaySwitchCapabilitySemanticFlag
+                        | RenderCore::HerbalismSwitchCapabilitySemanticFlag;
+                    const bool uniformCapabilities = !population.instances.empty()
+                        && std::all_of(population.instances.begin(), population.instances.end(), [&](const auto& row) {
+                            return (row.semanticFlags & capabilityMask)
+                                    == (population.instances.front().semanticFlags & capabilityMask)
+                                && (row.semanticFlags & RenderCore::HerbalismHarvestedSemanticFlag) == 0;
+                        });
+                    if (resident && resident->plan.options == effective && resident->plan.kind == chunk->kind
+                        && uniformCapabilities)
+                    {
+                        // The authoritative asset revision proves these bindings
+                        // unchanged. Copy the existing plan contract, not another
+                        // model-node/material discovery pass for a moved object.
+                        auto plan = resident->plan;
+                        plan.chunkRevision = chunk->revision;
+                        plan.groupIndex = groupIndex;
+                        plan.placements = population.instances;
+                        mutation.upserts.push_back(std::move(plan));
+                        ++mutation.cachedAssetPlans;
+                    }
+                    else
+                    {
+                        auto plan = buildStaticPopulationPlan(world, handle, population, options);
+                        if (!plan) { mutation.valid = false; continue; }
+                        mutation.upserts.push_back(std::move(*plan));
+                    }
+                }
+            }
+            // RenderWorld enumerates chunk slots in order; preserve authored
+            // group order inside each chunk, independent of delta arrival order.
+            std::stable_sort(mutation.orderedPopulations.begin(), mutation.orderedPopulations.end(),
+                [](const auto& left, const auto& right) { return left.chunk.slot() < right.chunk.slot(); });
+            for (const auto& resident : mResidents)
+            {
+                const auto identity = populationIdentity(resident.plan);
+                if (!ordered.contains(identity)) mutation.removals.push_back(identity);
+            }
+            return mutation;
+        }
+
         [[nodiscard]] StaticPopulationMutation prepare(
             const RenderCore::RenderWorld& world, const StaticWorldPlan& plan, bool coarseChunkInvalidation = false)
         {
@@ -139,6 +249,7 @@ namespace RenderVsg
             mutation.serial = ++mLastPreparedSerial;
             mutation.worldEpoch = plan.worldEpoch;
             mutation.worldRevision = plan.worldRevision;
+            mutation.sourceWorld = &world;
             mutation.valid = plan.valid();
             if (!mutation.valid)
                 return mutation;
@@ -189,7 +300,7 @@ namespace RenderVsg
             const StaticPopulationMutation& mutation, std::vector<Object> realizedUpserts)
         {
             StaticPopulationCommitResult<Object> result;
-            if (!mutation.valid || mutation.serial == 0 || mutation.serial <= mLastCommittedSerial
+            if (!mutation.valid || mutation.sourceWorld != &world || mutation.serial == 0 || mutation.serial <= mLastCommittedSerial
                 || mutation.serial > mLastPreparedSerial || mutation.worldEpoch != world.epoch()
                 || mutation.worldRevision != world.revision() || realizedUpserts.size() != mutation.upserts.size())
                 return result;
@@ -304,6 +415,8 @@ namespace RenderVsg
             mResidentIndex.swap(nextIndex);
             mWorldEpoch = mutation.worldEpoch;
             mWorldRevision = mutation.worldRevision;
+            mSourceWorld = &world;
+            mAssetRevision = world.assetRevision();
             mLastCommittedSerial = mutation.serial;
             result.committed = true;
             return result;
@@ -387,6 +500,8 @@ namespace RenderVsg
         FrameRetirementQueue<Object> mRetirements;
         RenderCore::WorldEpoch mWorldEpoch;
         RenderCore::RenderWorldRevision mWorldRevision;
+        const RenderCore::RenderWorld* mSourceWorld = nullptr;
+        RenderCore::RenderWorldRevision mAssetRevision;
         std::optional<RenderCore::FrameId> mLastSubmittedFrame;
         std::uint64_t mLastPreparedSerial = 0;
         std::uint64_t mLastCommittedSerial = 0;

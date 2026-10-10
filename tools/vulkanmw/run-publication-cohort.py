@@ -44,6 +44,8 @@ FLAGS = {
     'gpu-cull-queue': 'OPENMW_VK_GPU_CULL_QUEUE',
     'gpu-cull-indirect': 'OPENMW_VK_GPU_CULL_INDIRECT',
     'gpu-cull-compact': 'OPENMW_VK_GPU_CULL_COMPACT',
+    'persistent-populations': 'OPENMW_VK_PERSISTENT_POPULATIONS',
+    'object-binding-updates': 'OPENMW_VK_OBJECT_BINDING_UPDATES',
     'shadow-record': 'OPENMW_VK_PARALLEL_SHADOW_RECORD',
     # Process-local diagnostic, not a renderer repair or a global RTSS change.
     'no-overlay': 'DISABLE_RTSS_LAYER',

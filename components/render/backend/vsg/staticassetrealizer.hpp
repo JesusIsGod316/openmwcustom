@@ -10,6 +10,7 @@
 #include <vsg/nodes/Group.h>
 #include <vsg/nodes/MatrixTransform.h>
 #include <vsg/nodes/DepthSorted.h>
+#include <vsg/nodes/VertexIndexDraw.h>
 #include <vsg/utils/SharedObjects.h>
 
 #include <glm/vec3.hpp>
@@ -26,6 +27,8 @@ namespace RenderVsg
         const RenderCore::TextureRecord&, const RenderCore::TextureRealizationKey&)>;
     using MeshPayloadResolver = std::function<const RenderCore::MeshPayload*(
         RenderCore::MeshHandle, RenderCore::ModelNodeIndex)>;
+    using GpuDrawBinder = std::function<vsg::ref_ptr<vsg::VertexIndexDraw>(
+        RenderCore::ModelNodeIndex, const vsg::VertexIndexDraw&)>;
 
     // Backend-private shader-family routing. RenderCore stays source-format and
     // renderer agnostic; CP3B3 can reproduce legacy fixed-function/NIF material
@@ -80,7 +83,8 @@ namespace RenderVsg
     [[nodiscard]] bool updateDeformedAssetRealization(const RenderCore::RenderWorld& world,
         const StaticAssetPlan& plan, const MeshPayloadResolver& resolve,
         std::vector<StaticRealizationResult::MutableDrawStreams>& streams,
-        std::span<const glm::mat4> placements = {}, bool persistentStreams = false);
+        std::span<const glm::mat4> placements = {}, bool persistentStreams = false,
+        std::span<const RenderCore::ModelNodeIndex> gpuNodes = {});
 
     // CP3B3 backend-private VSG realization. RenderCore remains VSG/Vulkan free;
     // the realizer consumes only published neutral records plus the deterministic
@@ -102,7 +106,7 @@ namespace RenderVsg
             const MeshPayloadResolver& meshPayloadResolver = {},
             std::span<const RenderCore::PopulationInstanceRecord> placements = {},
             glm::dvec3 placementOrigin = {}, float opacityMultiplier = 1.0f,
-            bool dynamicData = false) const;
+            bool dynamicData = false, const GpuDrawBinder& gpuBinder = {}) const;
 
     private:
         vsg::ref_ptr<vsg::SharedObjects> mSharedObjects;

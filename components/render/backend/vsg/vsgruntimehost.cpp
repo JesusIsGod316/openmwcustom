@@ -16,6 +16,7 @@
 #include "populationvisibility.hpp"
 #include "populationplacementreuse.hpp"
 #include "parallelrecordtask.hpp"
+#include "gpudeformation.hpp"
 #include "parallelshadowrecord.hpp"
 #include "staticassetconformance.hpp"
 
@@ -164,6 +165,7 @@ namespace RenderVsg
         , mSceneRoot(vsg::Group::create())
         , mStaticRoot(vsg::Group::create())
         , mGpuPopulationCullRoot(vsg::Group::create())
+        , mGpuPopulationUploadRoot(vsg::Group::create())
         , mDynamicRoot(vsg::Group::create())
         , mGuiRoot(vsg::Group::create())
         , mMainOnlyRoot(vsg::Group::create())
@@ -193,6 +195,10 @@ namespace RenderVsg
         mGpuSceneTablesEnabled = std::getenv("OPENMW_VK_GPU_SCENE_TABLES") != nullptr;
         mGpuPopulationCullEnabled = std::getenv("OPENMW_VK_GPU_CULL_INDIRECT") != nullptr;
         mGpuPopulationCompactEnabled = std::getenv("OPENMW_VK_GPU_CULL_COMPACT") != nullptr;
+        mPersistentGpuPopulationsEnabled = std::getenv("OPENMW_VK_PERSISTENT_POPULATIONS") != nullptr;
+        if (mPersistentGpuPopulationsEnabled && !mGpuPopulationCompactEnabled)
+            throw std::invalid_argument(
+                "OPENMW_VK_PERSISTENT_POPULATIONS requires OPENMW_VK_GPU_CULL_COMPACT");
         if (mGpuPopulationCullEnabled && !mGpuSceneTablesEnabled)
             throw std::invalid_argument(
                 "OPENMW_VK_GPU_CULL_INDIRECT requires OPENMW_VK_GPU_SCENE_TABLES");
@@ -343,6 +349,27 @@ namespace RenderVsg
         mWaterProbeCommands = vsg::Group::create();
         mCommandGraph->addChild(mWaterProbeCommands);
         mViewer->assignRecordAndSubmitTaskAndPresentation({ mCommandGraph });
+        const bool gpuDeformation = Misc::environmentFlag<"OPENMW_VK_GPU_DEFORMATION">();
+        if (gpuDeformation)
+        {
+            mGpuDeformationRoot = vsg::Group::create();
+            auto deformation = vsg::CommandGraph::create(mWindow);
+            // Update once, before every shadow/water/main/auxiliary reader.
+            deformation->submitOrder = -9000;
+            deformation->addChild(mGpuDeformationRoot);
+            mViewer->recordAndSubmitTasks.front()->commandGraphs.push_back(deformation);
+        }
+        if (mPersistentGpuPopulationsEnabled)
+        {
+            // Pinned VSG emits shadow pre-render buffers with submitOrder -1;
+            // parallel water/shadow buffers have negative orders too. A distinct
+            // prelude guarantees current transforms before EVERY view consumes
+            // them. Main-camera visibility remains in its original later graph.
+            auto uploads = vsg::CommandGraph::create(mWindow);
+            uploads->submitOrder = -10000;
+            uploads->addChild(mGpuPopulationUploadRoot);
+            mViewer->recordAndSubmitTasks.front()->commandGraphs.push_back(uploads);
+        }
         if (parallelRecording)
         {
             // Keep Viewer presentation and the single checked submission task.
@@ -407,7 +434,9 @@ namespace RenderVsg
             };
             for (const auto& task : mViewer->recordAndSubmitTasks)
                 for (const auto& graph : task->commandGraphs)
-                    addProfile(graph.get(), graph->submitOrder == -4 || graph->submitOrder == -400 ? "reflection"
+                    addProfile(graph.get(), graph->submitOrder == -10000 ? "population_upload"
+                        : graph->submitOrder == -9000 ? "actor_deformation"
+                        : graph->submitOrder == -4 || graph->submitOrder == -400 ? "reflection"
                         : graph->submitOrder == -3 || graph->submitOrder == -300 ? "refraction" : "main");
             if (mOpenMwViewState) addProfile(mOpenMwViewState->preRenderCommandGraph.get(), "shadows");
         }
@@ -431,6 +460,8 @@ namespace RenderVsg
             mDynamicRoot->children.clear();
         if (mGpuPopulationCullRoot)
             mGpuPopulationCullRoot->children.clear();
+        if (mGpuPopulationUploadRoot)
+            mGpuPopulationUploadRoot->children.clear();
         if (mGuiRoot)
             mGuiRoot->children.clear();
         mDynamicPublishedRoot = {};
@@ -601,14 +632,27 @@ namespace RenderVsg
     bool VsgRuntimeHost::synchronizeStaticWorld(const RenderCore::RenderWorld& world)
     {
         Debug::GameplayDiagnostics::Stage diagnostic("static_sync");
-        if (mStaticSyncState.unchanged(world, mOptions.staticPlan)
-            && !std::getenv("OPENMW_V4_REBUILD_STATIC_PLANS"))
-            return true;
         const char* coarsePopulationControl = std::getenv("OPENMW_V4_COARSE_POPULATION_REBUILD_CONTROL");
         const bool coarsePopulationInvalidation = coarsePopulationControl && std::string_view(coarsePopulationControl) == "1";
         const bool incremental = std::getenv("OPENMW_V4_INCREMENTAL_POPULATIONS")
             && !coarsePopulationInvalidation && !std::getenv("OPENMW_V4_LEGACY_POPULATION_PLAN_CONTROL");
         const bool incrementalInstances = incremental && std::getenv("OPENMW_V4_INCREMENTAL_INSTANCES");
+        const bool retainedDiscovery = mPersistentGpuPopulationsEnabled && incremental
+            && !std::getenv("OPENMW_V4_REBUILD_STATIC_PLANS");
+        const bool unchangedInstances = mStaticSyncState.unchanged(world, mOptions.staticPlan, !retainedDiscovery);
+        const bool unchangedPopulations = !retainedDiscovery || (!mGpuSceneTables.populationDiscoveryRequired()
+            && mGpuSceneTables.populationChunks().empty());
+        if (unchangedInstances && unchangedPopulations && !std::getenv("OPENMW_V4_REBUILD_STATIC_PLANS"))
+            return true;
+        const auto acknowledge = [&] {
+            if (retainedDiscovery && !mGpuSceneTables.acknowledgePopulations(world))
+            {
+                mLastDiagnostic = "persistent population delta acknowledgement was stale";
+                return false;
+            }
+            mStaticSyncState.synchronized();
+            return true;
+        };
         const StaticWorldPlan worldPlan = [&] {
             Debug::GameplayDiagnostics::Stage planning("static_plan");
             if (incrementalInstances) return StaticWorldPlan{}; // discovery is performed by residency below
@@ -626,6 +670,9 @@ namespace RenderVsg
         }();
         const StaticPopulationMutation populationMutation = [&] {
             Debug::GameplayDiagnostics::Stage planning("population_reconcile");
+            if (retainedDiscovery && !mGpuSceneTables.populationDiscoveryRequired())
+                return mStaticPopulationResidency.prepareChangedChunks(world, mOptions.staticPlan,
+                    mGpuSceneTables.populationChunks());
             return incremental ? mStaticPopulationResidency.prepareIncremental(world, mOptions.staticPlan)
                 : mStaticPopulationResidency.prepare(world, worldPlan, coarsePopulationInvalidation);
         }();
@@ -634,6 +681,9 @@ namespace RenderVsg
                 {"groups", std::to_string(populationMutation.orderedPopulations.size())},
                 {"plans_reused", std::to_string(incremental ? populationMutation.reusedPlans : worldPlan.reusedPopulationPlans)},
                 {"incremental", std::to_string(incremental)},
+                {"targeted_chunks", std::to_string(populationMutation.targetedChunks)},
+                {"chunks_inspected", std::to_string(populationMutation.chunksInspected)},
+                {"cached_asset_plans", std::to_string(populationMutation.cachedAssetPlans)},
                 {"instances", std::to_string(mutation.orderedInstances.size())},
                 {"instance_plans_reused", std::to_string(mutation.reusedPlans)},
                 {"incremental_instances", std::to_string(incrementalInstances)}});
@@ -655,8 +705,7 @@ namespace RenderVsg
                 mLastDiagnostic = "unchanged population acknowledgement failed";
                 return false;
             }
-            mStaticSyncState.synchronized();
-            return true;
+            return acknowledge();
         }
 
         // This cache owns descriptors/configurators, not just cheap lookup keys.
@@ -665,7 +714,7 @@ namespace RenderVsg
         const bool placementDeltas = Misc::environmentFlag<"OPENMW_VK_POPULATION_DELTAS">();
         bool resourceChanges = !mutation.upserts.empty() || !mutation.removals.empty()
             || !populationMutation.removals.empty();
-        if (!placementDeltas || resourceChanges)
+        if ((!placementDeltas && !mPersistentGpuPopulationsEnabled) || resourceChanges)
         {
             Debug::GameplayDiagnostics::ProfileScope profile("static_shared_prune");
             mSharedObjects->prune();
@@ -765,6 +814,14 @@ namespace RenderVsg
         std::vector<StaticPopulationResident> populationReplacements;
         std::size_t placementNodesReused = 0, placementNodesBuilt = 0;
         std::size_t gpuCullGroups = 0, gpuCullPlacements = 0, gpuIndirectCommands = 0, gpuCompactGroups = 0;
+        struct PendingPopulationUpdate
+        {
+            std::shared_ptr<PersistentGpuPopulation> resident;
+            std::shared_ptr<const PersistentGpuPopulation::Update> update;
+            vsg::ref_ptr<MainViewVisibility> bounds;
+        };
+        std::vector<PendingPopulationUpdate> pendingPopulationUpdates;
+        std::size_t gpuPopulationsReused = 0, gpuRowsChanged = 0, gpuUploadBytes = 0;
         std::size_t gpuGroupedEligible = 0, gpuGroupedSingleton = 0, gpuGroupedMixedMasks = 0,
                     gpuGroupedOrderSensitive = 0;
         const bool placementFrustum = mNativeFrustumEnabled
@@ -810,6 +867,25 @@ namespace RenderVsg
                 });
             const bool p3GroupedPopulation = mGpuPopulationCullEnabled && plan.placements.size() > 1
                 && !mixedTraversalMasks && !orderSensitivePopulation;
+            if (mPersistentGpuPopulationsEnabled && p3GroupedPopulation && sameAsset
+                && oldResident && oldResident->gpuPlacements)
+            {
+                std::string reason;
+                if (auto update = oldResident->gpuPlacements->prepare(plan, reason))
+                {
+                    vsg::ref_ptr<MainViewVisibility> bounds;
+                    if (oldResident->visibility && !oldResident->visibility->children.empty())
+                        bounds = dynamic_cast<MainViewVisibility*>(oldResident->visibility->children.front().node.get());
+                    gpuRowsChanged += update->stats.changedRows;
+                    gpuUploadBytes += update->stats.uploadBytes;
+                    pendingPopulationUpdates.push_back({oldResident->gpuPlacements, std::move(update), std::move(bounds)});
+                    populationReplacements.push_back(*oldResident);
+                    ++gpuPopulationsReused;
+                    continue;
+                }
+                if (Debug::GameplayDiagnostics::sampling())
+                    Debug::GameplayDiagnostics::recordEvent("persistent_population_fallback", {{"reason", reason}});
+            }
             if (mGpuPopulationCullEnabled)
             {
                 if (p3GroupedPopulation) ++gpuGroupedEligible;
@@ -836,7 +912,8 @@ namespace RenderVsg
                 if (mGpuPopulationCullEnabled)
                     gpuCull = enableGpuPopulationCull(world, plan, graphicsRoot,
                         *mWindow->getOrCreateDevice(), mView->viewID,
-                        mGpuPopulationCullViewData, mGpuPopulationCompactEnabled, gpuCullFallback);
+                        mGpuPopulationCullViewData, mGpuPopulationCompactEnabled, gpuCullFallback,
+                        mPersistentGpuPopulationsEnabled);
             };
             if (reuseAsset) realized.root = oldResident->placementFreeAsset;
             else realized = requiresIndividualPlacement
@@ -931,6 +1008,7 @@ namespace RenderVsg
                     auto package = vsg::Group::create();
                     package->addChild(group);
                     package->addChild(gpuCull.compute);
+                    if (gpuCull.uploads) package->addChild(gpuCull.uploads);
                     compileRoot = package;
                 }
                 if (!prepareGraph(std::move(compileRoot), subject))
@@ -965,7 +1043,55 @@ namespace RenderVsg
             populationReplacements.push_back({ std::move(visibility),
                 persistentPlacements && requiresIndividualPlacement ? realized.root : vsg::ref_ptr<vsg::Group>{},
                 std::move(placementResidents),
-                gpuCull.active ? std::move(gpuCull.compute) : vsg::ref_ptr<vsg::Group>{} });
+                gpuCull.active ? std::move(gpuCull.compute) : vsg::ref_ptr<vsg::Group>{},
+                std::move(gpuCull.uploads), std::move(gpuCull.persistent) });
+        }
+
+        const auto publishPopulationUpdates = [&] {
+            for (const auto& pending : pendingPopulationUpdates)
+            {
+                if (!pending.resident->publish(pending.update))
+                {
+                    mLastDiagnostic = "persistent GPU population update was stale at publication";
+                    return false;
+                }
+                if (pending.bounds)
+                {
+                    pending.bounds->minimum = pending.update->minimum;
+                    pending.bounds->maximum = pending.update->maximum;
+                    // Shader-displaced/unusual geometry keeps fail-open status.
+                    pending.bounds->occluders.clear();
+                }
+            }
+            if (Debug::GameplayDiagnostics::sampling() && mPersistentGpuPopulationsEnabled)
+                Debug::GameplayDiagnostics::recordEvent("persistent_population_updates", {
+                    {"graphs_reused", std::to_string(gpuPopulationsReused)},
+                    {"rows_changed", std::to_string(gpuRowsChanged)},
+                    {"upload_bytes", std::to_string(gpuUploadBytes)}});
+            return true;
+        };
+        // Placement-only publication does not change graph identity/order or
+        // inventories. Keep the complete compiled traversal list, not merely
+        // its leaves. Structural/asset changes retain the transactional path.
+        bool populationOrderUnchanged = populationMutation.orderedPopulations.size()
+            == mStaticPopulationResidency.residentCount();
+        std::size_t populationOrderIndex = 0;
+        mStaticPopulationResidency.forEachResident([&](const auto& plan, const auto&) {
+            populationOrderUnchanged &= populationOrderIndex < populationMutation.orderedPopulations.size()
+                && populationIdentity(plan) == populationMutation.orderedPopulations[populationOrderIndex];
+            ++populationOrderIndex;
+        });
+        if (mPersistentGpuPopulationsEnabled && !resourceChanges && populationOrderUnchanged
+            && mutation.upserts.empty() && mutation.removals.empty() && populationMutation.removals.empty()
+            && pendingPopulationUpdates.size() == populationMutation.upserts.size())
+        {
+            if (!mStaticPopulationResidency.commit(world, populationMutation, std::move(populationReplacements)).committed
+                || !mStaticResidency.commit(world, mutation, {}).committed)
+            {
+                mLastDiagnostic = "persistent placement-only residency publication failed";
+                return false;
+            }
+            return publishPopulationUpdates() && acknowledge();
         }
 
         if (!pendingCompile->children.empty())
@@ -993,6 +1119,7 @@ namespace RenderVsg
         vsg::Group::Children nextChildren;
         nextChildren.reserve(mutation.orderedInstances.size() + populationMutation.orderedPopulations.size());
         vsg::Group::Children nextGpuCullChildren;
+        vsg::Group::Children nextGpuUploadChildren;
         if (mGpuPopulationCullEnabled)
             nextGpuCullChildren.reserve(populationMutation.orderedPopulations.size());
         for (const RenderCore::InstanceHandle handle : mutation.orderedInstances)
@@ -1022,6 +1149,8 @@ namespace RenderVsg
                 nextChildren.push_back(populationReplacements[index].visibility);
                 if (populationReplacements[index].gpuCullCompute)
                     nextGpuCullChildren.push_back(populationReplacements[index].gpuCullCompute);
+                if (populationReplacements[index].gpuUploads)
+                    nextGpuUploadChildren.push_back(populationReplacements[index].gpuUploads);
                 continue;
             }
             const StaticPopulationResident* resident = mStaticPopulationResidency.residentObject(identity);
@@ -1033,6 +1162,8 @@ namespace RenderVsg
             nextChildren.push_back(resident->visibility);
             if (resident->gpuCullCompute)
                 nextGpuCullChildren.push_back(resident->gpuCullCompute);
+            if (resident->gpuUploads)
+                nextGpuUploadChildren.push_back(resident->gpuUploads);
         }
 
         // Cache only this generation's candidates; old roots remain fence-owned
@@ -1063,26 +1194,29 @@ namespace RenderVsg
             }
             else nextChildren.push_back(sealPipelineInventory(retained));
         }
-        if ((!populationMutation.upserts.empty() || !populationMutation.removals.empty())
-            && !mStaticPopulationResidency.commit(world, populationMutation, std::move(populationReplacements)).committed)
+        if (!mStaticPopulationResidency.commit(world, populationMutation, std::move(populationReplacements)).committed)
         {
             mLastDiagnostic = "static population changed while its replacement graph was being realized";
             return false;
         }
-        if ((!mutation.upserts.empty() || !mutation.removals.empty())
-            && !mStaticResidency.commit(world, mutation, std::move(replacements)).committed)
+        if (!mStaticResidency.commit(world, mutation, std::move(replacements)).committed)
         {
             mLastDiagnostic = "static world changed while its replacement graph was being realized";
             return false;
         }
+        // All allocations, compilation and residency checks have succeeded.
+        // Only now publish data to retained commands, before workers record.
+        if (!publishPopulationUpdates()) return false;
         if (nextInventory) mStaticPipelineInventory = std::move(*nextInventory);
         else mStaticPipelineInventory = {};
         mStaticRoot->children.swap(nextChildren);
         if (mGpuPopulationCullRoot)
             mGpuPopulationCullRoot->children.swap(nextGpuCullChildren);
+        if (mGpuPopulationUploadRoot)
+            mGpuPopulationUploadRoot->children.swap(nextGpuUploadChildren);
         mVisibilityNodes.swap(nextVisibility);
         nextChildren.clear(); // release the old traversal references before pruning
-        if (!placementDeltas || resourceChanges)
+        if ((!placementDeltas && !mPersistentGpuPopulationsEnabled) || resourceChanges)
         {
             Debug::GameplayDiagnostics::ProfileScope profile("static_shared_prune");
             mSharedObjects->prune();
@@ -1101,8 +1235,7 @@ namespace RenderVsg
                 {"gpu_grouped_singleton", std::to_string(gpuGroupedSingleton)},
                 {"gpu_grouped_mixed_masks", std::to_string(gpuGroupedMixedMasks)},
                 {"gpu_grouped_order_sensitive", std::to_string(gpuGroupedOrderSensitive)}});
-        mStaticSyncState.synchronized();
-        return true;
+        return acknowledge();
     }
 
     bool VsgRuntimeHost::synchronizePopulationVisibility(
@@ -1150,6 +1283,9 @@ namespace RenderVsg
         unsigned reusedActors = 0, rebuiltActors = 0;
         const bool persistentActors = Misc::environmentFlag<"OPENMW_VK_PERSISTENT_ACTORS">()
             && !std::getenv("OPENMW_V4_REBUILD_ACTOR_PLANS_CONTROL");
+        const bool gpuActors = persistentActors && bool(mGpuDeformationRoot);
+        if (mGpuDeformationRoot) mGpuDeformationRoot->children.clear();
+        mScheduledDeformations.clear();
         const PersistentActorWorldPlan* retainedPlan = nullptr;
         const DynamicActorWorldPlan plan = [&] {
             Debug::GameplayDiagnostics::Stage planningDiagnostic("actor_plan");
@@ -1227,7 +1363,7 @@ namespace RenderVsg
                 auto* workers = parallelActors ? mActorPreparationWorkers.get() : nullptr;
                 if (retainedPlan)
                     preparedActors = preparePersistentActors(world, frame,
-                        std::span(retainedPlan->actors).subspan(actorIndex, count), workers);
+                        std::span(retainedPlan->actors).subspan(actorIndex, count), workers, gpuActors);
                 else
                     preparedActors = prepareDynamicActors(world, frame,
                         std::span<const DynamicActorPlan>(plan.actors).subspan(actorIndex, count), workers, actorStreams);
@@ -1240,7 +1376,7 @@ namespace RenderVsg
                 mLastDiagnostic = "per-actor disabled lighting is not implemented by the CP3D host";
                 return false;
             }
-            const auto& prepared = preparedActors[actorIndex % preparationBatchSize];
+            auto& prepared = preparedActors[actorIndex % preparationBatchSize];
             const auto* transform = prepared.transform;
             const auto* evaluatedAsset = prepared.assetPlan();
             const auto& deformed = prepared.deformed;
@@ -1258,15 +1394,43 @@ namespace RenderVsg
             const bool canReuse = !std::getenv("OPENMW_V4_REBUILD_ACTORS") && resident.published && resident.contract
                 && resident.epoch == world.epoch() && resident.opacity == transform->opacity
                 && dynamicActorPlanCurrent(world, *resident.contract);
-            const bool updated = canReuse && [&] {
+            std::vector<RenderCore::ModelNodeIndex> gpuNodes;
+            for (const auto& input : prepared.gpuDeformations) gpuNodes.push_back(input.node);
+            bool gpuCurrent = canReuse && resident.gpuDeformations.size() == prepared.gpuDeformations.size();
+            if (gpuCurrent)
+                for (std::size_t i=0;i<prepared.gpuDeformations.size();++i)
+                    gpuCurrent &= resident.gpuDeformations[i]->update(prepared.gpuDeformations[i]);
+            const bool updated = canReuse && gpuCurrent && [&] {
                 Debug::GameplayDiagnostics::ProfileScope streamProfile("actor_stream_update");
                 return updateDeformedAssetRealization(world, *evaluatedAsset, resolveStreams, resident.mutableDraws,
-                    prepared.drawTransforms, prepared.retainedAsset != nullptr);
+                    prepared.drawTransforms, prepared.retainedAsset != nullptr, gpuNodes);
             }();
             if (!updated)
             {
                 Debug::GameplayDiagnostics::ProfileScope rebuildProfile("actor_resident_rebuild");
                 ++rebuiltActors;
+                std::vector<std::shared_ptr<GpuDeformation>> gpu;
+                std::string gpuDiagnostic;
+                for (const auto& input : prepared.gpuDeformations)
+                {
+                    auto binding = GpuDeformation::create(*mWindow->getOrCreateDevice(), input, gpuDiagnostic);
+                    if (!binding) { gpu.clear(); break; }
+                    gpu.push_back(std::move(binding));
+                }
+                const auto useCpu = [&] {
+                    auto cpu = preparePersistentActors(world, frame,
+                        std::span(retainedPlan->actors).subspan(actorIndex, 1), nullptr, false);
+                    prepared = std::move(cpu.front());
+                    evaluatedAsset = prepared.assetPlan();
+                    gpu.clear(); gpuNodes.clear();
+                };
+                if (gpu.size() != prepared.gpuDeformations.size()) useCpu();
+                if (!prepared.diagnostic.empty()) { mLastDiagnostic = prepared.diagnostic; return false; }
+                const GpuDrawBinder binder = gpu.empty() ? GpuDrawBinder{} : GpuDrawBinder{
+                    [&](RenderCore::ModelNodeIndex node, const vsg::VertexIndexDraw& command) {
+                        for (const auto& binding : gpu) if (binding->node() == node) return binding->bind(command);
+                        return vsg::ref_ptr<vsg::VertexIndexDraw>(const_cast<vsg::VertexIndexDraw*>(&command));
+                    }};
                 // Full draw metadata is materialized only when a GPU-safe
                 // resident is constructed/rebound, not on every pose update.
                 std::optional<StaticAssetPlan> coldAsset;
@@ -1278,7 +1442,16 @@ namespace RenderVsg
                 }
                 StaticRealizationResult realized = realizeStaticAssetConformant(
                     world, actor.model, coldAsset ? *coldAsset : *evaluatedAsset, mTextureResolver, frameSharedObjects, resolve, {}, {},
-                    transform->opacity, true);
+                    transform->opacity, true, {}, binder);
+                if (!realized.valid() && !gpu.empty())
+                {
+                    useCpu();
+                    coldAsset = *evaluatedAsset;
+                    for (std::size_t i=0;i<coldAsset->draws.size();++i)
+                        coldAsset->draws[i].worldTransform = prepared.drawTransforms[i];
+                    realized = realizeStaticAssetConformant(world, actor.model, *coldAsset,
+                        mTextureResolver, frameSharedObjects, resolve, {}, {}, transform->opacity, true);
+                }
                 if (!realized.valid() || realized.stats.runtimeContextEffects != 0
                     || realized.stats.unsupportedTextureBindings != 0)
                 {
@@ -1294,19 +1467,27 @@ namespace RenderVsg
                 resident.published = maskedNode(placementMask(castsShadow, actor.semanticFlags), placed);
                 resident.placement = std::move(placed);
                 resident.mutableDraws = std::move(realized.mutableDraws);
+                resident.gpuDeformations = std::move(gpu);
+                for (const auto& binding : resident.gpuDeformations) pendingCompile->addChild(binding->commands());
                 resident.contract = actor;
                 resident.epoch = world.epoch();
                 resident.opacity = transform->opacity;
                 pendingCompile->addChild(resident.published);
             }
             else ++reusedActors;
+            for (const auto& binding : resident.gpuDeformations)
+                if (binding->dirty())
+                {
+                    mGpuDeformationRoot->addChild(binding->commands());
+                    mScheduledDeformations.push_back(binding);
+                }
             if (!dynamicActorPlanCurrent(world, actor))
             {
                 mLastDiagnostic = "dynamic actor changed while its frame graph was being realized";
                 return false;
             }
             resident.placement->matrix = toVsgMatrix(staticInstancePlacementMatrix(transform->current));
-            if (Debug::GameplayDiagnostics::detailedSampling() && diagnosticActors++ < 16)
+            if (resident.gpuDeformations.empty() && Debug::GameplayDiagnostics::detailedSampling() && diagnosticActors++ < 16)
             {
                 // Compare the CPU deformation with its actual resident streams.
                 // Bounded vertex samples, not a pixel or full mesh parity claim.
@@ -2768,13 +2949,14 @@ namespace RenderVsg
         if (submission.submit != VK_SUCCESS)
             return finish(RenderCore::RenderFrameResult::Failed,
                 "Vulkan record/submit failed with VkResult " + std::to_string(submission.submit));
+        for (const auto& binding : mScheduledDeformations) binding->submitted();
         mWaitedIdle = false;
         Debug::GameplayDiagnostics::ProfileScope retirementProfile("resource_mark_submitted");
         if (!mCompletion.registerSubmission(*mViewer, frame.frameId())
+            || ((mGpuPopulationCullEnabled || !guiOnly) && !mStaticPopulationResidency.markSubmitted(frame.frameId()))
             || (!guiOnly && (!mImmediateEffectResidents.markSubmitted(frame.frameId())
             || !mDynamicActorResidents.markSubmitted(frame.frameId())
-            || !mStaticResidency.markSubmitted(frame.frameId())
-            || !mStaticPopulationResidency.markSubmitted(frame.frameId()))))
+            || !mStaticResidency.markSubmitted(frame.frameId()))))
         {
             // Submission has already happened. Synchronize before returning so
             // an untracked in-flight frame can never make later destruction or
@@ -2783,6 +2965,10 @@ namespace RenderVsg
             return finish(RenderCore::RenderFrameResult::Failed,
                 "submitted frame could not be registered; device was synchronized for safety");
         }
+        if (mPersistentGpuPopulationsEnabled)
+            mStaticPopulationResidency.forEachResident([](const auto&, auto& resident) {
+                if (resident.gpuPlacements) resident.gpuPlacements->submitted();
+            });
         if (!guiOnly)
             mDynamicLastUse = frame.frameId();
         if (!guiOnly) mPersistentDrawScene.markSubmitted(frame.frameId());

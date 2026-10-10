@@ -324,7 +324,6 @@ if (WIN32 AND BUILD_OPENMW)
     INSTALL(FILES
         ../../tools/v4/cp4/gameplay-diagnostics.py
         ../../tools/v4/cp4/diagnosticconfig.py
-        ../../tools/v4/cp4/Start-CP4F-Test.cmd
         ../../tools/v4/cp4/runtime-diagnostics.py
         ../../tools/v4/cp4/shader_resources.py
         ../../tools/v4/cp4/run-runtime-qc.ps1
@@ -333,6 +332,9 @@ if (WIN32 AND BUILD_OPENMW)
         ../../tools/v4/cp4/RENDERING-REPAIR.md
         ../../tools/v4/cp4/RUNTIME-DIAGNOSTICS.md
         DESTINATION ".")
+    if(NOT OPENMW_ENABLE_V4_VULKAN_RUNTIME)
+        INSTALL(FILES ../../tools/v4/cp4/Start-CP4F-Test.cmd DESTINATION ".")
+    endif()
 
     # VulkanMW packaging contract: every installed Windows Vulkan build carries
     # the same automated benchmark launcher and driver used for matched hardware
@@ -340,12 +342,7 @@ if (WIN32 AND BUILD_OPENMW)
     if(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
         INSTALL(FILES
             ../../tools/vulkanmw/START-VulkanMW-Test.bat
-            ../../tools/vulkanmw/START-VulkanMW-Producer-Test.bat
-            ../../tools/vulkanmw/START-VulkanMW-Supported-Producers-Test.bat
-            ../../tools/vulkanmw/START-VulkanMW-P2-Test.bat
-            ../../tools/vulkanmw/START-VulkanMW-P3-Test.bat
-            ../../tools/vulkanmw/START-VulkanMW-P3B-Test.bat
-            ../../tools/vulkanmw/START-VulkanMW-Play.bat
+            ../../tools/vulkanmw/START-VulkanMW-Benchmark.bat
             ../../tools/v4/cp4/architecture-benchmark.py
             ../../tools/v4/cp4/architecture-benchmark.lua
             DESTINATION ".")
@@ -356,6 +353,7 @@ if (WIN32 AND BUILD_OPENMW)
             ../../tools/vulkanmw/run-publication-cohort.py
             ../../tools/vulkanmw/vulkan-profile.py
             ../../tools/vulkanmw/vulkan-play.py
+            ../../tools/vulkanmw/vulkan-user-profile.py
             ../../tools/vulkanmw/vulkan-clean-settings.cfg
             ../../tools/vulkanmw/frame-profile-report.py
             DESTINATION "tools/vulkanmw")

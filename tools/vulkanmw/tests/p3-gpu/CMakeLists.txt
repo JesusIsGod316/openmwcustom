@@ -8,6 +8,7 @@ find_package(Threads REQUIRED)
 get_filename_component(ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
 add_library(p3-real-source STATIC
     "${ROOT}/components/render/backend/vsg/gpupopulationcull.cpp"
+    "${ROOT}/components/render/backend/vsg/gpudeformation.cpp"
     "${ROOT}/components/render/backend/vsg/staticassetconformance.cpp"
     "${ROOT}/components/render/backend/vsg/staticassetrealizer.cpp"
     "${ROOT}/components/render/backend/vsg/legacymaterialshader.cpp"
@@ -27,6 +28,15 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_link_options(p3-real-gpu PRIVATE -Wl,--gc-sections)
 endif()
 enable_testing()
+add_executable(native-deformation-gpu ../native-deformation-gpu-tests.cpp)
+target_link_libraries(native-deformation-gpu PRIVATE p3-real-source)
+add_test(NAME vulkanmw-native-deformation-gpu COMMAND native-deformation-gpu)
+set_tests_properties(vulkanmw-native-deformation-gpu PROPERTIES
+    ENVIRONMENT "VK_VALIDATION_VALIDATE_SYNC=1"
+    FAIL_REGULAR_EXPRESSION "VUID-|SYNC-HAZARD|Validation Error")
 foreach(inventory IN ITEMS none pipeline resource both)
     add_test(NAME p3-real-gpu-${inventory} COMMAND p3-real-gpu ${inventory} --gpu)
+    set_tests_properties(p3-real-gpu-${inventory} PROPERTIES
+        ENVIRONMENT "VK_VALIDATION_VALIDATE_SYNC=1"
+        FAIL_REGULAR_EXPRESSION "VUID-|SYNC-HAZARD|Validation Error")
 endforeach()

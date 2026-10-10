@@ -115,6 +115,7 @@ namespace SceneUtil
 
     void Skeleton::setActive(ActiveType active)
     {
+        if (mActive != active) publishRenderMutation();
         mActive = active;
     }
 
@@ -125,6 +126,9 @@ namespace SceneUtil
 
     void Skeleton::markDirty()
     {
+        // A hierarchy edit invalidates load-bound producer bindings, not just
+        // the skinning bone cache. Submitted immutable render frames survive.
+        invalidateRenderMutationBindings();
         mLastFrameNumber = 0;
         mBoneCache.clear();
         mBoneCacheInit = false;

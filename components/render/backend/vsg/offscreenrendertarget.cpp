@@ -118,19 +118,20 @@ namespace RenderVsg
                 = { { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT } };
         }
 
-        // A sampled depth attachment has both early and late depth writes.
-        // Cover them before the water pass samples, and cover next-frame reuse.
+        // Every depth attachment has clear/test writes, even when it is not
+        // sampled. Cover its initial transition/loadOp and prior-frame writes
+        // as well as later sampled reads; sampleDepth only selects store/layout.
         const VkPipelineStageFlags writes = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-            | (sampleDepth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT : 0u);
+            | (requestedDepthFormat ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT : 0u);
         const VkAccessFlags writeAccess = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
-            | (sampleDepth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : VkAccessFlagBits{});
+            | (requestedDepthFormat ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : VkAccessFlagBits{});
         vsg::RenderPass::Dependencies dependencies{
-            { VK_SUBPASS_EXTERNAL, 0, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                writes, VK_ACCESS_SHADER_READ_BIT,
-                writeAccess, VK_DEPENDENCY_BY_REGION_BIT },
+            { VK_SUBPASS_EXTERNAL, 0, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | writes,
+                writes, VK_ACCESS_SHADER_READ_BIT | writeAccess,
+                writeAccess, 0 },
             { 0, VK_SUBPASS_EXTERNAL, writes,
                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, writeAccess,
-                VK_ACCESS_SHADER_READ_BIT, VK_DEPENDENCY_BY_REGION_BIT },
+                VK_ACCESS_SHADER_READ_BIT, 0 },
         };
         auto renderPass = vsg::RenderPass::create(
             device, attachments, vsg::RenderPass::Subpasses{ subpass }, dependencies);

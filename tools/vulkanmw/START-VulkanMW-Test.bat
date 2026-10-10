@@ -6,8 +6,7 @@ title VulkanMW Automated Test / Benchmark
 rem New packages use the settings-isolated cumulative producer A/B/B/A harness.
 rem The legacy single-run driver below remains for older launcher-only installs.
 if exist "%~dp0tools\vulkanmw\run-producer-queues.py" (
-    call "%~dp0START-VulkanMW-Producer-Test.bat" %*
-    exit /b
+    goto ProducerDriver
 )
 
 rem Permanent VulkanMW benchmark launcher.
@@ -112,3 +111,29 @@ echo "%OUT%.zip"
 echo.
 pause
 exit /b 0
+
+:ProducerDriver
+set "PYMODE="
+py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)" >nul 2>&1
+if not errorlevel 1 set "PYMODE=py"
+if not defined PYMODE (
+    python -c "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)" >nul 2>&1
+    if not errorlevel 1 set "PYMODE=python"
+)
+if not defined PYMODE (
+    echo ERROR: Python 3.11 or newer is required.
+    pause
+    exit /b 1
+)
+echo VulkanMW same-executable A/B/B/A comparison.
+echo Default: Stage 1 object binding updates versus retained-population control, with isolated test settings.
+echo No normal save is loaded. An explicit comparison option overrides this default.
+if "%PYMODE%"=="py" (
+    py -3 "%~dp0tools\vulkanmw\run-producer-queues.py" --package "%~dp0." --default-mode object-binding-updates %*
+) else (
+    python "%~dp0tools\vulkanmw\run-producer-queues.py" --package "%~dp0." --default-mode object-binding-updates %*
+)
+set "RESULT=%ERRORLEVEL%"
+if not "%RESULT%"=="0" echo Benchmark exited with code %RESULT%. Evidence remains under Benchmarks.
+pause
+exit /b %RESULT%

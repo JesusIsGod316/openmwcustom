@@ -2,6 +2,7 @@
 #include "rotatecontroller.hpp"
 
 #include <components/debug/debuglog.hpp>
+#include <components/misc/environmentflag.hpp>
 
 #include <osgAnimation/Bone>
 #include <osg/Math>
@@ -464,6 +465,25 @@ namespace MWRender
             applyBoneBlend(node);
 
         SceneUtil::NodeCallback<BoneAnimBlendController, osgAnimation::Bone*>::traverse(node, nv);
+    }
+
+    unsigned NifAnimBlendController::renderMutationMask() const noexcept
+    {
+        return Misc::environmentFlag<"OPENMW_VK_OBJECT_BINDING_UPDATES">()
+            ? SceneUtil::RenderTransform : SceneUtil::RenderUntracked;
+    }
+
+    bool NifAnimBlendController::run(osg::Object* object, osg::Object* data)
+    {
+        if (!Misc::environmentFlag<"OPENMW_VK_OBJECT_BINDING_UPDATES">())
+            return SceneUtil::NodeCallback<NifAnimBlendController, NifOsg::MatrixTransform*>::run(object, data);
+        auto* node = static_cast<NifOsg::MatrixTransform*>(object);
+        const osg::Matrix before = node->getMatrix();
+        // Always evaluate animation and nested callbacks. Only publication is
+        // suppressed for an identical final pose; gameplay timing is unchanged.
+        operator()(node, data->asNodeVisitor());
+        if (node->getMatrix() != before) publishRenderMutation();
+        return true;
     }
 
     void NifAnimBlendController::operator()(NifOsg::MatrixTransform* node, osg::NodeVisitor* nv)

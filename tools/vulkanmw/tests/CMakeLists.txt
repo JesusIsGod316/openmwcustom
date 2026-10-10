@@ -19,6 +19,8 @@ add_test(NAME vulkanmw-p3-graph-boundary
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-p3-graph-boundary.py)
 add_test(NAME vulkanmw-producer-launcher
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-producer-launcher.py)
+add_test(NAME vulkanmw-normal-benchmark
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-normal-benchmark.py)
 add_test(NAME vulkanmw-supported-continuous-producers
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-supported-continuous-producers.py)
 add_test(NAME vulkanmw-p1-runtime-repairs
@@ -36,8 +38,10 @@ else()
 endif()
 add_test(NAME vulkanmw-phase3c-metadata COMMAND vulkanmw-phase3c-metadata-tests)
 
-foreach(name IN ITEMS population-delta actor-preparation skeletal-object frame-profile group-publication fx-interface frame-resource-pool change-driven producer-queue gpu-scene-tables pipeline-audit-gate)
-    if(name STREQUAL "actor-preparation")
+foreach(name IN ITEMS geometry-sanitization population-delta population-bindings population-event actor-preparation skeletal-object frame-profile group-publication fx-interface frame-resource-pool change-driven producer-queue gpu-scene-tables pipeline-audit-gate)
+    if(name STREQUAL "geometry-sanitization")
+        set(source "geometry-sanitization-tests.cpp")
+    elseif(name STREQUAL "actor-preparation")
         set(source "../../v4/cp4/actor-preparation-tests.cpp")
     elseif(name STREQUAL "skeletal-object")
         set(source "skeletal-object-tests.cpp")
@@ -57,6 +61,10 @@ foreach(name IN ITEMS population-delta actor-preparation skeletal-object frame-p
         set(source "gpu-scene-tables-tests.cpp")
     elseif(name STREQUAL "pipeline-audit-gate")
         set(source "pipeline-audit-gate-tests.cpp")
+    elseif(name STREQUAL "population-bindings")
+        set(source "population-bindings-tests.cpp")
+    elseif(name STREQUAL "population-event")
+        set(source "population-event-tests.cpp")
     else()
         set(source "population-delta-tests.cpp")
     endif()

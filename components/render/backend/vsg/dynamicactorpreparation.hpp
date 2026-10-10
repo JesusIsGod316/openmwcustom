@@ -3,6 +3,7 @@
 
 #include "dynamicactorplan.hpp"
 #include <components/rendercore/deformation.hpp>
+#include <components/rendercore/gpudeformationinput.hpp>
 #include <components/rendercore/boundedparallelfor.hpp>
 #include <unordered_map>
 #include <span>
@@ -18,6 +19,7 @@ namespace RenderVsg
         bool streamsOnly = false;
         const StaticAssetPlan* retainedAsset = nullptr;
         std::vector<glm::mat4> drawTransforms;
+        std::vector<RenderCore::GpuDeformationInput> gpuDeformations;
         mutable std::unordered_map<std::uint32_t, RenderCore::MeshPayload> realizationPayloads;
 
         const StaticAssetPlan* assetPlan() const noexcept { return retainedAsset ? retainedAsset : asset ? &*asset : nullptr; }
@@ -96,7 +98,7 @@ namespace RenderVsg
 
     inline std::vector<PreparedDynamicActor> preparePersistentActors(const RenderCore::RenderWorld& world,
         const RenderCore::FrameRenderState& frame, std::span<const std::shared_ptr<const DynamicActorPlan>> actors,
-        RenderCore::BoundedParallelFor* workers = nullptr)
+        RenderCore::BoundedParallelFor* workers = nullptr, bool gpuDeformation = false)
     {
         std::vector<PreparedDynamicActor> result(actors.size());
         const auto prepare = [&](std::size_t index) {
@@ -136,6 +138,21 @@ namespace RenderVsg
                     [&](const auto& draw) { return draw.node == binding.node; })) continue;
                 const auto* morph = binding.morphs
                     ? RenderCore::deformation_detail::findMorph(frame, actor.instance, binding.mesh, binding.node) : nullptr;
+                // Sorted/billboard streams still need exact evaluated CPU
+                // bounds/routing. Other meshes use shared native deformation
+                // in every view, never main-camera-only skinning.
+                const bool gpuSafe = gpuDeformation && std::all_of(actor.asset.draws.begin(), actor.asset.draws.end(),
+                    [&](const auto& draw) {
+                        if (draw.node != binding.node) return true;
+                        const auto* material = world.get(draw.material);
+                        return material && material->transparentSort != RenderCore::TransparentSortPolicy::Sorted
+                            && !draw.billboard && draw.sortPolicy != StaticDrawSortPolicy::BackToFront;
+                    });
+                if (gpuSafe)
+                {
+                    auto input = RenderCore::gpuDeformationInput(*actor.program, binding, evaluated, morph);
+                    if (input) { output.gpuDeformations.push_back(std::move(*input)); continue; }
+                }
                 auto& streams = output.deformed[binding.node.value()];
                 if (!actor.program->deform(binding, evaluated, morph, streams))
                 { output.diagnostic = "persistent actor rejected skin cancellation or morph weights"; return; }

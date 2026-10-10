@@ -58,7 +58,7 @@ namespace RenderVsg
         const MeshPayloadResolver& meshPayloadResolver = {},
         std::span<const RenderCore::PopulationInstanceRecord> placements = {},
         glm::dvec3 placementOrigin = {}, float opacityMultiplier = 1.0f,
-        bool dynamicData = false, const StaticGraphFinalizer& beforeSeal = {});
+        bool dynamicData = false, const StaticGraphFinalizer& beforeSeal = {}, const GpuDrawBinder& gpuBinder = {});
 }
 
 #endif
