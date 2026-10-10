@@ -502,7 +502,9 @@ try{
         if(-not $automatedSession){throw 'Per-experiment setting changes require an isolated automated route'}
         $experimentIdentity=Get-Phase9FileIdentity $ExperimentSettingsFile
         if($experimentIdentity.bytes -gt 65536){throw 'Experiment setting request exceeds 64 KiB'}
-        $experimentEntries=@([IO.File]::ReadAllText($ExperimentSettingsFile)|ConvertFrom-Json)
+        # Windows PowerShell 5 returns a JSON array as one pipeline object.
+        # Preserve that array directly; @(... pipeline ...) would nest it.
+        $experimentEntries=[IO.File]::ReadAllText($ExperimentSettingsFile)|ConvertFrom-Json
         if($experimentEntries.Count -gt 64){throw 'Too many experiment setting changes'}
         $script:ApplyingCustomConfiguration=$true
         try{

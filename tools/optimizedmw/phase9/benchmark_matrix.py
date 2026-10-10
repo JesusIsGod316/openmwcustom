@@ -111,13 +111,14 @@ def analyze(profile):
     with (profile/'benchmark-context.csv').open(newline='',encoding='utf-8-sig') as stream:
         for row in csv.DictReader(stream):
             context[int(row['frame'])] = row
-    groups = {'route': [], 'fixed_view': [], 'moving': []}
+    groups = {'route_all_frames': [], 'route': [], 'fixed_view': [], 'moving': []}
     excluded = 0
     with (profile/'v3-frame.csv').open(newline='',encoding='utf-8-sig') as stream:
         for row in csv.DictReader(stream):
             epoch = float(row['epoch_ms'])
             if not windows['start']+1000 <= epoch < windows['finish']-1000:
                 continue
+            groups['route_all_frames'].append(float(row['wall_ms']))
             state = context.get(int(row['frame']))
             if not state or any(int(state[k]) != 0 for k in ('begin_flags','end_flags','observed_flags')):
                 excluded += 1; continue
@@ -126,6 +127,7 @@ def analyze(profile):
                 groups['fixed_view' if epoch < windows['movement']-1000 else 'moving'].append(value)
     return {'schema': 1, 'phase_clock': 'approximate logged wall-time prefixes joined to system-clock frame starts',
             'phase_limit': 'One-second boundary margins; buffered log delivery is not an exact CPU span join',
+            'context_limit': 'route_all_frames retains loading/UI deviations; route/fixed_view/moving require zero context flags',
             'windows_epoch_ms': windows, 'excluded_context_frames': excluded,
             'metrics': {key:pacing(values) for key,values in groups.items() if values}}
 

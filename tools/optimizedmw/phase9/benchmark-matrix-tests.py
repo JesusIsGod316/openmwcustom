@@ -49,6 +49,7 @@ class Benchmarks(unittest.TestCase):
             self.assertEqual(result['excluded_context_frames'],1)
             self.assertEqual(result['metrics']['route']['frames'],2)
             self.assertEqual(result['metrics']['route']['maximum_ms'],6)
+            self.assertEqual(result['metrics']['route_all_frames']['maximum_ms'],100)
             self.assertEqual(result['metrics']['fixed_view']['frames'],1)
             self.assertEqual(result['metrics']['moving']['frames'],1)
 
