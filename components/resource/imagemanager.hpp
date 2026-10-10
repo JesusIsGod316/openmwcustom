@@ -40,7 +40,9 @@ namespace Resource
             bool disableFlip = false);
         bool imageLeaseCurrent(VFS::Path::NormalizedView path, const ObjectCacheLease& lease,
             bool disableFlip = false);
-        ObjectCacheLease prepareImage(VFS::Path::NormalizedView path, std::uint64_t maximumEstimate);
+        ObjectCacheLease prepareImage(VFS::Path::NormalizedView path, std::uint64_t maximumEstimate,
+            std::uint64_t retainedLimit = UINT64_MAX);
+        void setPreciseRawDdsPreload(bool enabled) { mPreciseRawDdsPreload = enabled; }
 
         osg::Image* getWarningImage();
         // Startup-only. No codec, cold index, sampler, or allocation when off.
@@ -54,6 +56,7 @@ namespace Resource
     private:
         std::uint64_t sourceRevision(bool disableFlip) const noexcept;
         osg::ref_ptr<osg::Image> mWarningImage;
+        bool mPreciseRawDdsPreload = false; // configured before workers start
         osg::ref_ptr<osgDB::Options> mOptions;
         std::unique_ptr<ColdImageCache> mColdCache;
         SpeculativeScope::Sample mColdSample = nullptr;

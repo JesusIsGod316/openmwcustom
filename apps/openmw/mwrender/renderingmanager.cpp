@@ -209,6 +209,8 @@ namespace MWRender
         bool reverseZ = SceneUtil::AutoDepth::isReversed();
 
         resourceSystem->getSceneManager()->setParticleSystemMask(MWRender::Mask_ParticleSystem);
+        resourceSystem->getSceneManager()->configureMaterialImagePreparation(
+            Settings::cells().mOptimizedMWPrepareMaterialImages, Settings::cells().mOptimizedMWMaterialImageBudget);
         resourceSystem->getSceneManager()->setAutoUseNormalMaps(Settings::shaders().mAutoUseObjectNormalMaps);
         resourceSystem->getSceneManager()->setNormalMapPattern(Settings::shaders().mNormalMapPattern);
         resourceSystem->getSceneManager()->setNormalHeightMapPattern(Settings::shaders().mNormalHeightMapPattern);

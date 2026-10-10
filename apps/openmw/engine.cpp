@@ -2354,6 +2354,17 @@ void OMW::Engine::go()
 {
     assert(!mContentFiles.empty());
 
+    if (const char* automatic = std::getenv("OPENMW_P9_AUTOMATED_BENCHMARK"); automatic && std::string_view(automatic) == "1")
+    {
+        if (static_cast<float>(Settings::sound().mMasterVolume) != 0.f)
+            throw std::runtime_error("Private benchmark requires resolved master volume zero");
+        Log(Debug::Info) << "OptimizedMW automatic benchmark: master_volume=0"
+            << " material_images=" << static_cast<bool>(Settings::cells().mOptimizedMWPrepareMaterialImages)
+            << " lod_cache_hit=" << static_cast<bool>(Settings::cells().mOptimizedMWLodCacheHitAdmission)
+            << " ordinary_packets=" << static_cast<bool>(Settings::cells().mOptimizedMWOrdinaryOpaquePackets)
+            << " scope=muted_private_window";
+    }
+
     Log(Debug::Info) << "OSG version: " << osgGetVersion();
     const int sdlVersion = SDL_GetVersion();
     Log(Debug::Info) << "SDL version: " << SDL_VERSIONNUM_MAJOR(sdlVersion) << "."
@@ -2695,7 +2706,9 @@ void OMW::Engine::go()
             +" active_coarse_views="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeCoarseViews.load())
             +" active_original_views="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeOriginalViews.load())
             +" active_consumed_draws="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeDerivedDraws.load())
-            +" active_consumed_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeSubmittedIndices.load());
+            +" active_consumed_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeSubmittedIndices.load())
+            +" cache_fast_hits="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::cacheFastHits.load())
+            +" cache_miss_admissions="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::cacheMissAdmissions.load());
         Log(Debug::Info) << "OptimizedMW asset compile lifecycle:" << SceneUtil::GeneratedStaticLod::compileLifecycleSummary();
         std::string lodRefusals;
         const char* lodReasons[]={"none","graph","material","transform","layout","capacity","no_reduction"};
@@ -2925,7 +2938,19 @@ void OMW::Engine::go()
             << " culled=" << C::culled.load() << " fallbacks=" << C::fallbacks.load()
             << " state_pushes_avoided=" << C::statePushesAvoided.load()
             << " changed_producers=" << C::changedProducers.load()
-            << " capacity_declines=" << C::capacityDeclines.load();
+            << " capacity_declines=" << C::capacityDeclines.load()
+            << " original_sources_certified=" << C::sourceCertified.load()
+            << " original_sources_rejected=" << C::sourceRejected.load()
+            << " ordinary_branches=" << C::ordinaryBranches.load();
+    }
+    if (Settings::cells().mOptimizedMWPrepareMaterialImages)
+    {
+        const auto& stats = mResourceSystem->getSceneManager()->materialPreparationStats();
+        Log(Debug::Info) << std::dec << "OptimizedMW material image preparation: animated_sources=" << stats.animatedSources.load()
+            << " discovered=" << stats.discovered.load() << " ready=" << stats.ready.load()
+            << " decoded=" << stats.decoded.load() << " deferred=" << stats.deferred.load()
+            << " per_cell_pin_mib=" << static_cast<int>(Settings::cells().mOptimizedMWMaterialImageBudget)
+            << " scope=ordinary_cpu_decoder_cache_no_gl";
     }
     if (SceneUtil::GpuIndirectPackets::indirectEnabled())
     {

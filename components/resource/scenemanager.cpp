@@ -1,5 +1,6 @@
 #include <components/debug/hitchtrace.hpp>
 #include "scenemanager.hpp"
+#include "materialimagedependencies.hpp"
 #include "sharedstatecache.hpp"
 #include "hostmemorybudget.hpp"
 #include "programvariantcompile.hpp"
@@ -197,6 +198,76 @@ namespace Resource
         mObjects.emplace_back(node);
     }
 
+
+    void SceneManager::configureMaterialImagePreparation(bool enabled, unsigned budgetMiB)
+    {
+        mPrepareMaterialImages = enabled;
+        mMaterialImageBudget = std::clamp(budgetMiB, 16u, 256u) * SpeculativeBudget::MiB;
+        mImageManager->setPreciseRawDdsPreload(enabled);
+    }
+
+    void SceneManager::prepareMaterialImages(const osg::Node& sceneTemplate,
+        std::vector<ObjectCacheLease>& owners, std::uint64_t& ownedBytes)
+    {
+        if (!mPrepareMaterialImages || !SpeculativeScope::active()
+            || ownedBytes >= mMaterialImageBudget || owners.size() >= 64) return;
+        struct Inputs final : SceneUtil::ControllerVisitor
+        {
+            std::vector<std::string> diffuse;
+            void visit(osg::Node&, SceneUtil::Controller& ctrl) override
+            {
+                if (auto* flip = dynamic_cast<NifOsg::FlipController*>(&ctrl))
+                    for (const auto& texture : flip->getTextures())
+                    {
+                        if (diffuse.size() >= 64) return;
+                        const auto* image = texture ? texture->getImage(0) : nullptr;
+                        if (image && !image->getFileName().empty()
+                            && std::find(diffuse.begin(), diffuse.end(), image->getFileName()) == diffuse.end())
+                            diffuse.push_back(image->getFileName());
+                    }
+            }
+        } inputs;
+        // ControllerVisitor reads the immutable template controller's texture
+        // sequence. No callback, frame, shader, material or GL state is changed.
+        try { const_cast<osg::Node&>(sceneTemplate).accept(inputs); }
+        catch (const std::exception&) { ++mMaterialPreparationStats.deferred; return; }
+        mMaterialPreparationStats.animatedSources += inputs.diffuse.size();
+        Debug::ResourceLifecycle::PreparationScope preparation("material_image_dependencies", 0);
+        const auto prepare = [&](const VFS::Path::Normalized& path) {
+            if (owners.size() >= 64 || ownedBytes >= mMaterialImageBudget) return;
+            ++mMaterialPreparationStats.discovered;
+            try
+            {
+                auto existing = mImageManager->getImageLease(path);
+                if (existing && std::any_of(owners.begin(), owners.end(), [&](const auto& owner) {
+                        return owner.mValue == existing.mValue && owner.mRevision == existing.mRevision;
+                    })) return;
+                // Admission remains under the shared future/scratch budgets.
+                // This maximum is an estimate guard, not added capacity.
+                auto lease = mImageManager->prepareImage(path, 256 * SpeculativeBudget::MiB, mMaterialImageBudget - ownedBytes);
+                if (lease.bytes() > mMaterialImageBudget - ownedBytes) { ++mMaterialPreparationStats.deferred; return; }
+                // All fallible vector allocation occurs before accounting.
+                owners.push_back(lease);
+                ownedBytes += lease.bytes();
+                ++mMaterialPreparationStats.ready;
+                if (!existing) ++mMaterialPreparationStats.decoded;
+            }
+            catch (const SpeculativeDeferred&) { ++mMaterialPreparationStats.deferred; }
+            catch (const std::exception&) { ++mMaterialPreparationStats.deferred; }
+        };
+        for (const auto& diffuse : inputs.diffuse)
+        {
+            try
+            {
+                if (mAutoUseNormalMaps)
+                    if (auto dependency = materialNormalDependency(*mVFS, diffuse, mNormalHeightMapPattern, mNormalMapPattern))
+                        prepare(dependency->path);
+                if (mAutoUseSpecularMaps)
+                    if (auto dependency = materialImageCompanion(*mVFS, diffuse, mSpecularMapPattern)) prepare(*dependency);
+            }
+            catch (const std::exception&) { ++mMaterialPreparationStats.deferred; }
+        }
+    }
 
     /// Set texture filtering settings on textures contained in a FlipController.
     class SetFilterSettingsControllerVisitor : public SceneUtil::ControllerVisitor

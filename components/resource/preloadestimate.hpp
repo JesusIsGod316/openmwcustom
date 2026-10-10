@@ -17,7 +17,8 @@ namespace Resource
 
     // Estimates, NOT a bound on a decoder's arbitrary internal allocations.
     // Read only a small header on an optional worker and restore the stream.
-    inline PreloadEstimate estimateImage(std::span<const unsigned char> header, std::uint64_t encodedBytes)
+    inline PreloadEstimate estimateImage(std::span<const unsigned char> header, std::uint64_t encodedBytes,
+        bool preciseRawDds = false)
     {
         const auto le = [&header](std::size_t at) -> std::uint64_t {
             return at + 4 <= header.size() ? std::uint64_t(header[at]) | (std::uint64_t(header[at+1]) << 8)
@@ -31,6 +32,28 @@ namespace Resource
         if (header.size() >= 128 && le(0) == 0x20534444 && le(4) == 124) // DDS
         {
             height = le(12); width = le(16);
+            // Only the ordinary raw RGB DDS decoder is qualified here. No
+            // codec, array, cube, volume or malformed header uses this tighter
+            // estimate. Four bytes/pixel covers 24-bit expansion, all authored
+            // mips and row padding. The peak includes encoded + two decoded
+            // copies + decoder margin; it is still an estimate, not an
+            // allocator hard limit. The historical estimate remains control.
+            if (preciseRawDds && width && height && width <= 16384 && height <= 16384
+                && le(76) == 32 && (le(80) & 0x40) && !(le(80) & 0x4)
+                && (le(88) == 24 || le(88) == 32) && le(24) <= 1 && !le(112)
+                && le(28) <= 15)
+            {
+                auto w = width, h = height;
+                const auto mips = (std::max)(std::uint64_t(1), le(28));
+                std::uint64_t output = 0;
+                for (std::uint64_t level = 0; level < mips; ++level)
+                {
+                    output = saturatingSum(output, saturatingProduct(saturatingProduct(w, h), 4));
+                    w = (std::max)(std::uint64_t(1), w / 2); h = (std::max)(std::uint64_t(1), h / 2);
+                }
+                return {saturatingSum(saturatingSum(saturatingProduct(output, 2), encodedBytes),
+                    8 * SpeculativeBudget::MiB), output, true};
+            }
             layers = (std::max)(std::uint64_t(1), le(24));
             if (le(112) & 0x200) layers = saturatingProduct(layers, 6); // cube
             if (le(84) == 0x30315844) // DX10 array header
@@ -54,7 +77,7 @@ namespace Resource
         return {saturatingSum(saturatingSum(saturatingProduct(output, 2), encodedBytes), 8 * SpeculativeBudget::MiB),
             output, known};
     }
-    inline PreloadEstimate estimateStream(std::istream& stream, bool image)
+    inline PreloadEstimate estimateStream(std::istream& stream, bool image, bool preciseRawDds = false)
     {
         const auto flags = stream.rdstate();
         const auto start = stream.tellg();
@@ -72,7 +95,7 @@ namespace Resource
             const auto read = static_cast<std::size_t>(stream.gcount());
             stream.clear(); stream.seekg(start);
             if (!stream) throw SpeculativeDeferred{};
-            result = estimateImage(std::span(header.data(), read), encoded);
+            result = estimateImage(std::span(header.data(), read), encoded, preciseRawDds);
         }
         else
         {

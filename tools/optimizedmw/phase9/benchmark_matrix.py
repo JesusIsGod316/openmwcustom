@@ -1,0 +1,243 @@
+"""Sequential, muted private-desktop comparisons with pinned route/build inputs.
+
+Guided playback is a separate cohort. Functional completion never promotes a
+candidate, and deep captures are not used as performance comparisons.
+"""
+import argparse
+import bisect
+import csv
+from datetime import datetime, timedelta
+import hashlib
+import json
+import math
+from pathlib import Path
+import re
+import statistics
+import sys
+
+import benchmark_desktop
+
+
+def read_json(path):
+    return json.loads(Path(path).read_text(encoding='utf-8-sig'))
+
+
+def identity(path):
+    path = Path(path).resolve(strict=True)
+    with path.open('rb') as stream:
+        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    return {'path': str(path), 'sha256': digest, 'bytes': path.stat().st_size}
+
+
+def verify(pins):
+    for pin in pins:
+        live = identity(pin['path'])
+        if live['sha256'].lower() != pin['sha256'].lower() or live['bytes'] != pin['bytes']:
+            raise ValueError('Pinned input changed: ' + pin['path'])
+
+
+def quantile(values, fraction):
+    values = sorted(values)
+    if not values:
+        return None
+    index = (len(values) - 1) * fraction
+    lower = int(index)
+    return values[lower] + (values[math.ceil(index)] - values[lower]) * (index - lower)
+
+
+def pacing(values):
+    if not values or any(not math.isfinite(v) or v < 0 for v in values):
+        raise ValueError('No valid frame-time observations')
+    median = statistics.median(values)
+    adjacent = [abs(a-b) for a,b in zip(values,values[1:])]
+    relative = []
+    history, ordered = [], []
+    for value in values:
+        if len(history) >= 15:
+            local = statistics.median(ordered)
+            if value > max(local*1.5, local+2):
+                relative.append(value-local)
+        bisect.insort(ordered,value); history.append(value)
+        if len(history) > 31:
+            old = history.pop(0); ordered.pop(bisect.bisect_left(ordered,old))
+    return {'frames': len(values), 'mean_ms': statistics.mean(values), 'median_ms': median,
+            'p90_ms': quantile(values,.90), 'p95_ms': quantile(values,.95),
+            'p99_ms': quantile(values,.99), 'p999_ms': quantile(values,.999),
+            'maximum_ms': max(values), 'stddev_ms': statistics.pstdev(values),
+            'mad_ms': statistics.median(abs(v-median) for v in values),
+            'iqr_ms': quantile(values,.75)-quantile(values,.25),
+            'adjacent_change_p95_ms': quantile(adjacent,.95),
+            'adjacent_change_p99_ms': quantile(adjacent,.99),
+            'relative_spikes': len(relative), 'relative_excess_ms': sum(relative),
+            'over_16_67': sum(v>16.67 for v in values), 'over_33_33': sum(v>33.33 for v in values),
+            'over_50': sum(v>50 for v in values)}
+
+
+def route_windows(profile, launch_utc):
+    """Join log-prefix wall time to frames; never join Lua boot time to epoch."""
+    day = datetime.fromisoformat(launch_utc.replace('Z','+00:00')).astimezone().date()
+    previous = None
+    result = {'start': None, 'movement': None, 'finish': None}
+    for line in (profile/'playback-stdout.log').read_text(encoding='utf-8-sig').splitlines():
+        if 'OMWPLAY|' not in line:
+            continue
+        match = re.match(r'^\[(\d\d:\d\d:\d\d\.\d{3}) ',line)
+        if not match:
+            continue
+        timestamp = datetime.combine(day,datetime.strptime(match[1],'%H:%M:%S.%f').time())
+        if previous and timestamp < previous-timedelta(hours=12):
+            day += timedelta(days=1); timestamp += timedelta(days=1)
+        previous = timestamp
+        record = json.loads(line.split('OMWPLAY|',1)[1])
+        epoch = timestamp.timestamp()*1000
+        if record['event'] == 'start':
+            result['start'] = epoch
+        guidance = record.get('guidance_command') or record.get('last_guidance_command') or {}
+        if result['start'] and not result['movement'] and (
+                abs(guidance.get('nominal_movement',0))+abs(guidance.get('nominal_side_movement',0)) > .01):
+            result['movement'] = epoch
+        if record['event'] == 'finish':
+            result['finish'] = epoch
+    if not result['start'] or not result['finish'] or result['finish'] <= result['start']:
+        raise ValueError('Cannot establish route wall-time boundaries')
+    return result
+
+
+def analyze(profile):
+    profile = Path(profile)
+    manifest = read_json(profile/'RUN-MANIFEST.json')
+    windows = route_windows(profile,manifest['process']['launch_utc'])
+    context = {}
+    with (profile/'benchmark-context.csv').open(newline='',encoding='utf-8-sig') as stream:
+        for row in csv.DictReader(stream):
+            context[int(row['frame'])] = row
+    groups = {'route': [], 'fixed_view': [], 'moving': []}
+    excluded = 0
+    with (profile/'v3-frame.csv').open(newline='',encoding='utf-8-sig') as stream:
+        for row in csv.DictReader(stream):
+            epoch = float(row['epoch_ms'])
+            if not windows['start']+1000 <= epoch < windows['finish']-1000:
+                continue
+            state = context.get(int(row['frame']))
+            if not state or any(int(state[k]) != 0 for k in ('begin_flags','end_flags','observed_flags')):
+                excluded += 1; continue
+            value = float(row['wall_ms']); groups['route'].append(value)
+            if windows['movement']:
+                groups['fixed_view' if epoch < windows['movement']-1000 else 'moving'].append(value)
+    return {'schema': 1, 'phase_clock': 'approximate logged wall-time prefixes joined to system-clock frame starts',
+            'phase_limit': 'One-second boundary margins; buffered log delivery is not an exact CPU span join',
+            'windows_epoch_ms': windows, 'excluded_context_frames': excluded,
+            'metrics': {key:pacing(values) for key,values in groups.items() if values}}
+
+
+def engagement(profile, requested):
+    text = (profile/'openmw.log').read_text(encoding='utf-8-sig')
+    positive = {}
+    if requested.get('prepare material images') == 'true':
+        matches = re.findall(r'OptimizedMW material image preparation:.*?decoded=(\d+)',text)
+        positive['material_images'] = bool(matches and int(matches[-1])>0)
+    if requested.get('lod cache hit admission') == 'true':
+        matches = re.findall(r'cache_fast_hits=(\d+)',text)
+        positive['lod_cache_hit'] = bool(matches and int(matches[-1])>0)
+    if requested.get('ordinary opaque packets') == 'true':
+        matches = re.findall(r'ordinary_branches=(\d+)',text)
+        submitted = re.findall(r'OptimizedMW persistent opaque packets:.*?submitted=(\d+)',text)
+        positive['ordinary_packets'] = bool(matches and int(matches[-1])>0 and submitted and int(submitted[-1])>0)
+    return {'positive_work': positive, 'all_requested_positive': all(positive.values()),
+            'limit': 'Preparation/dispatch engagement; visible resource adoption and performance require separate evidence'}
+
+
+def route_quality(receipt):
+    playback = receipt['playback']; finish = playback.get('finish') or {}
+    if not playback.get('playback_complete') or playback.get('errors'):
+        raise ValueError('Route did not complete cleanly')
+    policy = finish.get('policy') or {}
+    if not policy.get('qualified') or policy.get('combat_during_recording') or not finish.get('policy_observer_drained'):
+        raise ValueError('Actor/combat policy incomplete')
+    if finish.get('cell_mismatch_check_count',1) or finish.get('outside_position_tolerance_check_count',1):
+        raise ValueError('Playback changed cell/path cohort')
+    return {'lag_seconds':finish['reference_clock_lag'], 'hold_seconds':finish['reference_hold_seconds'],
+            'hold_count':finish['reference_hold_count'], 'maximum_xy':finish['maximum_horizontal_error'],
+            'maximum_z':finish['maximum_vertical_error'], 'route_wall_seconds':finish['t_wall'],
+            'physical_collision':finish['physical_state']['collision_enabled'],
+            'scope':'guided route; input_replay_complete remains distinct'}
+
+
+def run_matrix(plan_path, output):
+    plan = read_json(plan_path); output = Path(output).resolve()
+    if output.exists():
+        raise ValueError('Preserving prior matrix output; choose a fresh directory')
+    output.mkdir(parents=True)
+    game = Path(plan['game_directory']).resolve(strict=True)
+    catalog = read_json(plan['route_catalog'])
+    routes = {route['id']:route for route in catalog['routes']}
+    tools = ('OptimizedMW_Test.ps1','OptimizedMW_RoutePlayback.ps1','OptimizedMW_RouteRecorder.ps1')
+    pins = [identity(game/'openmw.exe'),identity(plan['symbols']),identity(game/'BUILD-IDENTITY.json'),
+            identity(plan_path),identity(plan['route_catalog']),identity(__file__),identity(benchmark_desktop.__file__)]
+    pins += [identity(path) for path in sorted(game.glob('OptimizedMW_*.ps1'))]
+    pins += [identity(path) for path in sorted((game/'RoutePlayback').rglob('*')) if path.is_file()]
+    for route in routes.values():
+        pins += route['inputs']
+    verify(pins)
+    state = {'schema':1,'scope':'OFFSCREEN_MUTED_GUIDED_ROUTE_COMPARISON','pins':pins,'runs':[],
+             'performance_status':'CALIBRATION_REQUIRED','state':'running'}
+    benchmark_desktop.save(output/'MATRIX.json',state)
+    try:
+        for index,case in enumerate(plan['cases']):
+            if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',case['id']):
+                raise ValueError('Invalid case name')
+            verify(pins)
+            directory = output/f'{index+1:02}_{case["id"]}'; directory.mkdir()
+            route = routes[case['route']]
+            settings = case.get('settings',[])
+            settings_path = directory/'requested-settings.json'; benchmark_desktop.save(settings_path,settings)
+            receipt_path = directory/'RUN.json'
+            args = ['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(game/'OptimizedMW_Test.ps1'),
+                    '-GameDirectory',str(game),'-AutomatedRouteCapture',route['pinned_acquisition'],
+                    '-AutomatedRouteName','balmora' if case['route']=='Balmora' else 'existing',
+                    '-AutomatedResultFile',str(receipt_path),'-ExperimentSettingsFile',str(settings_path),
+                    '-AutomatedDerivedCacheDirectory',str(output/'DerivedAssets'),
+                    '-NoPrompt','-AttackMask','1','-RamMask','4','-MemoryProfile','Headroom',
+                    '-ArchitectureMask',str(case.get('architecture_mask',0)),
+                    '-AssetMask',str(case.get('asset_mask',0)),'-TraceLevel',case.get('depth','Normal'),'-Candidate','CONTROL']
+            print(json.dumps({'case':case['id'],'route':case['route'],'state':'started'}),flush=True)
+            code = benchmark_desktop.launch(plan['powershell'],args,game,directory/'Desktop',plan.get('deadline',600))
+            receipt = read_json(receipt_path); desktop = read_json(directory/'Desktop'/'DESKTOP-RECEIPT.json')
+            if code or receipt.get('launch_failure') or receipt['exit_code'] != 0:
+                raise ValueError('Game/launcher failed; preserved '+str(receipt_path))
+            if not desktop.get('owned_render_window_observed') or not desktop['input_desktop_unchanged'] or desktop.get('input_desktop_owned_visible_windows'):
+                raise ValueError('Private rendering isolation incomplete')
+            if not receipt['settings_restore_verified'] or not receipt['environment_restore_verified']:
+                raise ValueError('Restore qualification incomplete')
+            verify(pins+[receipt['zip']])
+            profile = Path(receipt['profile_directory'])
+            text = (profile/'openmw.log').read_text(encoding='utf-8-sig')
+            if 'OptimizedMW automatic benchmark: master_volume=0' not in text:
+                raise ValueError('Engine did not confirm actual muted settings')
+            quality = route_quality(receipt)
+            requested = {entry['key']:entry['value'] for entry in settings if entry['section']=='Cells'}
+            engaged = engagement(profile,requested)
+            metrics = analyze(profile)
+            benchmark_desktop.save(directory/'ANALYSIS.json',metrics)
+            result = {'id':case['id'],'route':case['route'],'depth':case.get('depth','Normal'),
+                      'receipt':str(receipt_path),'zip':receipt['zip'],'route_quality':quality,
+                      'engagement':engaged,'analysis':metrics}
+            state['runs'].append(result); benchmark_desktop.save(output/'MATRIX.json',state)
+            print(json.dumps({'case':case['id'],'state':'completed','positive':engaged}),flush=True)
+            if not engaged['all_requested_positive']:
+                raise ValueError('Candidate was inert; stop broad comparisons and inspect '+str(receipt_path))
+        state['state']='completed'
+        # Calibration must be reviewed across repeats before accepting numerical
+        # A/B results. Deep rows are never pooled with ordinary performance.
+        state['performance_status']='RAW_COMPARISONS_PENDING_REPEATABILITY_REVIEW'
+    except BaseException as error:
+        state['state']='failed'; state['error']=str(error)
+        raise
+    finally:
+        benchmark_desktop.save(output/'MATRIX.json',state)
+
+
+if __name__ == '__main__':
+    parser=argparse.ArgumentParser(); parser.add_argument('--plan',required=True);parser.add_argument('--output',required=True)
+    args=parser.parse_args()
+    run_matrix(args.plan,args.output)

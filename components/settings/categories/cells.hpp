@@ -32,6 +32,14 @@ namespace Settings
             mIndex, "Cells", "distant display lists" };
         SettingValue<bool> mOptimizedMWNormalizedStaticPackets{
             mIndex, "Cells", "normalized static packets" };
+        SettingValue<bool> mOptimizedMWPrepareMaterialImages{
+            mIndex, "Cells", "prepare material images" };
+        SettingValue<int> mOptimizedMWMaterialImageBudget{
+            mIndex, "Cells", "material image preparation mib", makeClampSanitizerInt(16, 256) };
+        SettingValue<bool> mOptimizedMWLodCacheHitAdmission{
+            mIndex, "Cells", "lod cache hit admission" };
+        SettingValue<bool> mOptimizedMWOrdinaryOpaquePackets{
+            mIndex, "Cells", "ordinary opaque packets" };
         SettingValue<bool> mOptimizedMWActiveShadowBatching{ mIndex, "Shadows", "active batching" };
         SettingValue<bool> mOptimizedMWShadowStaticBatching{
             mIndex, "Shadows", "static batching" };

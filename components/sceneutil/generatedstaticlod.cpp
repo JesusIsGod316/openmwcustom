@@ -418,8 +418,14 @@ namespace SceneUtil::GeneratedStaticLod
         }
         struct Cook final : osg::NodeVisitor
         {
-            explicit Cook(std::string_view source) : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN), identity(source) {}
+            explicit Cook(std::string_view source, Resource::SpeculativeScope::Stage& stage,
+                std::uint64_t fullPeak, bool fast)
+                : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN), identity(source), reservation(stage),
+                  maximumPeak(fullPeak), cacheHitAdmission(fast) {}
             std::string identity;
+            Resource::SpeculativeScope::Stage& reservation;
+            std::uint64_t maximumPeak;
+            bool cacheHitAdmission;
             std::size_t before = 0, after = 0, changed = 0;
             std::uint64_t newIndexBytes = 0;
             float error = 0.f, transformScale = 1.f;
@@ -478,28 +484,32 @@ namespace SceneUtil::GeneratedStaticLod
                 // cloned primitives and earlier immutable tier outputs.
                 const std::uint64_t scratch = positions->size() * (256ull + components * 24ull)
                     + indices.size() * 64ull + source.size();
-                if (scratch > 64 * Resource::SpeculativeBudget::MiB)
+                if (!cacheHitAdmission && scratch > 64 * Resource::SpeculativeBudget::MiB)
                 {
                     ++Counters::refused[static_cast<unsigned>(Refusal::Capacity)];
                     after += indices.size(); return;
                 }
-                std::vector<float> packed(positions->size() * components), weights(components, .1f);
-                std::size_t offset = 0;
-                for (const auto* a : attributes)
-                {
-                    if (a->getBinding() != osg::Array::BIND_PER_VERTEX) continue;
-                    const auto size = static_cast<unsigned>(a->getDataSize());
-                    for (std::size_t i = 0; i < positions->size(); ++i)
-                        for (unsigned c = 0; c < size; ++c)
-                        {
-                            const auto value = a->getDataType() == GL_FLOAT
-                                ? static_cast<const float*>(a->getDataPointer())[i * size + c]
-                                : static_cast<const unsigned char*>(a->getDataPointer())[i * size + c] / 255.f;
-                            if (!std::isfinite(value)) throw std::runtime_error("nonfinite LOD attribute");
-                            packed[i * components + offset + c] = value;
-                        }
-                    offset += size;
-                }
+                std::vector<float> packed, weights;
+                const auto packAttributes = [&] {
+                    packed.resize(positions->size() * components); weights.assign(components, .1f);
+                    std::size_t offset = 0;
+                    for (const auto* a : attributes)
+                    {
+                        if (a->getBinding() != osg::Array::BIND_PER_VERTEX) continue;
+                        const auto size = static_cast<unsigned>(a->getDataSize());
+                        for (std::size_t i = 0; i < positions->size(); ++i)
+                            for (unsigned c = 0; c < size; ++c)
+                            {
+                                const auto value = a->getDataType() == GL_FLOAT
+                                    ? static_cast<const float*>(a->getDataPointer())[i * size + c]
+                                    : static_cast<const unsigned char*>(a->getDataPointer())[i * size + c] / 255.f;
+                                if (!std::isfinite(value)) throw std::runtime_error("nonfinite LOD attribute");
+                                packed[i * components + offset + c] = value;
+                            }
+                        offset += size;
+                    }
+                };
+                if (!cacheHitAdmission) packAttributes(); // Historical control, including hits.
                 const auto key = Resource::DerivedAssets::key(Resource::DerivedAssets::digest(source),
                     identity + "|L1-v2-meshopt9e1f07b159d3cb777f1c67ed31fc11fd117986f4-index-only-border-0.02-attrs0.1-target0.5");
                 std::vector<unsigned> reduced;
@@ -519,6 +529,17 @@ namespace SceneUtil::GeneratedStaticLod
                 }
                 if (reduced.empty())
                 {
+                    if (scratch > 64 * Resource::SpeculativeBudget::MiB)
+                    { ++Counters::refused[static_cast<unsigned>(Refusal::Capacity)]; after += indices.size(); return; }
+                    if (cacheHitAdmission && reservation.reserved() < maximumPeak)
+                    {
+                        // Grow before any simplifier/packed-attribute allocation.
+                        // A denied miss retains the existing ordinary fallback.
+                        reservation.reserveAdditional(maximumPeak - reservation.reserved(),
+                            96 * Resource::SpeculativeBudget::MiB);
+                        ++Counters::cacheMissAdmissions;
+                    }
+                    if (cacheHitAdmission) packAttributes();
                     reduced.resize(indices.size());
                     const auto count = meshopt_simplifyWithAttributes(reduced.data(), indices.data(), indices.size(),
                         reinterpret_cast<const float*>(positions->getDataPointer()), positions->size(), sizeof(osg::Vec3),
@@ -534,6 +555,7 @@ namespace SceneUtil::GeneratedStaticLod
                     append(payload, reduced.data(), reduced.size() * 4);
                     Resource::DerivedAssets::cache().write(key, payload);
                 }
+                else if (cacheHitAdmission) ++Counters::cacheFastHits;
                 auto draw = osg::ref_ptr<osg::DrawElementsUInt>(new osg::DrawElementsUInt(GL_TRIANGLES));
                 draw->reserve(reduced.size());
                 draw->assign(reduced.begin(), reduced.end());
@@ -687,7 +709,7 @@ namespace SceneUtil::GeneratedStaticLod
     }
     std::size_t sourceBytes(const osg::Node& original)
     { Size size; return inspectNode(original, size, 0) == Refusal::None ? size.bytes : 0; }
-    std::uint64_t cookPeakBytes(const osg::Node& original)
+    std::uint64_t cookPeakBytes(const osg::Node& original, bool cacheHitOnly)
     {
         Size size;
         if (inspectNode(original, size, 0) != Refusal::None || !size.geometries) return 0;
@@ -699,7 +721,7 @@ namespace SceneUtil::GeneratedStaticLod
         // remain charged alongside the largest sequential leaf operation.
         return Resource::DerivedAssets::MetadataScratchBytes + size.graphBytes
             + size.geometries * 8192ull + size.indices * 8ull
-            + size.scratch + size.serialized + size.cacheOverlap;
+            + (cacheHitOnly ? 0 : size.scratch) + size.serialized + size.cacheOverlap;
     }
     unsigned conflictingMaterialOwners(std::span<const MaterialOwner> materials, bool known)
     {
@@ -2166,7 +2188,7 @@ namespace SceneUtil::GeneratedStaticLod
         else osg::Group::traverse(visitor); // compile both immutable representations before activation
     }
     Result build(osg::Node& original, std::string_view identity, osg::Camera* mainCamera,
-        bool reserveGpu, bool activeGridOrigin)
+        bool reserveGpu, bool activeGridOrigin, bool cacheHitAdmission)
     {
         Result result;
         BuildStep step=BuildStep::Scope;
@@ -2212,7 +2234,8 @@ namespace SceneUtil::GeneratedStaticLod
             {fail(Refusal::Material);return result;}
             result.guardPhase=GuardPhase::None;
             step=BuildStep::Peak;
-            const auto graphPeak=cookPeakBytes(original);
+            const auto graphPeak=cookPeakBytes(original,cacheHitAdmission);
+            const auto fullPeak=(cacheHitAdmission ? cookPeakBytes(original) : graphPeak)+identity.size()*2ull;
             peak=graphPeak+identity.size()*2ull;
             if (!graphPeak || peak>96*Resource::SpeculativeBudget::MiB || identity.size()>256*1024)
             {fail(Refusal::Capacity);return result;}
@@ -2223,7 +2246,7 @@ namespace SceneUtil::GeneratedStaticLod
             step=BuildStep::Cook;
             osg::ref_ptr<osg::Node> derived=osg::clone(&original,
                 osg::CopyOp::DEEP_COPY_NODES|osg::CopyOp::DEEP_COPY_DRAWABLES|osg::CopyOp::DEEP_COPY_PRIMITIVES);
-            Cook cook(identity); derived->accept(cook);
+            Cook cook(identity,reservation,fullPeak,cacheHitAdmission); derived->accept(cook);
             result.originalIndices=cook.before;result.derivedIndices=cook.after;result.newIndexBytes=cook.newIndexBytes;
             if (!std::isfinite(cook.error)) throw std::runtime_error("LOD error scale invalid");
             step=BuildStep::Reduction;

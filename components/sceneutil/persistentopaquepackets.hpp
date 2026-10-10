@@ -2,6 +2,7 @@
 #define OPENMW_SCENEUTIL_PERSISTENTOPAQUEPACKETS_H
 
 #include "drawphasetrace.hpp"
+#include <components/nifosg/matrixtransform.hpp>
 
 #include <osg/Geometry>
 #include <osg/AlphaFunc>
@@ -40,6 +41,7 @@ namespace SceneUtil::PersistentOpaquePackets
         inline static std::atomic_uint64_t views{ 0 }, submitted{ 0 }, culled{ 0 }, fallbacks{ 0 };
         inline static std::atomic_uint64_t statePushes{ 0 }, statePushesAvoided{ 0 }, changedProducers{ 0 };
         inline static std::atomic_uint64_t capacityDeclines{ 0 };
+        inline static std::atomic_uint64_t sourceCertified{0}, sourceRejected{0}, ordinaryBranches{0};
     };
 
     // Only our retained opaque command callback may reuse this cull contract.
@@ -359,12 +361,45 @@ namespace SceneUtil::PersistentOpaquePackets
         Counters::eligible.fetch_add(usable, std::memory_order_relaxed);
         return result;
     }
+    // Certify controller/type identity before paging CopyOp can erase it.
+    // Material eligibility is checked later per branch, so transparent sibling
+    // materials do not invalidate an otherwise immutable opaque population.
+    inline bool sourceAncestryCertified(const osg::Node& source, unsigned maximumNodes = 1024)
+    {
+        unsigned nodes = 0;
+        const auto inspect = [&](const auto& self, const osg::Node& node, unsigned depth) -> bool {
+            if (++nodes > maximumNodes || depth > 32 || node.getDataVariance() == osg::Object::DYNAMIC
+                || node.getUpdateCallback() || node.getEventCallback() || node.getCullCallback()
+                || node.getComputeBoundingSphereCallback()) return false;
+            const auto* state = node.getStateSet();
+            if (state && (state->getDataVariance() == osg::Object::DYNAMIC
+                    || state->getUpdateCallback() || state->getEventCallback())) return false;
+            if (const auto* geometry = node.asGeometry())
+                return typeid(node) == typeid(osg::Geometry) && !geometry->getDrawCallback()
+                    && !geometry->getComputeBoundingBoxCallback();
+            const auto* group = node.asGroup();
+            if (!group || (typeid(node) != typeid(osg::Group) && typeid(node) != typeid(osg::Geode)
+                    && typeid(node) != typeid(osg::MatrixTransform) && typeid(node) != typeid(NifOsg::MatrixTransform))) return false;
+            if (const auto* transform = dynamic_cast<const osg::MatrixTransform*>(&node))
+            {
+                if (transform->getReferenceFrame() != osg::Transform::RELATIVE_RF) return false;
+                for (unsigned r = 0; r < 4; ++r) for (unsigned c = 0; c < 4; ++c)
+                    if (!std::isfinite(transform->getMatrix()(r,c))) return false;
+            }
+            for (unsigned i = 0; i < group->getNumChildren(); ++i)
+                if (!self(self, *group->getChild(i), depth + 1)) return false;
+            return true;
+        };
+        return inspect(inspect, source, 0);
+    }
+
     // Caller must provide a privately cloned asset partition whose ORIGINAL
     // ancestry was certified before paging CopyOp. This deliberately does not
     // turn arbitrary controller-stripped scene graphs into packet candidates.
     // Preserve every material and transform ancestor, replacing only exact
     // immutable Group/Geode containers with their ordinary-path-owning wrapper.
-    inline osg::ref_ptr<osg::Node> buildCertifiedSubtrees(osg::Node& original, unsigned maximumNodes = 256, bool mode = enabled())
+    inline osg::ref_ptr<osg::Node> buildCertifiedSubtrees(osg::Node& original, unsigned maximumNodes = 256,
+        bool mode = enabled(), bool selective = false)
     {
         if (!mode) return &original;
         unsigned nodes = 0;
@@ -383,11 +418,18 @@ namespace SceneUtil::PersistentOpaquePackets
                 if (!self(self, *group->getChild(i), depth + 1)) return false;
             return true;
         };
-        if (!certify(certify, original, 0)) return &original;
+        if (!selective && !certify(certify, original, 0)) return &original;
+        nodes = 0;
         std::array<osg::observer_ptr<osg::Node>,16> ancestors;
         const auto wrap = [&](const auto& self, osg::Node& node, unsigned depth) -> osg::ref_ptr<osg::Node> {
+            if (++nodes > maximumNodes || depth >= ancestors.size()
+                || node.getDataVariance() == osg::Object::DYNAMIC || node.getUpdateCallback()
+                || node.getEventCallback() || node.getCullCallback() || node.getComputeBoundingSphereCallback()
+                || !opaque(node.getStateSet())) return &node;
             auto* group = node.asGroup();
             if (!group) return &node;
+            if (typeid(node) != typeid(osg::Group) && typeid(node) != typeid(osg::Geode)
+                && typeid(node) != typeid(osg::MatrixTransform)) return &node;
             for (unsigned i = 0; i < group->getNumChildren(); ++i)
             {
                 osg::ref_ptr<osg::Node> child = group->getChild(i);
@@ -398,7 +440,8 @@ namespace SceneUtil::PersistentOpaquePackets
             if (typeid(node) == typeid(osg::Group) || typeid(node) == typeid(osg::Geode))
             {
                 auto result = build(*group, mode);
-                if (auto* packet = dynamic_cast<Group*>(result.get())) packet->setCertifiedAncestors(ancestors, depth);
+                if (auto* packet = dynamic_cast<Group*>(result.get()))
+                { packet->setCertifiedAncestors(ancestors, depth); if (selective) ++Counters::ordinaryBranches; }
                 return result;
             }
             return &node; // exact transform and its state ancestry remain intact

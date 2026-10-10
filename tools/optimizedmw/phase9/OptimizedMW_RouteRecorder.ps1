@@ -471,15 +471,39 @@ function Copy-OptimizedMWRouteStartSave {
 }
 
 function Start-OptimizedMWRouteOwnedProcess {
-    param([string]$Executable,[string[]]$Arguments,[string]$WorkingDirectory,[string]$StandardOutput,[string]$StandardError)
-    $process=Start-Process -FilePath $Executable -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory -RedirectStandardOutput $StandardOutput -RedirectStandardError $StandardError -PassThru
+    param([string]$Executable,[string[]]$Arguments,[string]$WorkingDirectory,[string]$StandardOutput,[string]$StandardError,[switch]$NoConsole)
+    $streams=@();$copies=@()
+    if($NoConsole){
+        # A private desktop does not contain a console broker launched on the
+        # user's input desktop. CreateNoWindow prevents console allocation.
+        $info=[Diagnostics.ProcessStartInfo]::new()
+        $info.FileName=$Executable;$info.Arguments=$Arguments -join ' ';$info.WorkingDirectory=$WorkingDirectory
+        $info.UseShellExecute=$false;$info.CreateNoWindow=$true;$info.WindowStyle='Hidden'
+        $info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
+        $streams=@([IO.File]::Open($StandardOutput,'CreateNew','Write','Read'),[IO.File]::Open($StandardError,'CreateNew','Write','Read'))
+        try{
+            $process=[Diagnostics.Process]::Start($info)
+            $copies=@($process.StandardOutput.BaseStream.CopyToAsync($streams[0]),$process.StandardError.BaseStream.CopyToAsync($streams[1]))
+        }catch{foreach($stream in $streams){$stream.Dispose()};throw}
+    }else{
+        $process=Start-Process -FilePath $Executable -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory -RedirectStandardOutput $StandardOutput -RedirectStandardError $StandardError -PassThru
+    }
     # Windows PowerShell Start-Process can return an object whose exit code is
     # not retained unless its process handle is opened while the child exists.
     # Cache that actual OS handle now; Refresh after exit would discard cached
     # process state. Never infer a zero exit code from a Lua footer or log text.
     $ownedHandle=$process.Handle
     if($ownedHandle -eq [IntPtr]::Zero){throw 'Cannot retain the launched process handle for OS exit qualification'}
-    return [pscustomobject]@{process=$process;handle=$ownedHandle}
+    return [pscustomobject]@{process=$process;handle=$ownedHandle;streams=$streams;copies=$copies;console_suppressed=[bool]$NoConsole}
+}
+
+function Complete-OptimizedMWRouteOwnedOutput {
+    param([object]$Owned)
+    if($Owned.copies.Count){
+        try{
+            if(-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]$Owned.copies,15000)){throw 'Owned output did not drain before analysis'}
+        }finally{foreach($stream in $Owned.streams){$stream.Dispose()}}
+    }
 }
 
 function Invoke-OptimizedMWRouteRecorder {

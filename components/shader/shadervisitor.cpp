@@ -1,4 +1,5 @@
 #include "shadervisitor.hpp"
+#include <components/resource/materialimagedependencies.hpp>
 
 #include <set>
 #include <unordered_map>
@@ -332,26 +333,13 @@ namespace Shader
 
             if (mAutoUseNormalMaps && diffuseMap != nullptr && normalMap == nullptr && diffuseMap->getImage(0))
             {
-                std::string normalMapFileName = diffuseMap->getImage(0)->getFileName();
-
                 osg::ref_ptr<osg::Image> image;
                 bool normalHeight = false;
-                std::string normalHeightMap = normalMapFileName;
-                Misc::StringUtils::replaceLast(normalHeightMap, ".", mNormalHeightMapPattern + ".");
-                const VFS::Path::Normalized normalHeightMapPath(normalHeightMap);
-                if (mImageManager.getVFS()->exists(normalHeightMapPath))
+                if (const auto dependency = Resource::materialNormalDependency(*mImageManager.getVFS(),
+                        diffuseMap->getImage(0)->getFileName(), mNormalHeightMapPattern, mNormalMapPattern))
                 {
-                    image = mImageManager.getImage(normalHeightMapPath);
-                    normalHeight = true;
-                }
-                else
-                {
-                    Misc::StringUtils::replaceLast(normalMapFileName, ".", mNormalMapPattern + ".");
-                    const VFS::Path::Normalized normalMapPath(normalMapFileName);
-                    if (mImageManager.getVFS()->exists(normalMapPath))
-                    {
-                        image = mImageManager.getImage(normalMapPath);
-                    }
+                    image = mImageManager.getImage(dependency->path);
+                    normalHeight = dependency->normalHeight;
                 }
                 // Avoid using the auto-detected normal map if it's already being used as a bump map.
                 // It's probably not an actual normal map.
@@ -398,12 +386,10 @@ namespace Shader
 
             if (mAutoUseSpecularMaps && diffuseMap != nullptr && specularMap == nullptr && diffuseMap->getImage(0))
             {
-                std::string specularMapFileName = diffuseMap->getImage(0)->getFileName();
-                Misc::StringUtils::replaceLast(specularMapFileName, ".", mSpecularMapPattern + ".");
-                const VFS::Path::Normalized specularMapPath(specularMapFileName);
-                if (mImageManager.getVFS()->exists(specularMapPath))
+                if (const auto specularMapPath = Resource::materialImageCompanion(*mImageManager.getVFS(),
+                        diffuseMap->getImage(0)->getFileName(), mSpecularMapPattern))
                 {
-                    osg::ref_ptr<osg::Image> image(mImageManager.getImage(specularMapPath));
+                    osg::ref_ptr<osg::Image> image(mImageManager.getImage(*specularMapPath));
                     osg::ref_ptr<osg::Texture2D> specularMapTex(new osg::Texture2D(image));
                     specularMapTex->setTextureSize(image->s(), image->t());
                     specularMapTex->setWrap(osg::Texture::WRAP_S, diffuseMap->getWrap(osg::Texture::WRAP_S));

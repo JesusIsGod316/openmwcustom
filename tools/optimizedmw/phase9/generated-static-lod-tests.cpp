@@ -233,6 +233,36 @@ int main(int argc, char** argv) try
             osg::ref_ptr<osg::Node> certificateSource;
             if(!selected.node) certificateSource=privateClone(*control);
             auto result = L1::build(*control, path.value() + "|" + Resource::DerivedAssets::digest(bytes),mainCamera,false);
+            const auto* cacheDirectory=std::getenv("OPENMW_P9_DERIVED_CACHE_DIR");
+            if (result.node && certificateSource && cacheDirectory && *cacheDirectory)
+            {
+                auto cachedControl = privateClone(*certificateSource);
+                // certificateSource only exists for the first positive source.
+                if (cachedControl)
+                {
+                    const auto hits = L1::Counters::cacheFastHits.load();
+                    const auto cached = L1::build(*cachedControl,path.value()+"|"+Resource::DerivedAssets::digest(bytes),mainCamera,false,false,true);
+                    require(cached.node && cached.derivedIndices==result.derivedIndices
+                        && L1::Counters::cacheFastHits>hits, "verified hit must reuse identical reduced indices through fast admission");
+                    Geometries expected,actual; result.node->derived()->accept(expected);cached.node->derived()->accept(actual);
+                    require(expected.values.size()==actual.values.size(), "cache hit must preserve derived leaf layout");
+                    for(std::size_t leaf=0;leaf<expected.values.size();++leaf)
+                    {
+                        const auto* a=expected.values[leaf];const auto* b=actual.values[leaf];
+                        require(a->getNumPrimitiveSets()==b->getNumPrimitiveSets(), "cache hit changed primitive layout");
+                        for(unsigned p=0;p<a->getNumPrimitiveSets();++p)
+                        {
+                            const auto* x=a->getPrimitiveSet(p);const auto* y=b->getPrimitiveSet(p);
+                            require(x->getMode()==y->getMode() && x->getNumIndices()==y->getNumIndices(), "cache hit changed primitive recipe");
+                            for(unsigned i=0;i<x->getNumIndices();++i) require(x->index(i)==y->index(i), "cache hit changed exact index payload");
+                        }
+                    }
+                    require(L1::cookPeakBytes(*certificateSource,true)<L1::cookPeakBytes(*certificateSource),
+                        "cache-only admission must exclude simplifier scratch");
+                    std::cout << "L1_CACHE_FAST_PROOF exact_indices=1 reduced_leaf_layout=1 scratch_excluded=1 cache_fast_hits="
+                        << L1::Counters::cacheFastHits.load() << '\n';
+                }
+            }
             std::cout << "L1_CORPUS_RESULT " << path.value() << " original_indices=" << result.originalIndices
                 << " tier_indices=" << result.derivedIndices << " refusal=" << static_cast<unsigned>(result.refusal)
                 << " error=" << (result.node ? result.node->error() : 0.f) << '\n';

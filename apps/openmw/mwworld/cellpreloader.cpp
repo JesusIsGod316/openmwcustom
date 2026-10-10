@@ -444,10 +444,17 @@ namespace MWWorld
                     Resource::SpeculativeScope::Stage assetStage(32 * Resource::SpeculativeBudget::MiB,
                         8 * Resource::SpeculativeBudget::MiB);
                     if (Resource::v321CP2FairnessEnabled())
-                        mPreloadedObjects.insert(mSceneManager->getTemplate(
-                            mesh, true, Resource::V321CompileClass::GenericModel));
+                    {
+                        const auto node = mSceneManager->getTemplate(mesh, true, Resource::V321CompileClass::GenericModel);
+                        mPreloadedObjects.insert(node);
+                        mSceneManager->prepareMaterialImages(*node, mMaterialImages, mMaterialImageBytes);
+                    }
                     else
-                        mPreloadedObjects.insert(mSceneManager->getTemplate(mesh));
+                    {
+                        const auto node = mSceneManager->getTemplate(mesh);
+                        mPreloadedObjects.insert(node);
+                        mSceneManager->prepareMaterialImages(*node, mMaterialImages, mMaterialImageBytes);
+                    }
                     if (mPreloadInstances)
                         mPreloadedObjects.insert(mBulletShapeManager->cacheInstance(mesh));
                     else
@@ -476,6 +483,8 @@ namespace MWWorld
         std::uint64_t mResourceOriginSpan = 0;
         bool mAnimationAdditionalSources = false;
         Resource::SceneManager* mSceneManager;
+        std::vector<Resource::ObjectCacheLease> mMaterialImages;
+        std::uint64_t mMaterialImageBytes = 0;
         Resource::BulletShapeManager* mBulletShapeManager;
         Resource::KeyframeManager* mKeyframeManager;
         Terrain::World* mTerrain;

@@ -23,11 +23,18 @@ param(
     [ValidateRange(0,33554432)][long]$BufferBudgetBytes=33554432,
     [string]$SavePath,[string]$RouteLabel='UNSPECIFIED',[ValidatePattern('^[^\r\n]{1,256}$')][string]$FrameCapLabel='UNSPECIFIED',
     [ValidateSet('unclassified','fresh-process-first-visit','same-process-revisit','later-fresh-launch')][string]$Cohort='unclassified',
-    [switch]$NoPrompt
+    [switch]$NoPrompt,
+    [string]$GameDirectory='',
+    [string]$AutomatedRouteCapture='',
+    [ValidateSet('','existing','balmora')][string]$AutomatedRouteName='',
+    [string]$ExperimentSettingsFile='',
+    [string]$AutomatedResultFile='',
+    [string]$AutomatedDerivedCacheDirectory='',
+    [ValidateRange(180,900)][int]$AutomatedDeadlineSeconds=420
 )
 $ErrorActionPreference = 'Stop'
 
-$GameDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$GameDir = if($GameDirectory){[IO.Path]::GetFullPath($GameDirectory)}else{Split-Path -Parent $MyInvocation.MyCommand.Path}
 $Exe = Join-Path $GameDir 'openmw.exe'
 $UserOpenMW = Join-Path $env:USERPROFILE 'Documents\My Games\OpenMW'
 $SettingsPath = Join-Path $UserOpenMW 'settings.cfg'
@@ -44,8 +51,53 @@ $OpenmwCfgPath = Join-Path $UserOpenMW 'openmw.cfg'
 . (Join-Path $GameDir 'OptimizedMW_SettingNames.ps1')
 $ProfilesRoot = Join-Path $UserOpenMW 'OptimizedMW-Phase9-Profiles'
 $frozenRuntime=$null
+$automatedSession=$null
 $comparisonDirectory=$GameDir
-if($FrozenConfigDirectory){
+if($AutomatedRouteCapture){
+    if(-not $AutomatedRouteName -or $SavePath -or $OptimizationConfig -or $SystemTrace -or -not $NoPrompt){
+        throw 'Automated routes require a route name and -NoPrompt, and use their own save/config; Windows trace is separate.'
+    }
+    # Fail closed before any game/UI launch unless the host assigned a private desktop.
+    if(-not ('OptimizedMWPrivateDesktopIdentity' -as [type])){
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class OptimizedMWPrivateDesktopIdentity {
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] static extern IntPtr GetThreadDesktop(uint id);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern bool GetUserObjectInformation(IntPtr h,int index,StringBuilder name,int size,out int needed);
+    public static string Current() {
+        var name=new StringBuilder(512); int needed;
+        if(!GetUserObjectInformation(GetThreadDesktop(GetCurrentThreadId()),2,name,1024,out needed))
+            throw new InvalidOperationException("Cannot verify benchmark desktop");
+        return name.ToString();
+    }
+}
+'@
+    }
+    $privateDesktopName=[OptimizedMWPrivateDesktopIdentity]::Current()
+    if($privateDesktopName -cnotmatch '^OptimizedMW_Benchmark_[a-f0-9]{32}$'){throw 'Automatic runs must use benchmark_desktop.py; no on-screen fallback is allowed.'}
+    $routeRequest=@{GameDirectory=$GameDir;Capture=$AutomatedRouteCapture;RouteName=$AutomatedRouteName;Frozen=$FrozenConfigDirectory;NativeGuidance=$true;BenchmarkWindow=$true}
+    . (Join-Path $GameDir 'OptimizedMW_RoutePlayback.ps1') -GameDir $GameDir -LibraryOnly
+    $automatedSession=New-OptimizedMWPlaybackSession @routeRequest
+    $frozenRuntime=$automatedSession.runtime
+    # The route's addon/config/binding changes are private, recorded derivations.
+    $frozenRuntime.config_identity=Get-OptimizedMWFrozenFile $frozenRuntime.config_path
+    foreach($inputIdentity in $frozenRuntime.copied_input_identities){
+        if([IO.Path]::GetFileName($inputIdentity.path) -eq 'input_v3.xml'){
+            $fresh=Get-OptimizedMWFrozenFile $inputIdentity.path
+            $inputIdentity.sha256=$fresh.sha256;$inputIdentity.bytes=$fresh.bytes
+        }
+    }
+    $UserOpenMW=$frozenRuntime.directory
+    $SettingsPath=$frozenRuntime.settings_path;$OpenmwCfgPath=$frozenRuntime.config_path
+    $ProfilesRoot=$frozenRuntime.profiles_root;$OptimizationConfig=$frozenRuntime.optimization_path
+    $SavePath=$automatedSession.manifest.playback_start.path;$comparisonDirectory=$frozenRuntime.directory
+    $RouteLabel='AUTOMATED-'+$AutomatedRouteName
+    $FrameCapLabel='resolved-private-settings'
+}elseif($FrozenConfigDirectory){
     . (Join-Path $GameDir 'OptimizedMW_FrozenConfig.ps1')
     if($SavePath -or $OptimizationConfig){throw 'Frozen tests use their locked copied save and optimization configuration; omit external -SavePath/-OptimizationConfig.'}
     $frozenRuntime=New-OptimizedMWFrozenRuntime -Directory $FrozenConfigDirectory -GameDir $GameDir -VerifyAssetHashes:$VerifyFrozenAssetHashes
@@ -163,7 +215,10 @@ if(-not $NoPrompt -and ($numericSelection -or $FocusedPreset)){
     $SavePath=$declaration.save_path;$RouteLabel=$declaration.route_label;$FrameCapLabel=$declaration.frame_cap_label
 }
 if($SavePath -and -not [IO.File]::Exists([IO.Path]::GetFullPath($SavePath))){throw 'Declared save file is missing; correct -SavePath before running'}
-if($frozenRuntime -and [IO.Path]::GetFullPath($SavePath) -cne $frozenRuntime.save_path){throw 'Frozen tests must retain their private copied-save declaration'}
+if($frozenRuntime){
+    $expectedPrivateSave=if($automatedSession){$automatedSession.manifest.playback_start.path}else{$frozenRuntime.save_path}
+    if([IO.Path]::GetFullPath($SavePath) -cne $expectedPrivateSave){throw 'Frozen tests must retain their private copied-save declaration'}
+}
 if($ConfigurationMode -eq 'Custom'){$MemoryProfile='Configured'}
 $memoryPolicy=Get-OptimizedMWMemoryProfile -Name $MemoryProfile -RamMask $RamMask
 $RamMask=$memoryPolicy.ram_mask
@@ -289,6 +344,8 @@ $restoreVerified=$true
 $environmentRestoreVerified=$false
 $runManifest=$null
 $process=$null
+$owned=$null
+$ownedOutputComplete=$false
 $exitCode=$null
 $start=[DateTimeOffset]::UtcNow
 @("experiment=$Experiment","phase9_capture_state=initializing","dlss_runtime_available=false") |
@@ -307,6 +364,12 @@ try{
     Set-OptimizedMWHitchCombinationEnvironment $hitchCombination
     Set-OptimizedMWAttackEnvironment $attackCombination -ObserverLocal:$ObserverLocal -CompositeProgress:$CompositeProgress -CompositeCpuMips:$CompositeCpuMips
     $derivedCacheDirectory=if($frozenRuntime){Join-Path $frozenRuntime.directory 'DerivedAssets'}else{Join-Path $GameDir 'DerivedAssets'}
+    if($AutomatedDerivedCacheDirectory){
+        if(-not $automatedSession){throw 'Shared batch cache requires an isolated automated route'}
+        $derivedCacheDirectory=Assert-OptimizedMWPlainPath $AutomatedDerivedCacheDirectory
+        $benchmarkRoot=[IO.Path]::GetFullPath((Join-Path $GameDir 'Benchmarks')).TrimEnd('\')+'\'
+        if(-not $derivedCacheDirectory.StartsWith($benchmarkRoot,[StringComparison]::OrdinalIgnoreCase)){throw 'Automatic cache must stay inside this package benchmark directory'}
+    }
     Set-OptimizedMWArchitectureEnvironment -RamMask $RamMask -ArchitectureMask $ArchitectureMask -AssetMask $AssetMask -DerivedCacheDirectory $derivedCacheDirectory
     Set-OptimizedMWMemoryProfileEnvironment $memoryPolicy
     $env:OPENMW_P9_GPU_QUERY_DEFER=[string][int][bool]$GpuQueryDefer
@@ -434,6 +497,32 @@ try{
             # This observer is selected by run depth, independently of gameplay controls.
             Set-IniValue $SettingsPath 'Optimizations' 'async gpu profiler' $GpuDiagnostics
         }finally{$script:ApplyingCustomConfiguration=$false}
+    }
+    if($ExperimentSettingsFile){
+        if(-not $automatedSession){throw 'Per-experiment setting changes require an isolated automated route'}
+        $experimentIdentity=Get-Phase9FileIdentity $ExperimentSettingsFile
+        if($experimentIdentity.bytes -gt 65536){throw 'Experiment setting request exceeds 64 KiB'}
+        $experimentEntries=@([IO.File]::ReadAllText($ExperimentSettingsFile)|ConvertFrom-Json)
+        if($experimentEntries.Count -gt 64){throw 'Too many experiment setting changes'}
+        $script:ApplyingCustomConfiguration=$true
+        try{
+            foreach($entry in $experimentEntries){
+                if([string]$entry.section -cnotmatch '^(Cells|Optimizations|Terrain|Shaders|Video|Sound)$' -or
+                    [string]$entry.key -cnotmatch '^[a-z][a-z0-9 .-]{0,127}$' -or
+                    [string]$entry.value -cnotmatch '^(true|false|-?[0-9]+(?:\.[0-9]+)?)$'){throw 'Invalid experiment setting request'}
+                Set-IniValue $SettingsPath $entry.section $entry.key ([string]$entry.value)
+            }
+        }finally{$script:ApplyingCustomConfiguration=$false}
+        Copy-Item -LiteralPath $ExperimentSettingsFile -Destination (Join-Path $ProfileDir 'experiment-settings.json')
+    }
+    if($automatedSession){
+        foreach($entry in @(@('Video','fullscreen','false'),@('Video','minimize on focus loss','false'),@('Sound','master volume','0'))){
+            Set-OptimizedMWRouteIniValue -Path $SettingsPath -Section $entry[0] -Key $entry[1] -Value $entry[2]
+        }
+        $automatedSession.manifest.derived_private_inputs=@((Get-OptimizedMWFrozenFile $OpenmwCfgPath),(Get-OptimizedMWFrozenFile $SettingsPath),(Get-OptimizedMWFrozenFile (Join-Path $frozenRuntime.directory 'input_v3.xml')))
+        $automatedSession.manifest.scope='Automatic physical route on an unswitched private desktop; matched off-screen comparisons only. Guidance/holds and presentation cohort remain explicit.'
+        $automatedSession.manifest|Add-Member -NotePropertyName desktop -NotePropertyValue $privateDesktopName
+        Write-OptimizedMWRouteJson (Join-Path $automatedSession.directory 'SESSION.json') $automatedSession.manifest
     }
     Copy-Item -LiteralPath $SettingsPath -Destination (Join-Path $ProfileDir 'settings-effective-test.cfg') -Force
     if(Test-Path -LiteralPath $OpenmwCfgPath){Copy-Item -LiteralPath $OpenmwCfgPath -Destination (Join-Path $ProfileDir 'openmw.cfg') -Force}
@@ -591,6 +680,7 @@ try{
 
     # Focused nonblocking diagnostics. Avoid deep trace/profilers in performance runs.
     $env:OPENMW_P9_CAPTURE_TRANSPORT='1'
+    if($automatedSession){$env:OPENMW_P9_AUTOMATED_BENCHMARK='1'}
     $env:OPENMW_P9_RESOURCE_CAPACITY='131072'
     $env:OPENMW_V3_PAGING_FILE=Join-Path $ProfileDir 'v3-paging.csv'
     $env:OPENMW_V3_RENDER_FILE=Join-Path $ProfileDir 'v3-render.csv'
@@ -651,6 +741,12 @@ try{
     $runManifest=New-Phase9RunManifest -GameDir $GameDir -ProfileDir $ProfileDir -Mode $mode -Candidate $candidateProfile `
         -SettingsPath $SettingsPath -OpenmwCfgPath $OpenmwCfgPath -SavePath $SavePath -RouteLabel $RouteLabel -FrameCapLabel $FrameCapLabel -Cohort $Cohort -HitchCombination $hitchCombination
     if($frozenRuntime){$runManifest=Add-OptimizedMWFrozenManifest $runManifest $frozenRuntime}
+    if($automatedSession){
+        Assert-OptimizedMWRouteSessionInputs $automatedSession
+        Assert-OptimizedMWPlaybackIdentities $automatedSession.manifest.playback_inputs
+        Assert-OptimizedMWPlaybackIdentities $automatedSession.manifest.source_capture
+        $runManifest|Add-Member -NotePropertyName autonomous_route -NotePropertyValue $automatedSession.manifest
+    }
     Save-Phase9RunManifest $runManifest $ProfileDir
 
     Write-Host ''
@@ -669,7 +765,10 @@ try{
     if($SystemTrace -and (-not $systemTraceLink -or $systemTraceLink.capture_id -ne $quickSession.trace_state.capture_id)){
         throw 'The automatic Windows recorder did not link to this exact test. The game was not started.'
     }
-    if($frozenRuntime){
+    if($automatedSession){
+        $owned=Start-OptimizedMWRouteOwnedProcess -Executable $Exe -Arguments $automatedSession.arguments -WorkingDirectory $GameDir -StandardOutput $automatedSession.manifest.stdout_path -StandardError $automatedSession.manifest.stderr_path -NoConsole
+        $process=$owned.process
+    }elseif($frozenRuntime){
         $frozenArguments=Get-OptimizedMWFrozenArguments $frozenRuntime
         # The game is interactive and explicitly requested by the user.
         $process=Start-Process -FilePath $Exe -WorkingDirectory $GameDir -ArgumentList $frozenArguments -PassThru
@@ -690,10 +789,27 @@ try{
             $line='{0},{1:F3},{2:F1},{3:F1},{4:F1},{5:F3}' -f $now.ToUnixTimeMilliseconds(),($now-$start).TotalSeconds,($process.WorkingSet64/1MB),($process.PrivateMemorySize64/1MB),($process.VirtualMemorySize64/1MB),$process.TotalProcessorTime.TotalSeconds
             if($memoryLines.Count -lt 8192){[void]$memoryLines.Add($line)}else{$memoryDropped++}
         }catch{}
+        if($automatedSession -and ([DateTimeOffset]::UtcNow-$start).TotalSeconds -gt $AutomatedDeadlineSeconds){
+            $process.Kill();$process.WaitForExit();throw 'Owned automatic route exceeded its deadline'
+        }
         Start-Sleep -Milliseconds 1000
     }
     $process.WaitForExit()
     $exitCode=$process.ExitCode
+    if($automatedSession){Complete-OptimizedMWRouteOwnedOutput $owned;$ownedOutputComplete=$true}
+    if($automatedSession){
+        $playbackSummary=Export-OptimizedMWPlaybackLog -LogPath $automatedSession.manifest.stdout_path -OutputPath (Join-Path $ProfileDir 'playback.jsonl') -SessionId $automatedSession.id -ExitCode $exitCode
+        Assert-OptimizedMWPlaybackIdentities $automatedSession.manifest.source_capture
+        $protectedAfter=Get-OptimizedMWRouteProtectedInputs $automatedSession.baseline
+        $protectedUnchanged=Compare-OptimizedMWRouteProtectedInputs $automatedSession.manifest.protected_before $protectedAfter
+        $playbackSummary|Add-Member -NotePropertyName protected_inputs_unchanged -NotePropertyValue $protectedUnchanged
+        $playbackSummary|Add-Member -NotePropertyName launch_scope -NotePropertyValue 'private_desktop_windowed_rendering'
+        Write-OptimizedMWRouteJson (Join-Path $ProfileDir 'playback-summary.json') $playbackSummary
+        Copy-Item -LiteralPath (Join-Path $automatedSession.directory 'SESSION.json') -Destination (Join-Path $ProfileDir 'playback-session.json')
+        Copy-Item -LiteralPath $automatedSession.manifest.stdout_path -Destination (Join-Path $ProfileDir 'playback-stdout.log')
+        Copy-Item -LiteralPath $automatedSession.manifest.stderr_path -Destination (Join-Path $ProfileDir 'playback-stderr.log')
+        if(-not $playbackSummary.playback_complete -or -not $protectedUnchanged -or $exitCode -ne 0){throw 'Automatic route failed; retained complete raw failure evidence'}
+    }
     [IO.File]::WriteAllLines($memoryCsv,$memoryLines,[Text.Encoding]::ASCII)
     "memory_samples_dropped=$memoryDropped" | Add-Content -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt') -Encoding Ascii
     "exit_code=$exitCode" | Add-Content -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt') -Encoding Ascii
@@ -720,6 +836,9 @@ catch{
     }
 }
 finally{
+    if($automatedSession -and $owned -and -not $ownedOutputComplete -and $owned.process.HasExited){
+        try{Complete-OptimizedMWRouteOwnedOutput $owned}catch{Write-Warning $_.Exception.Message}
+    }
     # Never change the shared settings back while the launched game still uses them.
     if($null -ne $process){
         try{if(-not $process.HasExited){$process.WaitForExit()};$exitCode=$process.ExitCode}catch{}
@@ -782,6 +901,15 @@ try{
         else{Write-Host 'Your normal settings have been restored.' -ForegroundColor Green}
     }
     Write-Host "Upload this ZIP: $uploadPath" -ForegroundColor Cyan
+    if($automatedSession -and $AutomatedResultFile){
+        if(Test-Path -LiteralPath $AutomatedResultFile){throw 'Preserving existing automatic run receipt'}
+        Write-OptimizedMWRouteJson $AutomatedResultFile ([ordered]@{
+            schema=1;profile_directory=$ProfileDir;zip=Get-Phase9FileIdentity $uploadPath;
+            launch_failure=$(if($launchFailure){[string]$launchFailure}else{$null});exit_code=$exitCode;playback=$playbackSummary;
+            settings_restore_verified=$restoreVerified;environment_restore_verified=$environmentRestoreVerified;
+            scope='OFFSCREEN_GUIDED_ROUTE_COMPARISON';run_manifest=(Join-Path $ProfileDir 'RUN-MANIFEST.json')
+        })
+    }
     if($zip.Missing.Count){Write-Host ('Partial capture; missing: '+($zip.Missing -join ', ')) -ForegroundColor Yellow}
     if(-not $NoPrompt){try{Start-Process explorer.exe -ArgumentList "/select,`"$uploadPath`""}catch{}}
 }catch{

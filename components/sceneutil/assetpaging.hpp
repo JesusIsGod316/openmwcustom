@@ -278,6 +278,7 @@ namespace SceneUtil::AssetPaging
         HlodBuildResult hlod;
     };
     Tiers buildTiers(osg::Node& originalSource, osg::Group& optimizedControl, std::string_view identity,
-        unsigned eligible, osg::Camera* mainCamera, Outcome& outcome, bool activeGridLod = false);
+        unsigned eligible, osg::Camera* mainCamera, Outcome& outcome, bool activeGridLod = false,
+        bool cacheHitAdmission = false);
 }
 #endif

@@ -230,6 +230,11 @@ int main(int argc, char** argv) try
     osg::ref_ptr<osg::Geode> nestedGeode = new osg::Geode;
     for (unsigned i = 0; i < 3; ++i) nestedGeode->addDrawable(geometry(-.8f + .5f*i,nullptr));
     materialAncestor->addChild(nestedGeode); nestedTransform->addChild(materialAncestor); nested->addChild(nestedTransform);
+    require(Packet::sourceAncestryCertified(*nested), "original immutable material ancestry must qualify before clone");
+    nestedTransform->setUpdateCallback(new osg::NodeCallback);
+    require(!Packet::sourceAncestryCertified(*nested), "original controller provenance must refuse packets");
+    nestedTransform->setUpdateCallback(nullptr);
+    require(!Packet::sourceAncestryCertified(*nested,1), "source certificate must honor bounded graph work");
     osg::ref_ptr<osg::Node> nestedControl = osg::clone(nested.get(), osg::CopyOp::DEEP_COPY_NODES
         | osg::CopyOp::DEEP_COPY_DRAWABLES | osg::CopyOp::DEEP_COPY_ARRAYS | osg::CopyOp::DEEP_COPY_PRIMITIVES);
     const auto nestedSubmitted = Packet::Counters::submitted.load();
@@ -256,12 +261,31 @@ int main(int argc, char** argv) try
     const auto ancestryFallback = Packet::Counters::fallbacks.load(); viewer.frame();
     require(Packet::Counters::fallbacks > ancestryFallback, "changed material ancestor must fall back");
     materialAncestor->setCullCallback(nullptr);
+    // An ordinary paging group can contain sorted transparent siblings. Keep
+    // them on their original path while batching only certified opaque rows.
+    osg::ref_ptr<osg::Group> mixed = new osg::Group;
+    mixed->addChild(osg::clone(nestedControl.get(),osg::CopyOp::DEEP_COPY_NODES | osg::CopyOp::DEEP_COPY_DRAWABLES));
+    auto glass = geometry(-.5f,transparent); mixed->addChild(glass);
+    require(Packet::sourceAncestryCertified(*mixed), "opacity must not erase immutable source provenance");
+    osg::ref_ptr<osg::Node> mixedControl = osg::clone(mixed.get(),osg::CopyOp::DEEP_COPY_NODES | osg::CopyOp::DEEP_COPY_DRAWABLES);
+    const auto mixedBuilt = Packet::Counters::built.load();
+    require(Packet::buildCertifiedSubtrees(*mixed,1024,true) == mixed && Packet::Counters::built==mixedBuilt,
+        "strict control must refuse mixed opaque/transparent ancestry");
+    auto mixedCandidate = Packet::buildCertifiedSubtrees(*mixed,1024,true,true);
+    require(Packet::Counters::built>mixedBuilt && mixed->getChild(1)==glass,
+        "selective paging must engage opaque rows and preserve transparent sibling identity");
+    const auto mixedSubmitted = Packet::Counters::submitted.load();
+    viewer.setSceneData(mixedControl);viewer.frame();const auto mixedPixels=pixels->data;
+    viewer.setSceneData(mixedCandidate);viewer.frame();
+    require(pixels->data==mixedPixels && Packet::Counters::submitted>mixedSubmitted,
+        "selective ordinary packets must preserve exact pixels and actually submit rows");
     viewer.setSceneData(nullptr);
     auto* renderer = dynamic_cast<osgViewer::Renderer*>(camera->getRenderer());
     require(renderer != nullptr, "fixture renderer missing at retirement");
     for (unsigned i = 0; i < 2; ++i) renderer->getSceneView(i)->setSceneData(nullptr);
     candidate = nullptr;
     nestedCandidate = nullptr; nested = nullptr; nestedTransform = nullptr; materialAncestor = nullptr; nestedGeode = nullptr;
+    mixedCandidate = nullptr; mixed = nullptr;
     require(Packet::Counters::liveBytes.load() == initialBytes, "retired packet metadata quota leaked");
     std::cout << "Persistent opaque packets: pixel, inherited material, camera, masks, near/far, producer revision,"
         " custom callback, structural fallback, visitor, quota retirement and positive submission checks passed\n";

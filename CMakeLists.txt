@@ -1279,6 +1279,9 @@ if(WIN32)
     install(FILES
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8g4/START-OptimizedMW-Test.bat"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_Test.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/benchmark_desktop.py"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/benchmark_matrix.py"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/AUTOMATED-BENCHMARKS.txt"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_NumericMenu.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_MemoryProfile.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/MEMORY-PROFILES.txt"

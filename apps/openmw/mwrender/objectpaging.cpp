@@ -1600,6 +1600,9 @@ namespace MWRender
         for (unsigned int i = 0; i < v315PacketCount; ++i)
             v312MergeGroups.emplace_back(new osg::Group);
         osg::Group* mergeGroup = v312MergeGroups.front().get();
+        const bool ordinaryPackets = Settings::cells().mOptimizedMWOrdinaryOpaquePackets
+            && SceneUtil::PersistentOpaquePackets::enabled();
+        std::map<const osg::Group*, bool> ordinaryPacketSources;
         struct AssetPartition
         {
             osg::ref_ptr<osg::Group> control = new osg::Group;
@@ -1717,6 +1720,12 @@ namespace MWRender
             {
                 SceneUtil::PagingWorkScope::checkpoint();
                 const osg::Node* cnode = pair.first;
+                const bool packetSource = ordinaryPackets && SceneUtil::PersistentOpaquePackets::sourceAncestryCertified(*cnode);
+                if (ordinaryPackets)
+                {
+                    if (packetSource) ++SceneUtil::PersistentOpaquePackets::Counters::sourceCertified;
+                    else ++SceneUtil::PersistentOpaquePackets::Counters::sourceRejected;
+                }
 
             const AnalyzeVisitor::Result& analyzeResult = pair.second.mAnalyzeResult;
 
@@ -1999,7 +2008,15 @@ namespace MWRender
                         partition.source->addChild(osg::clone(trans.get(), osg::CopyOp::DEEP_COPY_NODES
                             | osg::CopyOp::DEEP_COPY_DRAWABLES | osg::CopyOp::DEEP_COPY_ARRAYS | osg::CopyOp::DEEP_COPY_PRIMITIVES));
                 }
-                else attachTo->addChild(trans);
+                else
+                {
+                    attachTo->addChild(trans);
+                    if (merge && ordinaryPackets)
+                    {
+                        const auto [source, inserted] = ordinaryPacketSources.emplace(attachTo, packetSource);
+                        if (!inserted) source->second = source->second && packetSource;
+                    }
+                }
                 if (assetSourceAdmission)
                 {
                     const unsigned owner = assetCandidate ? assetPartitions.at(assetKey).materialOwner : 1u;
@@ -2320,7 +2337,7 @@ namespace MWRender
             {
                 auto& partition = *asset->second;
                 auto tiers = SceneUtil::AssetPaging::buildTiers(*partition.source,*mergeGroup,partition.identity,
-                    partition.eligible,mAssetMainCamera.get(),assetOutcome);
+                    partition.eligible,mAssetMainCamera.get(),assetOutcome,false,Settings::cells().mOptimizedMWLodCacheHitAdmission);
                 assetLod = std::move(tiers.lod);
                 assetHlod = std::move(tiers.hlod);
                 if (assetLod.node) assetDerivedHostBytes += assetLod.derivedIndices * sizeof(unsigned)
@@ -2351,6 +2368,9 @@ namespace MWRender
             }
 
             // Shadow certification consumed the ordinary optimized control above.
+            if (ordinaryPackets && !assetControls.contains(mergeGroup) && !postOptimizedLodOnly
+                && ordinaryPacketSources.contains(mergeGroup) && ordinaryPacketSources.at(mergeGroup))
+                wrappedMergeNode = SceneUtil::PersistentOpaquePackets::buildCertifiedSubtrees(*mergeGroup,1024,true,true);
             // Only the original-before-CopyOp certified private asset partitions
             // may recursively attach P1 across retained material-bearing Geodes.
             if (assetControls.contains(mergeGroup))
@@ -2454,7 +2474,8 @@ namespace MWRender
                     if(mFixtureBeforeLodCook) mFixtureBeforeLodCook(*control);
 #endif
                     auto tiers = SceneUtil::AssetPaging::buildTiers(*control,*control,postLodIdentity,
-                        SceneUtil::AssetPaging::Lod,mAssetMainCamera.get(),assetOutcome,activeGrid);
+                        SceneUtil::AssetPaging::Lod,mAssetMainCamera.get(),assetOutcome,activeGrid,
+                        Settings::cells().mOptimizedMWLodCacheHitAdmission);
                     if (!tiers.lod.node) continue;
                     auto* derived = tiers.lod.node->derived();
                     osg::ref_ptr<SceneUtil::GeneratedStaticLod::Group> selector = new SceneUtil::GeneratedStaticLod::Group(
@@ -2817,6 +2838,7 @@ namespace MWRender
             };
             report("L1 Source Requests", C::requests); report("L1 Source Certified", C::certified);
             report("L1 Built Bundles", C::built); report("L1 Disk Hits", C::diskHits);
+            report("L1 Cache Fast Hits", C::cacheFastHits); report("L1 Cache Miss Admissions", C::cacheMissAdmissions);
             report("L1 Original Indices", C::originalIndices); report("L1 Tier Indices", C::derivedIndices);
             report("Asset Main Derived Views", C::coarseViews); report("Asset Original Views", C::originalViews);
             report("L1 Consumed Draws", C::derivedDraws); report("L1 Consumed Indices", C::submittedIndices);

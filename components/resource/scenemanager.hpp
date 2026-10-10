@@ -14,6 +14,7 @@
 #include <osg/ref_ptr>
 
 #include "resourcemanager.hpp"
+#include "objectcache.hpp"
 #include "v321classifiedcompileset.hpp"
 
 #include <components/sceneutil/lightmanager.hpp>
@@ -182,6 +183,17 @@ namespace Resource
         /// Only templates with no update traversal are accepted. Thread safe.
         bool prepareInstance(VFS::Path::NormalizedView path);
 
+        void configureMaterialImagePreparation(bool enabled, unsigned budgetMiB);
+        // Worker-only discovery of future animated material inputs. Owners are
+        // attached to the existing bounded cell lifetime, not a global pin set.
+        void prepareMaterialImages(const osg::Node& sceneTemplate,
+            std::vector<ObjectCacheLease>& owners, std::uint64_t& ownedBytes);
+        struct MaterialPreparationStats
+        {
+            std::atomic_uint64_t discovered{0}, ready{0}, decoded{0}, deferred{0}, animatedSources{0};
+        };
+        const MaterialPreparationStats& materialPreparationStats() const { return mMaterialPreparationStats; }
+
         /// Instance the given scene template and immediately attach it to a parent node
         /// @see getTemplate
         /// @note Not thread safe, unless parentNode is not part of the main scene graph yet.
@@ -287,6 +299,9 @@ namespace Resource
         bool mSupportsClusteredLighting = false;
         bool mAutoUseNormalMaps = false;
         bool mAutoUseSpecularMaps = false;
+        bool mPrepareMaterialImages = false;
+        std::uint64_t mMaterialImageBudget = 0;
+        MaterialPreparationStats mMaterialPreparationStats;
         bool mConvertAlphaTestToAlphaToCoverage = false;
         bool mAdjustCoverageForAlphaTest = false;
         bool mSupportsNormalsRT = false;

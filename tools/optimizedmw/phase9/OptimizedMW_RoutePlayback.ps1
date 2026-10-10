@@ -8,12 +8,13 @@ param(
     [switch]$AnimationMovement,
     [switch]$NativeGuidance,
     [switch]$SerialRenderer,
+    [switch]$BenchmarkWindow,
     [switch]$PrepareOnly,
     [switch]$LibraryOnly
 )
 $ErrorActionPreference='Stop'
 # Dot-sourced recorder parameters must not replace this invocation's switches.
-$playbackInvocation=@{Game=$GameDir;Capture=$CaptureDirectory;Route=$Route;Frozen=$FrozenConfigDirectory;Python=$PythonExecutable;Raw=[bool]$RawInputs;Animation=[bool]$AnimationMovement;NativeGuidance=[bool]$NativeGuidance;Serial=[bool]$SerialRenderer;Prepare=[bool]$PrepareOnly;Library=[bool]$LibraryOnly}
+$playbackInvocation=@{Game=$GameDir;Capture=$CaptureDirectory;Route=$Route;Frozen=$FrozenConfigDirectory;Python=$PythonExecutable;Raw=[bool]$RawInputs;Animation=[bool]$AnimationMovement;NativeGuidance=[bool]$NativeGuidance;Serial=[bool]$SerialRenderer;Benchmark=[bool]$BenchmarkWindow;Prepare=[bool]$PrepareOnly;Library=[bool]$LibraryOnly}
 . (Join-Path $PSScriptRoot 'OptimizedMW_FrozenConfig.ps1')
 . (Join-Path $PSScriptRoot 'OptimizedMW_RouteRecorder.ps1') -GameDir $playbackInvocation.Game -LibraryOnly
 
@@ -75,7 +76,7 @@ function Get-OptimizedMWPlaybackPlan {
 }
 
 function New-OptimizedMWPlaybackSession {
-    param([string]$GameDirectory,[string]$Capture,[string]$Frozen,[string]$Python,[switch]$Raw,[switch]$Animation,[switch]$NativeGuidance,[switch]$SerialRenderer,[ValidateSet('','existing','balmora')][string]$RouteName='')
+    param([string]$GameDirectory,[string]$Capture,[string]$Frozen,[string]$Python,[switch]$Raw,[switch]$Animation,[switch]$NativeGuidance,[switch]$SerialRenderer,[switch]$BenchmarkWindow,[ValidateSet('','existing','balmora')][string]$RouteName='')
     $game=Assert-OptimizedMWPlainPath $GameDirectory
     # Refuse old/incomplete sources before creating a private session.
     $admissionPlan=Get-OptimizedMWPlaybackPlan -SourceNative:$false -Raw:$Raw -Animation:$Animation -NativeGuidance:$NativeGuidance
@@ -85,7 +86,12 @@ function New-OptimizedMWPlaybackSession {
     if(-not $Python){$Python=(Get-Command python.exe -ErrorAction Stop).Source}
     $pythonIdentity=Get-OptimizedMWFrozenFile $Python
     $package=Assert-OptimizedMWPlainPath (Join-Path $game 'RoutePlayback')
-    $session=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $Frozen -PackageDirectory (Join-Path $game 'RouteRecorder') -RouteName $RouteName -SmallValidationWindow -OutputCategory Playback
+    $session=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $Frozen -PackageDirectory (Join-Path $game 'RouteRecorder') -RouteName $RouteName -SmallValidationWindow:(-not $BenchmarkWindow) -OutputCategory Playback
+    if($BenchmarkWindow){
+        # Preserve baseline resolution and renderer; isolated desktop windows cannot minimize.
+        Set-OptimizedMWRouteIniValue -Path $session.runtime.settings_path -Section 'Video' -Key 'fullscreen' -Value 'false'
+        Set-OptimizedMWRouteIniValue -Path $session.runtime.settings_path -Section 'Video' -Key 'minimize on focus loss' -Value 'false'
+    }
     # Guided feedback needs the native input vector to determine displacement.
     # Keep authored animation displacement for the raw control/explicit experiment.
     $sourceNative=($null -ne $source.movement_cohort -and $source.movement_cohort.private_override)
@@ -281,7 +287,7 @@ function Invoke-OptimizedMWRoutePlayback {
         }
         if(-not $capture){throw 'No compatible complete recording found for this route. Use START-OptimizedMW-RecordRoute.bat to record it outdoors first.'}
     }
-    $session=New-OptimizedMWPlaybackSession -GameDirectory $game -Capture $capture -Frozen $playbackInvocation.Frozen -Python $playbackInvocation.Python -Raw:$playbackInvocation.Raw -Animation:$playbackInvocation.Animation -NativeGuidance:$playbackInvocation.NativeGuidance -SerialRenderer:$playbackInvocation.Serial -RouteName $route
+    $session=New-OptimizedMWPlaybackSession -GameDirectory $game -Capture $capture -Frozen $playbackInvocation.Frozen -Python $playbackInvocation.Python -Raw:$playbackInvocation.Raw -Animation:$playbackInvocation.Animation -NativeGuidance:$playbackInvocation.NativeGuidance -SerialRenderer:$playbackInvocation.Serial -BenchmarkWindow:$playbackInvocation.Benchmark -RouteName $route
     Write-Host ('Source recording: '+$capture)
     Write-Host ('Playback evidence: '+$session.directory)
     Write-Host ('Playback protocol: '+$session.manifest.playback_protocol+'; preview only.')

@@ -132,24 +132,26 @@ namespace Resource
         return current && current.mRevision == lease.mRevision && current.mCharge == lease.mCharge;
     }
 
-    ObjectCacheLease ImageManager::prepareImage(VFS::Path::NormalizedView path, std::uint64_t maximumEstimate)
+    ObjectCacheLease ImageManager::prepareImage(VFS::Path::NormalizedView path, std::uint64_t maximumEstimate,
+        std::uint64_t retainedLimit)
     {
         if (!SpeculativeScope::active() || !maximumEstimate) throw SpeculativeDeferred{};
         if (auto ready = getImageLease(path))
         {
-            if (ready.bytes() > maximumEstimate) throw SpeculativeDeferred{};
+            if (ready.bytes() > maximumEstimate || ready.bytes() > retainedLimit) throw SpeculativeDeferred{};
             return ready;
         }
         // This is an admission estimate, not a bound on arbitrary plugin
         // internals. Unknown headers decline optional work before decoding.
         auto stream = mVFS->get(path);
-        const auto estimate = estimateStream(*stream, true);
-        if (!estimate.knownDimensions || estimate.peak > maximumEstimate || estimate.retained > maximumEstimate)
+        const auto estimate = estimateStream(*stream, true, mPreciseRawDdsPreload);
+        if (!estimate.knownDimensions || estimate.peak > maximumEstimate || estimate.retained > maximumEstimate
+            || estimate.retained > retainedLimit)
             throw SpeculativeDeferred{};
         stream.reset();
         const auto image = getImage(path);
         auto lease = getImageLease(path, image);
-        if (!lease || lease.bytes() > maximumEstimate) throw SpeculativeDeferred{};
+        if (!lease || lease.bytes() > maximumEstimate || lease.bytes() > retainedLimit) throw SpeculativeDeferred{};
         return lease;
     }
 
@@ -238,7 +240,7 @@ namespace Resource
                 return mWarningImage;
             }
 
-            const auto estimate = SpeculativeScope::active() ? estimateStream(*stream, true) : PreloadEstimate{};
+            const auto estimate = SpeculativeScope::active() ? estimateStream(*stream, true, mPreciseRawDdsPreload) : PreloadEstimate{};
             SpeculativeScope::Stage memoryStage(estimate.peak, estimate.retained);
             bool killAlpha = false;
             if (reader->supportedExtensions().count("tga"))

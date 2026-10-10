@@ -1,0 +1,64 @@
+OptimizedMW autonomous comparison batch
+
+One executable contains the independent candidates and their controls. Change
+settings between runs; do not compile or change packages during a comparison.
+
+[Cells]
+prepare material images = false
+material image preparation mib = 64
+lod cache hit admission = false
+ordinary opaque packets = false
+
+Material images discovers animated-template future images and their normal,
+normal-height and specular companions through the same VFS/naming rules as the
+production shader path. It keeps authored pixels/mips and publishes into the
+ordinary CPU image cache. Pins belong to the bounded cell-preparation lifetime,
+within the shared future/scratch budgets. No texture allowlist, driver-context
+work, format conversion or guarantee of stall-free GL submission is involved.
+
+LOD cache-hit admission avoids packing attributes and reserving simplifier
+scratch for a validated existing reduced-index product. A miss extends the
+reservation before cooking, or retains the ordinary fallback. Requires the
+existing generated-static-LOD asset lane (AssetMask 1).
+
+Ordinary opaque packets extends packet attachment into original-source-certified
+ordinary paging groups, preserving material/transform ancestry and transparent
+fallbacks. Requires the existing packet renderer switch (ArchitectureMask 4).
+Use that renderer switch in both control and candidate for an isolated comparison.
+
+benchmark_matrix.py --plan PLAN.json --output FRESH_DIRECTORY
+
+The plan names game_directory, symbols, route_catalog, powershell, deadline and
+cases. Each case names id, route (SeydaNeen/Balmora), depth (Normal/Deep),
+architecture_mask, asset_mask, and settings [{section,key,value}]. Request values
+are readable settings, independently selectable and combinable in the same build.
+
+The host creates an unswitched private desktop, runs a normal non-minimized
+rendering window at the frozen resolution, suppresses console allocation, mutes
+the actual registered Sound/master volume setting and retains crash evidence.
+It does not switch desktops, inject input, launch a visible fallback, open an
+Explorer result or start an elevated Windows recorder. Owned descendants are
+bounded by a kill-on-close job. Visible owned windows on the input desktop stop
+the run. The engine refuses an automatic run unless its resolved master volume
+is zero. Every comparison uses the same muted cohort.
+
+Canonical archives stay in Benchmarks. Each matrix keeps build/route/tool pins,
+requested settings, desktop/process receipts, route/actor policy, artifact hashes
+and pacing analysis. Source route/save files and regular gameplay settings are
+verified unchanged. Failure preserves evidence and stops broader comparisons.
+
+Functional route completion and engagement are separate from performance proof.
+The guided physical follower can add steering and reference-clock holds. Review
+repeated controls for route/path/cell/combat, timing, host-load and pacing stability
+before accepting numerical A/B results. Use matched ABBA repeats. Deep output is
+diagnostic and must not be pooled with Normal FPS results. Off-screen presentation
+is a separate cohort from visible user gameplay. No automatic promotion occurs.
+
+Analysis includes median/tail times, MAD/IQR/standard deviation, adjacent-frame
+changes and rolling-median relative spikes below fixed hitch thresholds. Route
+phase boundaries use logged wall-time prefixes joined to system-clock frames,
+with one-second margins. Lua boot-relative wall time is not an epoch clock, and
+log delivery is not an exact CPU-span temporal join.
+
+Build caches, PCH/OBJ/LIB files, pinned dependencies and matching symbols remain
+in place. Reclaimable user-approved cleanup is separate from active build work.
