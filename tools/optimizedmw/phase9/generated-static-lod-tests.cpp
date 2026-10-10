@@ -437,7 +437,15 @@ int main(int argc, char** argv) try
     }
     {
         auto* original=originals.values.front(); auto* tier=tiers.values.front();
-        auto* sourceState=original->getStateSet();
+        struct FirstMaterial final : osg::NodeVisitor
+        {
+            osg::StateSet* state=nullptr;
+            FirstMaterial():osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) {}
+            void apply(osg::Node& node) override
+            { if(!state){state=node.getStateSet();if(!state)traverse(node);} }
+        } material;
+        selected.node->original()->accept(material);
+        auto* sourceState=material.state;
         require(sourceState,"actual material StateSet required for variance regression");
         const auto initialVariance=sourceState->getDataVariance();
         sourceState->setDataVariance(osg::Object::UNSPECIFIED);
