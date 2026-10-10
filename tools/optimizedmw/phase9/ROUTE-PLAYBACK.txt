@@ -1,13 +1,16 @@
-BALMORA PLAYBACK PREVIEW
+OUTDOOR ROUTE PLAYBACK PREVIEW
 
-Launch START-OptimizedMW-Playback.bat. It selects the newest complete Balmora
-recording and verifies its route, session, summary and captured starting save.
+Launch START-OptimizedMW-Playback.bat. Choose 1 for Seyda Neen, 2 for Balmora,
+or 0 to exit. It selects the newest compatible complete recording for that
+route and verifies its identity, footer and captured starting save.
+Seyda Neen requires a NEW outdoor recording from the repaired native movement
+profile. The old incomplete indoor/combat capture stays rejected.
 The initial preview is a visible 1280x720 window. It starts automatically after
 loading and encounter-policy readiness; no start or checkpoint keys are needed.
 Let it run. Bare F11 aborts and exits. It exits automatically at the route end.
 
 Private settings, saves and Lua inputs are created under TestSessions. Results
-are in Benchmarks\Playback\balmora_<session>. The original recording, starting
+are in Benchmarks\Playback\<existing|balmora>_<session>. The original recording, starting
 save, frozen baseline and normal gameplay configuration are preserved.
 The engine's fixed Windows renderer cache is still shared.
 
@@ -17,8 +20,10 @@ camera direction. Normal physics and collisions move the character. Playback
 never writes position, disables collision, or changes the character's stats.
 The private guided profile uses [Game] player movement ignores animation = true.
 Visual animations still play; native movement inputs determine displacement.
-This differs from the recorded animation-dependent movement cohort and is
-recorded explicitly in SESSION.json with the private settings identity.
+Fresh default recordings use the same native movement setting. The old complete
+Balmora recording remains an explicitly legacy preview control whose recorded
+movement differs. SESSION.json records source cohort, playback model, matching
+status and the derived private settings identity.
 If the character falls behind, the reference clock can briefly hold while
 ordinary movement catches up. Steering, holds, reference lag, position/camera
 errors and live collision state are recorded at 5 Hz using OMWPLAY JSON records.
@@ -29,16 +34,18 @@ This is a guided route preview, not a performance benchmark. Its steering and
 reference-clock holds change the original timed-input workload. Reaching the end
 does not prove repeatable actor workload or qualify a performance comparison.
 Review SUMMARY.json and playback.jsonl before designing an automatic benchmark.
-Current support
-is limited to the complete exterior Balmora recording, with no jump, attack,
-activation, door, menu or interior replay. The older incomplete Seyda Neen recording
+Both explicit route identities support first-person outdoor movement, including
+unnamed exterior cells. Canonical cell grid IDs identify cells; display names
+do not. Jump, attack, activation, doors, menus and interiors are unsupported. The older incomplete Seyda Neen recording
 remains incomplete and is not admitted by this launcher.
 
 Developer use:
-powershell -NoProfile -File OptimizedMW_RoutePlayback.ps1 -GameDir C:\OptimizedMW_Test -PrepareOnly
+powershell -NoProfile -File OptimizedMW_RoutePlayback.ps1 -GameDir C:\OptimizedMW_Test -Route existing -PrepareOnly
 Optional -CaptureDirectory selects a specific complete recording.
-Optional -RawInputs preserves the original uncorrected timed-input control path.
-Optional -AnimationMovement keeps the frozen animation-dependent movement setting
+Optional -Route existing|balmora selects a route without the numeric prompt.
+Optional -RawInputs preserves uncorrected timed-input controls and the recorded
+native movement cohort when present. Legacy sources keep the frozen setting.
+Optional -AnimationMovement explicitly uses private animation displacement
 for a guided diagnostic control; it can reproduce the observed steering failure.
 SUMMARY.json distinguishes playback_complete from input_replay_complete; guided
 completion never claims exact raw-input completion. Both protocols remain

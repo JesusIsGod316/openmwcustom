@@ -5,6 +5,26 @@ M.finite = finite
 function M.angleDelta(target, actual) return (target - actual + math.pi) % (2 * math.pi) - math.pi end
 local function vector(v)
     return type(v) == 'table' and finite(v.x) and finite(v.y) and finite(v.z)
+        and math.abs(v.x) <= 1e8 and math.abs(v.y) <= 1e8 and math.abs(v.z) <= 1e8
+end
+local function exteriorCell(s)
+    assert(type(s.cell_id) == 'string' and s.exterior == true, 'Invalid exterior cell identity')
+    local x, y = s.cell_id:match('^Esm3ExteriorCell:(%-?%d+):(%-?%d+)$')
+    x, y = tonumber(x), tonumber(y)
+    assert(finite(x) and finite(y) and x >= -2147483648 and x <= 2147483647
+        and y >= -2147483648 and y <= 2147483647
+        and s.cell_id == string.format('Esm3ExteriorCell:%d:%d', x, y), 'Noncanonical exterior cell identity')
+    if s.grid_x ~= nil or s.grid_y ~= nil then
+        assert(finite(s.grid_x) and finite(s.grid_y) and s.grid_x == x and s.grid_y == y,
+            'Exterior cell grid disagrees with identity')
+    end
+    assert(type(s.cell_name) == 'string' and #s.cell_name <= 512 and not s.cell_name:find('%c'),
+        'Invalid exterior cell display name')
+end
+local function nativeCohort(cohort)
+    assert(type(cohort) == 'table' and cohort.model == 'native_input_displacement_with_visual_animations'
+        and cohort.private_override == true, 'Invalid native movement cohort')
+    for key in pairs(cohort) do assert(key == 'model' or key == 'private_override', 'Unknown movement cohort field') end
 end
 function M.distance(a, b)
     local x, y, z = a.x - b.x, a.y - b.y, a.z - b.z
@@ -22,7 +42,12 @@ local function validateRows(rows, duration, check)
 end
 function M.validate(timeline)
     assert(type(timeline) == 'table' and timeline.schema == 1, 'Invalid playback timeline schema')
-    assert(timeline.route_name == 'balmora', 'This preview supports the recorded Balmora route only')
+    assert(timeline.route_name == 'balmora' or timeline.route_name == 'existing', 'Unsupported recorded route identity')
+    if timeline.route_name == 'existing' or timeline.movement_cohort ~= nil then nativeCohort(timeline.movement_cohort) end
+    if timeline.movement_cohort_status ~= nil then
+        assert(timeline.movement_cohort_status == (timeline.movement_cohort and 'recorded_native' or 'legacy_unrecorded'),
+            'Movement cohort status disagrees with metadata')
+    end
     local duration = timeline.duration
     assert(finite(duration) and duration > 0 and duration <= 180, 'Playback duration out of bounds')
     validateRows(timeline.controls, duration, function(c)
@@ -34,10 +59,16 @@ function M.validate(timeline)
         assert(c.jump == false and c.use == 0, 'Preview does not support jump or combat triggers')
     end)
     validateRows(timeline.samples, duration, function(s)
-        assert(vector(s.position) and type(s.cell_id) == 'string' and s.exterior == true, 'Invalid exterior pose sample')
+        assert(vector(s.position), 'Invalid exterior pose sample')
+        exteriorCell(s)
         assert(type(s.camera) == 'table' and finite(s.camera.yaw) and finite(s.camera.pitch)
             and finite(s.camera.fov) and s.camera.fov > 0 and s.camera.fov < math.pi and s.camera.mode == 1,
             'Preview requires finite first-person camera samples')
+        assert(math.abs(s.camera.yaw) <= 2 * math.pi and math.abs(s.camera.pitch) <= math.pi/2,
+            'Preview camera angles out of bounds')
+        for _, key in ipairs({'extra_yaw','extra_pitch','roll'}) do
+            assert(s.camera[key] == nil or s.camera[key] == 0, 'Preview does not support additional camera layers')
+        end
     end)
     assert(timeline.controls[1].t == 0 and timeline.samples[1].t == 0, 'Playback requires a time-zero input and pose')
     local previous = -math.huge
@@ -54,7 +85,7 @@ local function poseAt(timeline, poseIndex, t)
     local function mix(x, y) return x + (y - x) * alpha end
     return {
         position = { x = mix(a.position.x, b.position.x), y = mix(a.position.y, b.position.y), z = mix(a.position.z, b.position.z) },
-        cell_id = a.cell_id, cell_name = a.cell_name, exterior = a.exterior,
+        cell_id = a.cell_id, cell_name = a.cell_name, exterior = a.exterior, grid_x = a.grid_x, grid_y = a.grid_y,
         camera = { yaw = a.camera.yaw + M.angleDelta(b.camera.yaw, a.camera.yaw) * alpha,
             pitch = mix(a.camera.pitch, b.camera.pitch), fov = mix(a.camera.fov, b.camera.fov), mode = a.camera.mode },
         source_index = poseIndex, source_interval = b.t - a.t,

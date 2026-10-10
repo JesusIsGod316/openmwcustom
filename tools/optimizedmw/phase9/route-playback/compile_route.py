@@ -18,6 +18,9 @@ import sys
 MAX_ROUTE_BYTES = 16 * 1024 * 1024
 MAX_RECORDS = 60000
 MAX_DURATION = 180.0
+MAX_WALL_DURATION = 300.0
+ALLOWED_ROUTES = {"balmora", "existing"}
+NATIVE_MOVEMENT_COHORT = {"model": "native_input_displacement_with_visual_animations", "private_override": True}
 ALLOWED_EVENTS = {"ready", "start", "finish", "control", "sample", "checkpoint", "pause", "cell", "policy"}
 
 
@@ -98,13 +101,65 @@ def policy_qualified(policy, label):
         require(type(policy.get(key)) is int and policy[key] == 0, f"Nonzero or unavailable {label} {key}")
 
 
+def checkpoint_authenticated(summary, start, session_id, route_name, copied_identity):
+    """Authenticate the acknowledged new slot without reading a mutable runtime save."""
+    checkpoint = start.get("checkpoint_save")
+    require(isinstance(checkpoint, dict), "Missing starting checkpoint metadata")
+    request = checkpoint.get("request")
+    request_pattern = re.escape(session_id) + r":start(?::(?:[2-9]|[1-9][0-9]{1,5}))?"
+    require(isinstance(request, str) and re.fullmatch(request_pattern, request) is not None
+            and checkpoint.get("description") == f"OptimizedMW route {route_name} {session_id}"
+            and checkpoint.get("source") == "private_menu_new_save_slot",
+            "Starting checkpoint is not the authenticated new private route slot")
+    for key in ("directory", "filename"):
+        part = checkpoint.get(key)
+        require(isinstance(part, str) and 0 < len(part) <= 256
+                and re.search(r"[\\/:\r\n]|^\.{1,2}$|[. ]$", part) is None,
+                "Unsafe checkpoint save identity")
+    require(checkpoint["filename"].lower().endswith(".omwsave"), "Checkpoint is not an omwsave")
+    starting_save = summary.get("starting_save", {})
+    require(summary.get("checkpoint_save") == starting_save.get("metadata") == checkpoint,
+            "Raw/summary starting checkpoint metadata disagree")
+    original = starting_save.get("source")
+    require(isinstance(original, dict) and isinstance(original.get("sha256"), str)
+            and original["sha256"].lower() == copied_identity["sha256"]
+            and type(original.get("bytes")) is int and original["bytes"] == copied_identity["bytes"],
+            "Original/copy starting save identity mismatch")
+    return dict(checkpoint)
+
+
 def cell(value):
     require(isinstance(value, dict) and value.get("exterior") is True, "Playback currently supports exterior cells only")
     cell_id = text(value.get("id"), "cell ID")
-    require(re.fullmatch(r"Esm3ExteriorCell:-?\d+:-?\d+", cell_id), "Unsupported exterior cell identity")
-    cell_name = text(value.get("name"), "cell name")
-    require(cell_name == "Balmora", "Playback currently supports Balmora route cells only")
-    return {"cell_id": cell_id, "cell_name": cell_name, "exterior": True}
+    match = re.fullmatch(r"Esm3ExteriorCell:(-?\d+):(-?\d+)", cell_id)
+    require(match is not None, "Unsupported exterior cell identity")
+    grid_x, grid_y = (int(part) for part in match.groups())
+    require(all(-2147483648 <= coordinate <= 2147483647 for coordinate in (grid_x, grid_y))
+            and cell_id == f"Esm3ExteriorCell:{grid_x}:{grid_y}", "Noncanonical exterior cell identity")
+    if "grid_x" in value or "grid_y" in value:
+        require(type(value.get("grid_x")) is int and type(value.get("grid_y")) is int
+                and value["grid_x"] == grid_x and value["grid_y"] == grid_y,
+                "Exterior cell grid disagrees with identity")
+    cell_name = text(value.get("name"), "cell name", allow_empty=True)
+    return {"cell_id": cell_id, "cell_name": cell_name, "exterior": True, "grid_x": grid_x, "grid_y": grid_y}
+
+
+def movement_cohort(route_name, start, finish, ready):
+    """Do not infer acquisition movement semantics from a save or later settings."""
+    start_cohort, finish_cohort = start.get("movement_cohort"), finish.get("movement_cohort")
+    if start_cohort is None and finish_cohort is None and route_name == "balmora":
+        require(ready.get("movement_cohort") is None, "Mixed acquisition movement cohort")
+        return None, "legacy_unrecorded"
+    require(isinstance(start_cohort, dict) and isinstance(finish_cohort, dict)
+            and set(start_cohort) == set(finish_cohort) == set(NATIVE_MOVEMENT_COHORT)
+            and start_cohort.get("model") == finish_cohort.get("model") == NATIVE_MOVEMENT_COHORT["model"]
+            and start_cohort.get("private_override") is True and finish_cohort.get("private_override") is True,
+            "Acquisition requires matching native movement cohort at start/finish")
+    if ready.get("movement_cohort") is not None:
+        require(type(ready["movement_cohort"]) is dict and set(ready["movement_cohort"]) == set(NATIVE_MOVEMENT_COHORT)
+                and ready["movement_cohort"].get("model") == NATIVE_MOVEMENT_COHORT["model"]
+                and ready["movement_cohort"].get("private_override") is True, "Mixed acquisition movement cohort")
+    return dict(NATIVE_MOVEMENT_COHORT), "recorded_native"
 
 
 def camera(value):
@@ -173,8 +228,9 @@ def compile_route(capture, output, receipt):
             "Capture is not an intact qualified acquisition")
     session_id = summary.get("session")
     require(isinstance(session_id, str) and re.fullmatch(r"[0-9a-f]{32}", session_id), "Invalid capture session")
+    route_name = session_manifest.get("route")
     require(type(session_manifest.get("schema")) is int and session_manifest["schema"] == 1 and session_manifest.get("session") == session_id
-            and session_manifest.get("route") == "balmora", "Session manifest is not the selected Balmora recording")
+            and isinstance(route_name, str) and route_name in ALLOWED_ROUTES, "Session manifest is not a supported selected route recording")
     checked_identity(before[2], summary.get("route_file"), "Route")
     checked_identity(before[3], summary.get("starting_save", {}).get("route_copy"), "Starting save")
     rows = [read_json(line) for line in paths[2].read_bytes().splitlines()]
@@ -193,7 +249,8 @@ def compile_route(capture, output, receipt):
     require(dict(counts) == summary.get("events"), "Summary event counts disagree with raw evidence")
     start = next(row for row in rows if row["event"] == "start")
     finish = rows[-1]
-    require(start.get("route_name") == finish.get("route_name") == "balmora", "Route name mismatch")
+    require(start.get("route_name") == finish.get("route_name") == route_name, "Route name mismatch")
+    checkpoint_save = checkpoint_authenticated(summary, start, session_id, route_name, before[3])
     require(finish.get("expected_records") == len(rows), "Footer record count mismatch")
     require(finish.get("counts") == {key: value for key, value in counts.items() if key != "finish"}, "Footer event counts disagree")
     flags = finish.get("flags", {})
@@ -202,10 +259,17 @@ def compile_route(capture, output, receipt):
             "Footer reports incomplete or unsupported route state")
     policy_qualified(start.get("policy"), "start")
     policy_qualified(finish.get("policy"), "finish")
+    source_cohort, cohort_status = movement_cohort(route_name, start, finish, rows[0])
+    if session_manifest.get("movement_cohort") is not None:
+        manifest_cohort = session_manifest["movement_cohort"]
+        require(source_cohort is not None and isinstance(manifest_cohort, dict)
+                and set(manifest_cohort) == set(NATIVE_MOVEMENT_COHORT)
+                and manifest_cohort.get("model") == source_cohort["model"]
+                and manifest_cohort.get("private_override") is True, "Session/acquisition movement cohort mismatch")
     require(all(value == 0 for value in finish.get("activation_coverage", {}).values())
             and finish.get("activation_coverage", {}).get("input_attempts") == 0, "Route contains activation attempts")
     duration = number(finish.get("duration_simulation"), "simulation duration", 0.01, MAX_DURATION)
-    number(finish.get("duration_wall"), "wall duration", 0.01, MAX_DURATION)
+    number(finish.get("duration_wall"), "wall duration", 0.01, MAX_WALL_DURATION)
     require(summary.get("duration_seconds") == finish["duration_wall"], "Summary/footer duration mismatch")
     start_pose = pose(start.get("checkpoint_pose"))
     pose(start.get("pose"))
@@ -269,7 +333,8 @@ def compile_route(capture, output, receipt):
             fraction = (frame - frames[index - 1]) / (frames[index] - frames[index - 1])
             marker["t"] = times[index - 1] + fraction * (times[index] - times[index - 1])
     require(len({marker["index"] for marker in markers}) == len(markers), "Duplicate marker index")
-    timeline = {"schema": 1, "route_name": "balmora", "duration": duration, "source_record_count": len(rows),
+    timeline = {"schema": 1, "route_name": route_name, "duration": duration, "source_record_count": len(rows),
+                "movement_cohort": source_cohort, "movement_cohort_status": cohort_status,
                 "start_pose": start_pose, "controls": controls, "samples": samples, "markers": markers}
     generated = ("-- Generated qualified route acquisition; preview only, not benchmark acceptance.\nreturn " + lua(timeline) + "\n").encode("utf-8")
     require(before == [identity(path) for path in paths], "Capture changed during compilation")
@@ -280,11 +345,13 @@ def compile_route(capture, output, receipt):
     after = [identity(path) for path in paths]
     require(before == after, "Capture changed while writing compiled copy")
     result = {"schema": 1, "qualification": "COMPILED_NOT_REPLAY_VALIDATED", "source_session": session_id,
-              "route_name": "balmora", "duration_simulation": duration, "inputs_before": before, "inputs_after": after,
+              "route_name": route_name, "duration_simulation": duration, "inputs_before": before, "inputs_after": after,
+              "movement_cohort": source_cohort, "movement_cohort_status": cohort_status,
+              "checkpoint_save": checkpoint_save,
               "source_evidence_unchanged": True, "timeline": identity(output), "source_record_count": len(rows),
               "control_count": len(controls), "sample_count": len(samples), "marker_count": len(markers),
               "schedule": "relative simulation timestamps; wall times are evidence only",
-              "scope": "Balmora exterior first-person motion preview. No activations, interior transitions, menus, additional camera layers, or performance qualification."}
+              "scope": "Selected exterior first-person motion preview. Source movement cohort is recorded or explicitly legacy/unrecorded. No activations, interior transitions, menus, additional camera layers, or performance qualification."}
     with receipt.open("x", encoding="utf-8") as stream:
         json.dump(result, stream, ensure_ascii=False, indent=2, allow_nan=False)
         stream.write("\n")

@@ -8,7 +8,7 @@ local function check(condition, description)
 end
 local function near(a, b) return math.abs(a-b) < 0.00001 end
 local function row(t, x, yaw, cell)
-    return { t=t, position={x=x,y=0,z=0}, cell_id=cell or 'Balmora1', cell_name='Balmora', exterior=true,
+    return { t=t, position={x=x,y=0,z=0}, cell_id=cell or 'Esm3ExteriorCell:-2:-2', cell_name='Balmora', exterior=true,
         camera={yaw=yaw,pitch=0.1,fov=1.5,mode=1} }
 end
 local function input(t, movement)
@@ -16,7 +16,7 @@ local function input(t, movement)
 end
 local function route()
     return {schema=1,route_name='balmora',duration=2,controls={input(0,0),input(1,1),input(1.8,0)},
-        samples={row(0,0,math.pi-0.1),row(1,10,-math.pi+0.1),row(2,20,-math.pi+0.3,'Balmora2')},
+        samples={row(0,0,math.pi-0.1),row(1,10,-math.pi+0.1),row(2,20,-math.pi+0.3,'Esm3ExteriorCell:-3:-2')},
         markers={{t=1,index=1}}}
 end
 local lookup = pure.newSampler(route())
@@ -24,13 +24,13 @@ local c, p, index = lookup(0.5)
 check(c.movement == 0 and index == 1, 'previous control remains until its time')
 check(near(p.position.x,5), 'expected pose interpolates by simulation time')
 check(near(math.abs(p.camera.yaw),math.pi), 'camera interpolation uses shortest wrap')
-check(p.cell_id == 'Balmora1', 'cell does not change before crossing time')
+check(p.cell_id == 'Esm3ExteriorCell:-2:-2', 'cell does not change before crossing time')
 c,p,index = lookup(1)
 check(c.movement == 1 and index == 2, 'boundary consumes new input')
 c,p = lookup(1.9)
 check(c.movement == 0 and near(p.position.x,19), 'skipped frames catch up to current controls')
 c,p = lookup(2)
-check(p.cell_id == 'Balmora2' and near(p.position.x,20), 'final pose endpoint')
+check(p.cell_id == 'Esm3ExteriorCell:-3:-2' and near(p.position.x,20), 'final pose endpoint')
 check(not pcall(lookup,1.5), 'reverse time rejected')
 check(near(pure.angleDelta(-math.pi+0.1, math.pi-0.1),0.2), 'shortest positive heading')
 check(near(pure.angleDelta(math.pi-0.1,-math.pi+0.1),-0.2), 'shortest negative heading')
@@ -47,6 +47,56 @@ r=route(); r.samples[1].camera.yaw=0/0
 check(not pcall(pure.validate,r), 'nonfinite camera rejected')
 r=route(); r.duration=181
 check(not pcall(pure.validate,r), 'oversized preview rejected')
+local function nativeCohort()
+    return {model='native_input_displacement_with_visual_animations',private_override=true}
+end
+local function existingRoute()
+    local value=route()
+    value.route_name='existing'; value.movement_cohort=nativeCohort(); value.movement_cohort_status='recorded_native'
+    local cells={{id='Esm3ExteriorCell:-2:-9',name='Seyda Neen',x=-2,y=-9},
+        {id='Esm3ExteriorCell:-1:-9',name='',x=-1,y=-9},
+        {id='Esm3ExteriorCell:0:-8',name='Pelagiad',x=0,y=-8}}
+    for i,s in ipairs(value.samples) do
+        s.cell_id,s.cell_name,s.grid_x,s.grid_y=cells[i].id,cells[i].name,cells[i].x,cells[i].y
+    end
+    return value
+end
+local seyda=pure.newSampler(existingRoute())
+local _,seydaPose=seyda(0)
+check(seydaPose.cell_id=='Esm3ExteriorCell:-2:-9' and seydaPose.cell_name=='Seyda Neen'
+    and seydaPose.grid_x==-2 and seydaPose.grid_y==-9, 'native Seyda route keeps canonical start grid identity')
+_,seydaPose=seyda(1)
+check(seydaPose.cell_id=='Esm3ExteriorCell:-1:-9' and seydaPose.cell_name=='', 'unnamed exterior identity survives the sampler')
+_,seydaPose=seyda(2)
+check(seydaPose.cell_id=='Esm3ExteriorCell:0:-8' and seydaPose.cell_name=='Pelagiad'
+    and seydaPose.grid_x==0 and seydaPose.grid_y==-8, 'named exterior transition is driven by ID and grid')
+r=existingRoute();r.samples[3].cell_id='Esm3ExteriorCell:-1:-8';r.samples[3].grid_x=-1;r.samples[3].cell_name='Andrano Tomb'
+check(pcall(pure.validate,r), 'Andrano Tomb exterior label does not imply an interior door transition')
+r=existingRoute();r.movement_cohort=nil
+check(not pcall(pure.validate,r), 'existing route requires recorded native movement semantics')
+r=existingRoute();r.movement_cohort.private_override=1
+check(not pcall(pure.validate,r), 'numeric private override cannot claim native cohort')
+r=existingRoute();r.movement_cohort.model='frozen_animation_movement_setting'
+check(not pcall(pure.validate,r), 'existing acquisition cannot silently inherit animation movement')
+r=existingRoute();r.movement_cohort_status='legacy_unrecorded'
+check(not pcall(pure.validate,r), 'native source cohort cannot be labeled legacy')
+r=route();r.movement_cohort_status='legacy_unrecorded'
+check(pcall(pure.validate,r), 'old grid-less Balmora timeline remains explicitly legacy-compatible')
+r=route();r.route_name='suran'
+check(not pcall(pure.validate,r), 'unknown route cohort is rejected')
+for _,badId in ipairs({'Balmora1','Esm3ExteriorCell:-02:-2','Esm3ExteriorCell:-0:-2',
+        'Esm3ExteriorCell:+2:-2','Esm3ExteriorCell:2147483648:-2'}) do
+    r=route();r.samples[1].cell_id=badId
+    check(not pcall(pure.validate,r), 'noncanonical exterior ID rejected: '..badId)
+end
+r=existingRoute();r.samples[1].grid_x=-1
+check(not pcall(pure.validate,r), 'mismatched exterior grid rejected independently of display name')
+r=existingRoute();r.samples[1].grid_y=nil
+check(not pcall(pure.validate,r), 'partial exterior grid metadata rejected')
+r=route();r.samples[1].camera.extra_yaw=0.1
+check(not pcall(pure.validate,r), 'extra camera rotation layer remains unsupported')
+r=existingRoute();r.samples[1].exterior=false
+check(not pcall(pure.validate,r), 'existing route does not bypass the interior transition guard')
 local slow, fast = pure.newSampler(route()),pure.newSampler(route())
 for i=0,20 do slow(i/20) end
 for i=0,120 do fast(i/120) end
@@ -138,7 +188,7 @@ local function playerFixture(seedX, seedCell, fixtureOptions, fixtureRoute)
     local collision=true
     local calls, messages, events, quit, flags = {},{}, {},false,{movement=false,combat=false,ui=false}
     local actor = { controls={}, ATTACK_TYPE={NoAttack=0},position=position,
-        cell={id=seedCell or 'Balmora1',isExterior=true}, rotation={getYaw=function() return actorYaw end,getPitch=function() return actorPitch end} }
+        cell={id=seedCell or 'Esm3ExteriorCell:-2:-2',isExterior=true}, rotation={getYaw=function() return actorYaw end,getPitch=function() return actorPitch end} }
     local fakeCamera={MODE={FirstPerson=1},getYaw=function() return yaw end,getPitch=function() return pitch end,
         setYaw=function(v) yaw=v end,setPitch=function(v) pitch=v end,setMode=function() end,setFieldOfView=function() end}
     local fakeCore={getSimulationTime=function() return clock end,getRealTime=function() return clock end,

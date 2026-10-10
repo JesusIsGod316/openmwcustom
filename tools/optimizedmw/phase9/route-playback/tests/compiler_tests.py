@@ -44,6 +44,10 @@ class CompilerChecks(unittest.TestCase):
             {"event": "finish", "route_name": "balmora", "duration_simulation": 2, "duration_wall": 100,
              "flags": {"complete": True, "policy_qualified": True, "policy_ready": True, "door_observer_ready": True},
              "policy": fixture_policy(), "activation_coverage": {"input_attempts": 0, "actual_known": 0, "actual_unknown": 0}}]
+        self.rows[1]["checkpoint_save"] = {
+            "creation_time": 12345.5, "directory": "Gallus_Darkwind", "filename": "OptimizedMW_route_fixture.omwsave",
+            "description": "OptimizedMW route balmora " + self.session, "request": self.session + ":start",
+            "source": "private_menu_new_save_slot"}
         self.write_fixture()
 
     def tearDown(self):
@@ -67,15 +71,37 @@ class CompilerChecks(unittest.TestCase):
         self.rows[-1]["expected_records"] = len(self.rows)
         self.rows[-1]["counts"] = {key: value for key, value in counts.items() if key != "finish"}
         (self.capture / "route.jsonl").write_text("\n".join(json.dumps(row) for row in self.rows) + "\n", encoding="utf-8")
+        checkpoint = self.rows[1]["checkpoint_save"]
+        copied = compiler.identity(self.capture / "Start.omwsave")
+        original = {**copied, "path": str(self.root / "private-runtime" / checkpoint["directory"] / checkpoint["filename"])}
         summary = {"schema": 1, "session": self.session, "complete": True, "qualification": "RECORDED_NOT_REPLAY_VALIDATED",
                    "exit_code": 0, "protected_inputs_unchanged": True, "errors": [], "record_count": len(self.rows),
                    "events": counts, "duration_seconds": self.rows[-1]["duration_wall"],
                    "route_file": compiler.identity(self.capture / "route.jsonl"),
-                   "starting_save": {"route_copy": compiler.identity(self.capture / "Start.omwsave")}}
+                   "checkpoint_save": checkpoint,
+                   "starting_save": {"route_copy": copied, "source": original, "metadata": checkpoint}}
         (self.capture / "SUMMARY.json").write_text(json.dumps(summary), encoding="utf-8")
 
     def compile(self):
         return compiler.compile_route(self.capture, self.root / "timeline.lua", self.root / "receipt.json")
+
+    def native_route(self, route_name="existing"):
+        cohort = dict(compiler.NATIVE_MOVEMENT_COHORT)
+        for row in (self.rows[0], self.rows[1], self.rows[-1]):
+            row["movement_cohort"] = dict(cohort)
+        for row in (self.rows[1], self.rows[-1]):
+            row["route_name"] = route_name
+        self.rows[1]["checkpoint_save"]["description"] = "OptimizedMW route " + route_name + " " + self.session
+        (self.capture / "SESSION.json").write_text(json.dumps({
+            "schema": 1, "session": self.session, "route": route_name, "movement_cohort": cohort}), encoding="utf-8")
+
+    def all_cells(self):
+        for row in self.rows:
+            if "cell" in row:
+                yield row["cell"]
+            for key in ("pose", "checkpoint_pose"):
+                if key in row:
+                    yield row[key]["cell"]
 
     def test_valid_fixture_uses_simulation_and_interpolates_marker_frame(self):
         before = [compiler.identity(path) for path in self.capture.iterdir()]
@@ -88,6 +114,162 @@ class CompilerChecks(unittest.TestCase):
         self.assertEqual(before, [compiler.identity(path) for path in self.capture.iterdir()])
         self.assertEqual(result["inputs_before"], result["inputs_after"])
         self.assertEqual(result["qualification"], "COMPILED_NOT_REPLAY_VALIDATED")
+        self.assertEqual(result["movement_cohort_status"], "legacy_unrecorded")
+        self.assertIsNone(result["movement_cohort"])
+        self.assertIn("grid_x=-2,grid_y=-2", output)
+
+    def test_existing_native_cohort_accepts_named_and_unnamed_canonical_exteriors(self):
+        self.native_route()
+        for value in self.all_cells():
+            value.update(id="Esm3ExteriorCell:-2:-9", grid_x=-2, grid_y=-9, name="Seyda Neen")
+        self.rows[8]["cell"].update(id="Esm3ExteriorCell:-1:-9", grid_x=-1, grid_y=-9, name="")
+        self.rows[9]["cell"].update(id="Esm3ExteriorCell:0:-8", grid_x=0, grid_y=-8, name="Pelagiad")
+        self.rows.insert(-1, {"event": "cell", "f": 5,
+                              "cell": {"exterior": True, "id": "Esm3ExteriorCell:-1:-8", "grid_x": -1,
+                                       "grid_y": -8, "name": "Andrano Tomb"}})
+        self.write_fixture()
+        before = [compiler.identity(path) for path in self.capture.iterdir()]
+        result = self.compile()
+        self.assertEqual(result["route_name"], "existing")
+        self.assertEqual(result["movement_cohort"], compiler.NATIVE_MOVEMENT_COHORT)
+        self.assertEqual(result["movement_cohort_status"], "recorded_native")
+        output = (self.root / "timeline.lua").read_text()
+        self.assertIn('route_name="existing"', output)
+        self.assertIn('cell_name=""', output)
+        self.assertIn('cell_name="Pelagiad"', output)
+        self.assertEqual(before, [compiler.identity(path) for path in self.capture.iterdir()])
+
+    def test_existing_without_recorded_cohort_refused(self):
+        self.native_route()
+        del self.rows[1]["movement_cohort"]
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "matching native movement cohort"):
+            self.compile()
+
+    def test_existing_with_mixed_start_finish_cohort_refused(self):
+        self.native_route()
+        self.rows[-1]["movement_cohort"]["model"] = "frozen_animation_movement_setting"
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "matching native movement cohort"):
+            self.compile()
+
+    def test_numeric_private_override_does_not_prove_true_cohort(self):
+        self.native_route()
+        self.rows[1]["movement_cohort"]["private_override"] = 1
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "matching native movement cohort"):
+            self.compile()
+
+    def test_optional_session_cohort_must_match_emitted_cohort(self):
+        self.native_route()
+        path = self.capture / "SESSION.json"
+        manifest = json.loads(path.read_text())
+        manifest["movement_cohort"]["private_override"] = False
+        path.write_text(json.dumps(manifest))
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "Session/acquisition movement cohort mismatch"):
+            self.compile()
+
+    def test_ready_cohort_cannot_disagree_with_acquisition(self):
+        self.native_route()
+        self.rows[0]["movement_cohort"]["private_override"] = False
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "Mixed acquisition movement cohort"):
+            self.compile()
+
+    def test_native_balmora_cohort_remains_supported(self):
+        self.native_route("balmora")
+        self.write_fixture()
+        result = self.compile()
+        self.assertEqual(result["route_name"], "balmora")
+        self.assertEqual(result["movement_cohort_status"], "recorded_native")
+
+    def test_bounded_checkpoint_retries_keep_original_description(self):
+        for suffix in ("", ":2", ":999999"):
+            with self.subTest(suffix=suffix):
+                self.rows[1]["checkpoint_save"]["request"] = self.session + ":start" + suffix
+                self.write_fixture()
+                output, receipt = self.root / ("retry" + suffix.replace(":", "_") + ".lua"), self.root / ("retry" + suffix.replace(":", "_") + ".json")
+                result = compiler.compile_route(self.capture, output, receipt)
+                self.assertEqual(result["checkpoint_save"]["description"], "OptimizedMW route balmora " + self.session)
+                self.assertEqual(result["checkpoint_save"]["request"], self.session + ":start" + suffix)
+
+    def test_noncanonical_or_cross_session_checkpoint_retry_refused(self):
+        bad_requests = [self.session + ":start:" + suffix for suffix in ("0", "1", "02", "0002", "1000000", "-2", "2:3")]
+        bad_requests.extend(("b" * 32 + ":start", self.session + ":Start", self.session + ":start:2\n"))
+        for request in bad_requests:
+            with self.subTest(request=request):
+                self.rows[1]["checkpoint_save"]["request"] = request
+                self.write_fixture()
+                with self.assertRaisesRegex(compiler.CompileError, "authenticated new private route slot"):
+                    self.compile()
+                self.assertFalse((self.root / "timeline.lua").exists())
+
+    def test_checkpoint_description_does_not_gain_retry_suffix(self):
+        self.rows[1]["checkpoint_save"].update(request=self.session + ":start:2", description="OptimizedMW route balmora " + self.session + " 2")
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "authenticated new private route slot"):
+            self.compile()
+
+    def test_checkpoint_summary_must_match_raw_authenticated_start(self):
+        path = self.capture / "SUMMARY.json"
+        summary = json.loads(path.read_text())
+        summary["checkpoint_save"]["request"] += ":2"
+        path.write_text(json.dumps(summary))
+        with self.assertRaisesRegex(compiler.CompileError, "checkpoint metadata disagree"):
+            self.compile()
+
+    def test_checkpoint_source_and_copied_save_identity_must_match(self):
+        path = self.capture / "SUMMARY.json"
+        summary = json.loads(path.read_text())
+        summary["starting_save"]["source"]["sha256"] = "0" * 64
+        path.write_text(json.dumps(summary))
+        with self.assertRaisesRegex(compiler.CompileError, "Original/copy starting save identity mismatch"):
+            self.compile()
+
+    def test_incomplete_existing_capture_is_not_requalified_by_cohort(self):
+        self.native_route()
+        self.write_fixture()
+        path = self.capture / "SUMMARY.json"
+        summary = json.loads(path.read_text())
+        summary.update(complete=False, qualification="INCOMPLETE", errors=["combat_invalid"])
+        path.write_text(json.dumps(summary))
+        with self.assertRaisesRegex(compiler.CompileError, "not an intact qualified acquisition"):
+            self.compile()
+        self.assertFalse((self.root / "timeline.lua").exists())
+
+    def test_route_identity_must_agree_with_selected_manifest(self):
+        self.rows[-1]["route_name"] = "existing"
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "Route name mismatch"):
+            self.compile()
+
+    def test_unknown_route_identity_refused(self):
+        self.native_route("suran")
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "supported selected route"):
+            self.compile()
+
+    def test_canonical_exterior_grid_mismatch_refused(self):
+        self.rows[5]["cell"].update(grid_x=-1, grid_y=-2)
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "grid disagrees"):
+            self.compile()
+
+    def test_noncanonical_exterior_identity_refused(self):
+        for bad_id in ("Esm3ExteriorCell:-02:-2", "Esm3ExteriorCell:-0:-2", "Esm3ExteriorCell:+2:-2",
+                       "Esm3ExteriorCell:2147483648:-2", "Balmora1"):
+            with self.subTest(cell_id=bad_id):
+                self.rows[5]["cell"]["id"] = bad_id
+                self.write_fixture()
+                with self.assertRaisesRegex(compiler.CompileError, "exterior cell identity"):
+                    self.compile()
+
+    def test_partial_or_noninteger_grid_metadata_refused(self):
+        self.rows[5]["cell"]["grid_x"] = -2
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "grid disagrees"):
+            self.compile()
 
     def test_corrupted_raw_route_refused_before_output(self):
         with (self.capture / "route.jsonl").open("ab") as stream:
@@ -209,6 +391,22 @@ class CompilerChecks(unittest.TestCase):
         self.write_fixture()
         with self.assertRaisesRegex(compiler.CompileError, "simulation duration"):
             self.compile()
+
+    def test_bounded_wall_duration_can_exceed_simulation_budget(self):
+        self.rows[-1]["duration_wall"] = 240
+        self.rows[-1]["duration_simulation"] = 180
+        self.rows[-2]["simulation"] = 180
+        self.write_fixture()
+        result = self.compile()
+        self.assertEqual(result["duration_simulation"], 180)
+        self.assertIn("duration=180", (self.root / "timeline.lua").read_text())
+
+    def test_wall_duration_above_separate_budget_refused(self):
+        self.rows[-1]["duration_wall"] = 300.001
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "wall duration"):
+            self.compile()
+        self.assertFalse((self.root / "timeline.lua").exists())
 
     def test_existing_output_preserved(self):
         path = self.root / "timeline.lua"

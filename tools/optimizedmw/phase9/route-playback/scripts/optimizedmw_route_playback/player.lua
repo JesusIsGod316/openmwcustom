@@ -243,7 +243,8 @@ local function frame(dt)
         I.Controls.overrideUiControls(true)
         wallOrigin, simOrigin, state = now, core.getSimulationTime(), 'playing'
         core.sendGlobalEvent('OptimizedMWRouteRecording', { active = true, session = options.session, t_wall = now })
-        ui.showMessage('Balmora playback: automatic preview. F11 aborts.')
+        local routeLabel = timeline.route_name == 'existing' and 'Seyda Neen' or timeline.route_name
+        ui.showMessage('Route playback (' .. routeLabel .. '): automatic preview. F11 aborts.')
         emit('start', { duration_simulation = timeline.duration, starting_position = currentPosition(),
             initial_position_tolerance = initialTolerance, divergence_abort = abortTolerance,
             policy = policy, phase = 'position_onFrame_before_physics; heading_command_at_simulation_plus_dt',

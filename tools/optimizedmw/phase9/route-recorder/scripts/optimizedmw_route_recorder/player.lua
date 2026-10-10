@@ -14,6 +14,20 @@ local types = require('openmw.types')
 local I = require('openmw.interfaces')
 local common = require('scripts.optimizedmw_route_recorder.common')
 local options = common.validateOptions(require('scripts.optimizedmw_route_recorder.options'))
+assert(options.playback_compatible == nil or type(options.playback_compatible) == 'boolean', 'Invalid playback-compatible recording option')
+local playbackCompatible = options.playback_compatible == true
+local maxWallSeconds = playbackCompatible and (options.max_wall_seconds or 300) or nil
+if playbackCompatible then
+    assert(options.max_seconds <= 180, 'Playback-compatible recording exceeds the 180-second budget')
+    assert(common.finite(maxWallSeconds) and maxWallSeconds > 0 and maxWallSeconds <= 300,
+        'Playback-compatible recording exceeds the 300-second wall budget')
+    local cohort = options.movement_cohort
+    assert(type(cohort) == 'table' and type(cohort.private_override) == 'boolean'
+        and ((cohort.model == 'native_input_displacement_with_visual_animations' and cohort.private_override == true)
+            or (cohort.model == 'animation_displacement' and cohort.private_override == false)), 'Invalid private movement cohort')
+end
+local debugAvailable, debugApi = pcall(require, 'openmw.debug')
+if not debugAvailable then debugApi = nil end
 local recorder = common.newRecorder(options, print)
 local wallOrigin, startWall, startSim, startGame
 local stableSince, stableCell
@@ -35,6 +49,7 @@ local bridge = storage.playerSection('OptimizedMWRouteRecorder:' .. options.sess
 bridge:setLifeTime(storage.LIFE_TIME.GameSession)
 local reenteredSession = bridge:get('ready_written') == true
 local checkpointRequest, checkpointWaitWall, checkpointSave, checkpointPose
+local checkpointAttempts = 0
 local setupFrozen = false
 local closing
 local privateBindings = { cleared_count = 0, cleared = {} }
@@ -42,6 +57,7 @@ local privateCamera = { source = 'private_setup_vanity_control_switch',
     vanity_disabled = false, verified = false, restored_first_person = false }
 local keySetupDone = false
 local activationCounts = { input_attempts = 0, visual_known = 0, visual_unknown = 0, actual_known = 0, actual_unknown = 0 }
+local durationWarnings = {}
 local function preparePrivateLuaBindings()
     if keySetupDone or not options.enabled then return end
     local keys = { options.key_start or 'F6', options.key_checkpoint or 'F9',
@@ -122,6 +138,59 @@ local function cellSnapshot(cell)
 end
 local function vector(v) return { x = v.x, y = v.y, z = v.z } end
 local function paused() return core.isWorldPaused() or (I.UI and I.UI.getMode() ~= nil) end
+local function readPhysical(fn, object)
+    if type(fn) ~= 'function' then return nil end
+    local ok, value
+    if object == nil then ok, value = pcall(fn) else ok, value = pcall(fn, object) end
+    if ok and (type(value) == 'boolean' or common.finite(value)) then return value end
+    return nil
+end
+local function physicalState()
+    local actor, collision = types.Actor or {}, nil
+    if debugApi then collision = readPhysical(debugApi.isCollisionEnabled) end
+    return { collision_enabled = collision, on_ground = readPhysical(actor.isOnGround, self),
+        swimming = readPhysical(actor.isSwimming, self), current_speed = readPhysical(actor.getCurrentSpeed, self) }
+end
+local function captureScope()
+    return { playback_compatible = playbackCompatible, exterior_first_person_only = playbackCompatible,
+        max_seconds = options.max_seconds, max_wall_seconds = maxWallSeconds, explicit_finish_required = true,
+        duration_clock = playbackCompatible and 'unpaused_simulation' or 'wall',
+        native_input_replay_compatible = playbackCompatible and options.movement_cohort.model == 'native_input_displacement_with_visual_animations'
+            and options.movement_cohort.private_override == true,
+        unsupported_actions = playbackCompatible and 'activation, doors, jumps, attacks, menus, view changes, input toggles' or nil }
+end
+local function scopeFailure()
+    if not playbackCompatible then return nil end
+    if not self.cell or not self.cell.isExterior then return 'exterior_required', 'Go outside before starting; this route must remain outdoors.' end
+    if camera.getMode() ~= camera.MODE.FirstPerson then return 'first_person_required', 'Select first-person view before starting.' end
+    for _, value in ipairs({ camera.getExtraYaw(), camera.getExtraPitch(), camera.getRoll() }) do
+        if not common.finite(value) or math.abs(value) > 0.000001 then
+            return 'extra_camera_layer', 'Return to ordinary first-person view before starting.'
+        end
+    end
+    local collision = physicalState().collision_enabled
+    if collision ~= true then
+        return collision == false and 'collision_disabled' or 'collision_state_unavailable',
+            'Ordinary player collision must be confirmed enabled before recording.'
+    end
+    return nil
+end
+local function startGuard()
+    local failure, explanation = scopeFailure()
+    if failure then message(explanation); return false end
+    if playbackCompatible then
+        if policy.session ~= options.session or not observer.ready or not policy.ready or not policy.qualified or policy.failed
+            or policy.pending_disable ~= 0 or policy.failure_count ~= 0 then
+            message('Wait for confirmed hostile suppression and observer readiness, then press ' .. keyLabel('key_start', 'F6') .. ' again.')
+            return false
+        end
+        if policy.combat_before_start ~= 0 or policy.combat_during_recording ~= 0 or policyCounts.combat_before_start ~= 0 then
+            message('Combat was observed during setup. Restart this private recording from an outdoor save.')
+            return false
+        end
+    end
+    return true
+end
 local function releaseSetup()
     if setupFrozen and I.Controls then I.Controls.overrideMovementControls(false) end
     setupFrozen = false
@@ -175,17 +244,35 @@ local function finalize(reason, now)
     if not observer.ready then recorder.flags.activation_target_unresolved = true end
     recorder.flags.policy_ready = policy.ready == true
     recorder.flags.policy_qualified = policy.qualified == true
-    if policy.failed or policy.qualified ~= true then recorder.flags.combat_invalid = true end
+    if policy.failed or policy.qualified ~= true or (policy.pending_disable or 0) ~= 0
+        or (policy.failure_count or 0) ~= 0 then recorder.flags.combat_invalid = true end
+    if playbackCompatible and (not closing or not closing.acknowledged or policy.pending_disable ~= 0) then
+        recorder.flags.observation_settle_timeout = true
+        if reason == 'user_finished' or reason == 'smoke_finished' then reason = 'policy_finish_not_drained' end
+    end
+    if playbackCompatible and (reason == 'user_finished' or reason == 'smoke_finished') then
+        local failure = scopeFailure()
+        if failure then recorder.flags.playback_scope_invalid = true; reason = 'playback_scope_' .. failure end
+    end
     releaseSetup()
+    -- Compatible acquisition ends at F10, before its independent actor-observer
+    -- drain. The final record clock still includes the drain and export time.
+    local endWall = playbackCompatible and closing and closing.end_wall or now
+    local endSim = playbackCompatible and closing and closing.end_sim or core.getSimulationTime()
+    local endGame = playbackCompatible and closing and closing.end_game or core.getGameTime()
     recorder:finish(reason, relativeWall(now), {
-        duration_wall = startWall and now - startWall or 0,
-        duration_simulation = startSim and core.getSimulationTime() - startSim or 0,
-        duration_game = startGame and core.getGameTime() - startGame or 0,
+        duration_wall = startWall and endWall - startWall or 0,
+        duration_simulation = startSim and endSim - startSim or 0,
+        duration_game = startGame and endGame - startGame or 0,
         frames = frame, route_name = options.route_name, observer = observer, policy = policySummary(),
         private_lua_key_bindings = privateBindings,
         private_camera_setup = privateCamera,
+        movement_cohort = options.movement_cohort, capture_scope = captureScope(), physical_state = physicalState(),
         activation_coverage = activationCounts,
         acquisition_end_wall = closing and closing.end_wall - startWall or (startWall and now - startWall or 0),
+        acquisition_end_simulation = closing and closing.end_sim - startSim or (startSim and endSim - startSim or 0),
+        observation_settle_wall = closing and now - closing.end_wall or 0,
+        observation_settle_simulation = closing and core.getSimulationTime() - closing.end_sim or 0,
         observation_settle_frames = closing and closing.frames or 0,
     })
     core.sendGlobalEvent('OptimizedMWRouteRecording', { active = false, session = options.session, t_wall = closing and closing.end_wall or now })
@@ -195,7 +282,17 @@ end
 local function finish(reason, now)
     if (reason == 'user_finished' or reason == 'smoke_finished') and recorder.state == 'recording' then
         if closing then return end
-        closing = { reason = reason, end_wall = now, frames = 0, acknowledged = false }
+        if playbackCompatible then
+            if core.getSimulationTime() - startSim >= options.max_seconds then
+                finalize('maximum_duration_reached', now)
+                return
+            elseif now - startWall >= maxWallSeconds then
+                finalize('maximum_wall_duration_reached', now)
+                return
+            end
+        end
+        closing = { reason = reason, end_wall = now, end_sim = core.getSimulationTime(),
+            end_game = core.getGameTime(), frames = 0, acknowledged = false }
         core.sendGlobalEvent('OptimizedMWRouteRecording', { active = false, session = options.session, t_wall = now })
         message('Finishing; waiting for the final actor observations.')
         return
@@ -208,14 +305,17 @@ end
 local function beginRecording(now)
     if recorder.state ~= 'ready' then return end
     if paused() or not self.cell then message('Close menus and wait for the starting cell before starting.'); return end
+    if not startGuard() then return end
     startWall, startSim, startGame = now, core.getSimulationTime(), core.getGameTime()
     frame, checkpoint, lastControls, lastCell, lastPaused, lastSample = 0, 0, nil, nil, nil, -math.huge
     lastControlSequence = nil
+    durationWarnings = {}
     recorder:start({ route_name = options.route_name, pose = pose(),
         simulation_origin = startSim, game_origin = startGame, real_origin = startWall,
         observer = observer, policy = policySummary(), policy_counts = policyCounts,
         private_lua_key_bindings = privateBindings,
         private_camera_setup = privateCamera,
+        movement_cohort = options.movement_cohort, capture_scope = captureScope(), physical_state = physicalState(),
         checkpoint_save = checkpointSave, checkpoint_pose = checkpointPose }, relativeWall(now))
     bridge:set('last_immediate_sequence', recorder.seq)
     local suppressedKeys = {}
@@ -237,6 +337,7 @@ end
 local function start(now)
     if recorder.state ~= 'ready' or checkpointRequest then return end
     if paused() or not self.cell then message('Close menus before starting.'); return end
+    if not startGuard() then return end
     if not observer.ready or not policy.ready or not policy.qualified or policy.failed then
         message('Waiting for door observation and confirmed hostile suppression.'); return
     end
@@ -253,9 +354,17 @@ local function start(now)
         finish('private_camera_setup_failed', now)
         return
     end
+    if checkpointAttempts >= 8 then
+        recorder.flags.checkpoint_failed = true
+        finish('route_checkpoint_retry_budget_exceeded', now)
+        return
+    end
     checkpointPose = pose()
     checkpointWaitWall = now
-    checkpointRequest = options.session .. ':start'
+    checkpointAttempts = checkpointAttempts + 1
+    -- The MENU helper handles each request only once. A recoverable state change
+    -- during save acknowledgement needs a fresh request and private save slot.
+    checkpointRequest = options.session .. ':start' .. (checkpointAttempts > 1 and ':' .. checkpointAttempts or '')
     I.Controls.overrideMovementControls(true)
     setupFrozen = true
     holdSetup()
@@ -276,6 +385,11 @@ local function registerTriggers()
                     local now = core.getRealTime()
                     push('trigger', { name = name, f = frame,
                         observation = 'resolved_input_trigger; activation_success_not_implied' }, now)
+                    if playbackCompatible then
+                        recorder.flags.playback_scope_invalid = true
+                        finish('unsupported_input_trigger_' .. name:lower(), now)
+                        return
+                    end
                     if name == 'Activate' then
                         activationCounts.input_attempts = activationCounts.input_attempts + 1
                         local ok, target = pcall(function()
@@ -332,7 +446,9 @@ local function onFrame()
     registerTriggers()
     if closing then
         closing.frames = closing.frames + 1
-        if closing.acknowledged and closing.frames >= 4 then
+        local drained = closing.acknowledged and (policy.pending_disable or 0) == 0
+        if playbackCompatible then drained = drained and policy.pending_disable == 0 end
+        if drained and closing.frames >= 4 then
             finalize(closing.reason, now)
         elseif now - closing.end_wall > 5 then
             recorder.flags.observation_settle_timeout = true
@@ -376,12 +492,14 @@ local function onFrame()
         end
         wallOrigin = now
         recorder:ready({ route_name = options.route_name, sample_hz = options.sample_hz,
-            limits = { seconds = options.max_seconds, records = options.max_records, bytes = options.max_bytes },
+            limits = { seconds = options.max_seconds, wall_seconds = maxWallSeconds,
+                records = options.max_records, bytes = options.max_bytes },
             keys = { start = options.key_start or 'F6', checkpoint = options.key_checkpoint or 'F9',
                 finish = options.key_finish or 'F10', abort = options.key_abort or 'F11', require_ctrl_shift = options.require_ctrl_shift == true },
             observer = observer, policy = policySummary(),
             private_lua_key_bindings = privateBindings,
             private_camera_setup = privateCamera,
+            movement_cohort = options.movement_cohort, capture_scope = captureScope(), physical_state = physicalState(),
             control_phase = 'player_onFrame_after_earlier_content_handlers; native_pitch_yaw_readout_not_post_physics',
             capture_purpose = 'route_acquisition; dt_real_not_independent_benchmark_frame_measurement',
             pose = pose() }, 0)
@@ -406,7 +524,21 @@ local function onFrame()
     end
     if recorder.state ~= 'recording' then return end
     frame = frame + 1
-    if now - startWall >= options.max_seconds then finish('maximum_duration_reached', now); return end
+    local budgetElapsed = playbackCompatible and core.getSimulationTime() - startSim or now - startWall
+    if budgetElapsed >= options.max_seconds then finish('maximum_duration_reached', now); return end
+    if playbackCompatible and now - startWall >= maxWallSeconds then finish('maximum_wall_duration_reached', now); return end
+    if playbackCompatible then
+        local remaining = options.max_seconds - budgetElapsed
+        for _, threshold in ipairs({ 30, 10 }) do
+            if remaining <= threshold and not durationWarnings[threshold] then
+                durationWarnings[threshold] = true
+                message('Less than ' .. threshold .. ' simulation seconds remain. Press ' .. keyLabel('key_finish', 'F10')
+                    .. ' to finish; reaching the ' .. options.max_seconds .. '-simulation-second cap is incomplete.')
+            end
+        end
+        local failure = scopeFailure()
+        if failure then recorder.flags.playback_scope_invalid = true; finish('playback_scope_' .. failure, now); return end
+    end
     if options.smoke_autostart and now - startWall >= options.smoke_duration_seconds then
         finish('smoke_finished', now); return
     end
@@ -416,6 +548,7 @@ local function onFrame()
             simulation = core.getSimulationTime() - startSim, ui_mode = I.UI and I.UI.getMode() or nil }, now)
         lastPaused = isPaused
         if isPaused then recorder.flags.contains_pauses = true end
+        if isPaused and playbackCompatible then recorder.flags.playback_scope_invalid = true; finish('playback_scope_paused', now); return end
     end
     if not self.cell then
         if not recorder.flags.cell_unavailable_seen then push('cell', { unavailable = true, f = frame }, now) end
@@ -433,6 +566,11 @@ local function onFrame()
         push('control', controls, now)
         lastControlSequence = recorder.seq
         lastControls = encoded
+    end
+    if playbackCompatible and (controls.controls.jump or controls.controls.use ~= 0 or controls.actions.use) then
+        recorder.flags.playback_scope_invalid = true
+        finish('unsupported_jump_or_combat_input', now)
+        return
     end
     if now - lastSample >= 1 / options.sample_hz then
         local sample = clocks(now)
@@ -491,7 +629,10 @@ return {
     eventHandlers = {
         OptimizedMWRouteObserver = function(data) observer = data end,
         OptimizedMWRouteDoor = function(data)
-            if recorder.state == 'recording' then data.f = frame; push('door', data, core.getRealTime()) end
+            if recorder.state == 'recording' then
+                data.f = frame; push('door', data, core.getRealTime())
+                if playbackCompatible then recorder.flags.playback_scope_invalid = true; finish('unsupported_door_interaction', core.getRealTime()) end
+            end
         end,
         OptimizedMWRouteActivation = function(data)
             if recorder.state == 'recording' then
@@ -502,9 +643,11 @@ return {
                     recorder.flags.activation_target_unresolved = true
                 end
                 push('activation', data, core.getRealTime())
+                if playbackCompatible then recorder.flags.playback_scope_invalid = true; finish('unsupported_activation', core.getRealTime()) end
             end
         end,
         OptimizedMWRoutePolicy = function(data)
+            if playbackCompatible and (type(data) ~= 'table' or data.session ~= options.session) then return end
             if data.event == 'policy_ready' then policy = data end
             if data.event == 'policy_stopped' then
                 policy = data

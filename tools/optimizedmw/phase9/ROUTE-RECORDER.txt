@@ -1,6 +1,6 @@
 OptimizedMW route recorder - guided setup only
 
-Start START-OptimizedMW-RecordRoute.bat. Choose 1 for the existing route,
+Start START-OptimizedMW-RecordRoute.bat. Choose 1 for the Seyda Neen route,
 2 for Balmora, or 0 to exit. Only this launcher adds the recorder scripts.
 Each launch copies the locked SaintJs profile and selected route save into its own
 private writable TestSessions/FrozenConfig_<id> directory. Regular gameplay
@@ -10,7 +10,9 @@ The existing route uses Configuration/Benchmark-SaintJs and the original copied
 Gallus Darkwind Wake up slot. Balmora uses Configuration/Benchmark-SaintJs-Balmora
 and the separate '_zZz__Wake_up - 1.omwsave' slot saved in Caius Cosades' House.
 The normal Balmora recorder loads that saved position directly. It never uses
-COC to move the selected starting point. Step outside for the outdoor benchmark,
+COC to move the selected starting point. For BOTH routes, walk outside BEFORE F6;
+Seyda Neen starts inside the Census office and Balmora inside Caius House.
+Choose an outdoor first-person view, keep collision enabled,
 let the loaded scene settle, then choose your exact view before pressing F6.
 The host rejects a missing/mismatched Balmora save binding. Developer smoke
 checks may use COC setup, clearly labelled as diagnostic rather than saved-location
@@ -25,7 +27,10 @@ No warning suppression or original-save modification is performed.
 The recorder uses F6, F9, F10 and F11 alone. Do not hold Ctrl or Shift: those
 remain the normal sneak/run modifiers and are not required by the recorder.
 
-F6 - Begin acquisition. Stand still, release movement keys, close menus and
+F6 - Begin acquisition. You must be OUTSIDE first, in first person.
+The recorder refuses an indoor/third-person start and remains ready while you
+correct it. It also waits for collision and hostile-policy readiness with no
+pending suppression or observed combat. Stand still, release movement keys, close menus and
 choose the exact starting view, then press F6 once. The recorder briefly holds
 movement/camera only during setup while creating a NEW PRIVATE world save of
 your chosen position, view, actors and world state. Wait for the Recording
@@ -36,7 +41,9 @@ Once Recording appears, hold the usual fixed view for 45 seconds.
 F9 - Add a numbered stage marker. Press F9 when beginning your walk after the
 fixed view, then use further markers for route sections if useful. F9 does not
 quicksave, pause, load, restart the recording or reset its clock. Walk the route
-and use doors normally. The recorder does not force the 45-second hold or
+without doors, menus, jump, combat or autorun toggles. Walking between outdoor
+cells is supported. Unsupported actions invalidate the capture immediately.
+The recorder does not force the 45-second hold or
 manufacture missing route steps.
 
 F10 - Finish normally. This closes the acquisition interval, drains pending
@@ -59,7 +66,8 @@ checks that control switch. The fixed-view hold therefore keeps ordinary
 movement/look/view controls without the automatic idle orbit. This private
 setup change is recorded; it does not change regular gameplay. Exact view
 replay still needs separate validation before performance comparisons.
-Menus, cell changes, input state and door activations are recorded. Console
+Cell changes and resolved movement/look inputs are recorded. Menus, doors and
+activation are outside the current playback contract. Console
 movement or teleportation during the route must not be used for a comparison.
 The copied native F6/F9/F10/F11 bindings are parked on unused F21-F24 keys in
 the private profile to prevent accidental quickload, debug or HUD changes.
@@ -93,7 +101,20 @@ list does not prove that every mod callback or combat start was preempted.
 Observed combat and suppressions still pending at export are reported separately.
 Earlier INCOMPLETE captures keep their original qualification and evidence.
 
-The recorder is bounded to ten minutes and 60,000 records / 16 MiB. Buffer
+Fresh outdoor recordings use a private [Game] player movement ignores animation
+= true setting, matching default playback. Visual animations remain enabled;
+ordinary physics and collision determine displacement. This overrides only the
+derived private profile, never the frozen baseline or normal gameplay settings.
+The movement cohort and read-only scope checks are recorded. The optional
+-AnimationMovement developer control explicitly sets that private value false
+and is not admitted as a fresh Seyda native replay recording. Legacy generic
+constructor and startup smoke paths remain separate.
+
+Fresh route acquisition is bounded to 180 simulation seconds TOTAL, including
+the 45-second fixed view, and 60,000 records / 16 MiB. Finish with F10 before
+the duration limit; advance warnings do not extend it. A separate 300-second
+wall-clock guard bounds stalls; it does not extend the 180-second route timeline.
+Buffer
 overflow, missing samples or finish marker, unexpected combat, invalid clocks,
 or abnormal game exit leave an INCOMPLETE report. A recording that exports
 successfully is RECORDED_NOT_REPLAY_VALIDATED. Automatic replay, testing

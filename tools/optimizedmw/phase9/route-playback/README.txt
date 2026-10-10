@@ -1,4 +1,4 @@
-PRIVATE BALMORA PHYSICAL ROUTE PREVIEW
+PRIVATE OUTDOOR PHYSICAL ROUTE PREVIEW
 
 The guided host profile selects [Game] player movement ignores animation = true
 only in its private settings copy. Visual animation evaluation remains enabled;
@@ -6,8 +6,12 @@ native controls determine player displacement. This isolates the observed
 reversal during side-dominant correction from animation-dependent locomotion.
 It is a separate movement cohort, not proof of a defect in a particular mod.
 The host records movement_model, private_movement_override and settings hash.
--AnimationMovement preserves the frozen setting for a guided diagnostic control;
--RawInputs also preserves it. Normal gameplay and the source capture are unchanged.
+Fresh outdoor route recording and default playback use the same native setting.
+-AnimationMovement explicitly disables the private native override for a guided
+diagnostic control. -RawInputs preserves the recorded movement cohort when it
+is recorded, or the frozen setting for a legacy source. The legacy complete
+Balmora source remains explicitly a different movement cohort. Normal gameplay
+and source captures are unchanged.
 
 The host generates options.lua and timeline.lua under scripts/optimizedmw_route_playback.
 Append this PLAYER script last in the private content order. The existing private
@@ -44,7 +48,7 @@ and the next heading uses its allowed frame advance. Fixed-view/stop inputs stay
 stationary; an out-of-corridor stationary pose fails explicitly. Hard XY/Z drift
 limits are 96 units each. Command norm >0.25 with less than eight XY units of
 progress for two simulation seconds fails as a stall. Clock lag >15 seconds or
-runtime >180 seconds also fails. End XY <=24 and Z <=48 are required for finish.
+runtime >195 seconds also fails (180 seconds of source plus at most 15 of lag). End XY <=24 and Z <=48 are required for finish.
 These bounds cannot make collision-obstructed or physically unreachable paths
 reachable. The live stairs/path check is required before accepting this preview.
 
@@ -57,7 +61,11 @@ Neither speed read proves achieved physical velocity. Successful guided finish
 sets route_playback_finished=true and input_replay_finished=false. Successful
 raw finish sets both true. Both remain PREVIEW_NOT_BENCHMARK_VALIDATED.
 
-This preview supports the current exterior first-person Balmora recording only.
+This preview supports explicit exterior first-person existing (Seyda Neen) and
+balmora route identities. Canonical Esm3ExteriorCell:x:y IDs and matching integer
+grids identify named or unnamed outdoor cells. New existing acquisition must
+prove the native movement cohort at start and finish. Legacy Balmora without
+that metadata remains a scoped preview control.
 It rejects jump/attack inputs and lacks activation, doors or menu replay. Bare
 F11 aborts. Unexpected pause, policy failure, observed combat, mismatched starting
 cell/position, or excessive path drift aborts. The host must preserve the recorder's

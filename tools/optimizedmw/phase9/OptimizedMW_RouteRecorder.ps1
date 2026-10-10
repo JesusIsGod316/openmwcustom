@@ -6,6 +6,7 @@ param(
     [switch]$PrepareOnly,
     [switch]$Smoke,
     [switch]$ValidationWindow,
+    [switch]$AnimationMovement,
     [ValidateRange(5,30)][int]$SmokeSeconds=20,
     [switch]$LibraryOnly
 )
@@ -82,7 +83,7 @@ function Protect-OptimizedMWRouteNativeBindings {
 }
 
 function New-OptimizedMWRouteSession {
-    param([string]$GameDirectory,[string]$FrozenDirectory,[string]$PackageDirectory,[string]$RouteName,[switch]$SmokeRun,[int]$SmokeDuration=20,[switch]$SmallValidationWindow,[ValidateSet('Routes','Playback')][string]$OutputCategory='Routes')
+    param([string]$GameDirectory,[string]$FrozenDirectory,[string]$PackageDirectory,[string]$RouteName,[switch]$SmokeRun,[int]$SmokeDuration=20,[switch]$SmallValidationWindow,[ValidateSet('Routes','Playback')][string]$OutputCategory='Routes',[switch]$PlaybackCompatible,[switch]$NativeMovement)
     if($RouteName -notin @('existing','balmora')){throw 'Choose existing or balmora'}
     if($SmokeDuration -lt 5 -or $SmokeDuration -gt 30){throw 'Smoke duration must be 5-30 seconds'}
     $game=Assert-OptimizedMWPlainPath $GameDirectory
@@ -165,10 +166,19 @@ function New-OptimizedMWRouteSession {
     $optionsPath=Join-Path $data 'scripts\optimizedmw_route_recorder\options.lua'
     [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($optionsPath))
     $boolean=$(if($SmokeRun){'true'}else{'false'})
+    $compatible=$(if($PlaybackCompatible){'true'}else{'false'})
+    $movementCohort=$null;$movementOptions='';$maxSeconds=600;$maxWallSeconds=600
+    if($PlaybackCompatible -or $NativeMovement){
+        $movementCohort=[pscustomobject]@{model=$(if($NativeMovement){'native_input_displacement_with_visual_animations'}else{'animation_displacement'});private_override=[bool]$NativeMovement}
+        $override=$(if($NativeMovement){'true'}else{'false'})
+        Set-OptimizedMWRouteIniValue -Path $runtime.settings_path -Section 'Game' -Key 'player movement ignores animation' -Value $override
+        $movementOptions=", movement_cohort={model='"+$movementCohort.model+"',private_override="+$override+'}'
+    }
+    if($PlaybackCompatible){$maxSeconds=180;$maxWallSeconds=300}
     $expectedCell=$(if($RouteName -eq 'balmora'){'Balmora'}else{'Seyda Neen'})
     # Admit the audited encounter-list closure, not only one observed spawn.
     # Lua still confirms the queued disable and rejects any observed combat.
-    $options="return { enabled=true, schema=1, session='$id', route_name='$RouteName', checkpoint_save_required=true, no_enemy_policy={enabled=true, discover_high_fight_creatures=true, creature_fight_threshold=90, hostile_reference_ids={}, hostile_record_ids={$hostileRecordsLua}}, smoke_autostart=$boolean, smoke_duration_seconds=$SmokeDuration, smoke_quit=$boolean, smoke_expected_cell='$expectedCell', quit_on_finish=true, require_ctrl_shift=false, key_start='F6', key_checkpoint='F9', key_finish='F10', key_abort='F11', max_seconds=600, max_records=60000, max_bytes=16777216, sample_hz=20 }"
+    $options="return { enabled=true, schema=1, session='$id', route_name='$RouteName', checkpoint_save_required=true, playback_compatible=$compatible$movementOptions, no_enemy_policy={enabled=true, discover_high_fight_creatures=true, creature_fight_threshold=90, hostile_reference_ids={}, hostile_record_ids={$hostileRecordsLua}}, smoke_autostart=$boolean, smoke_duration_seconds=$SmokeDuration, smoke_quit=$boolean, smoke_expected_cell='$expectedCell', quit_on_finish=true, require_ctrl_shift=false, key_start='F6', key_checkpoint='F9', key_finish='F10', key_abort='F11', max_seconds=$maxSeconds, max_wall_seconds=$maxWallSeconds, max_records=60000, max_bytes=16777216, sample_hz=20 }"
     [IO.File]::WriteAllText($optionsPath,$options,[Text.UTF8Encoding]::new($false))
     [IO.File]::AppendAllText($runtime.config_path,"`ncontent=$content`n",[Text.UTF8Encoding]::new($false))
     # Recording is route setup, not a performance capture. Preserve gameplay
@@ -206,6 +216,10 @@ function New-OptimizedMWRouteSession {
     $manifest | Add-Member -NotePropertyName encounter_policy -NotePropertyValue ([pscustomobject]@{identity=$encounterPolicyIdentity;frozen_config_sha256=$encounterPolicy.frozen_config_sha256;explicit_record_count=$hostileRecords.Count;verified_content_files=$contentFiles.Count;mutable_development_content=$mutableIdentities.ToArray();scope=$encounterPolicy.scope})
     $manifest | Add-Member -NotePropertyName native_recorder_bindings_parked -NotePropertyValue $parkedBindings
     $manifest | Add-Member -NotePropertyName validation_window -NotePropertyValue ([bool]$SmallValidationWindow)
+    $manifest | Add-Member -NotePropertyName playback_compatible -NotePropertyValue ([bool]$PlaybackCompatible)
+    $manifest | Add-Member -NotePropertyName movement_cohort -NotePropertyValue $movementCohort
+    $manifest | Add-Member -NotePropertyName maximum_acquisition_simulation_seconds -NotePropertyValue $(if($PlaybackCompatible){$maxSeconds}else{$null})
+    $manifest | Add-Member -NotePropertyName maximum_acquisition_wall_seconds -NotePropertyValue $maxWallSeconds
     $manifest | Add-Member -NotePropertyName frozen_configuration -NotePropertyValue $validatedFrozen.frozen_configuration
     $manifest | Add-Member -NotePropertyName derived_private_inputs -NotePropertyValue @((Get-OptimizedMWFrozenFile $runtime.config_path),(Get-OptimizedMWFrozenFile $runtime.settings_path),(Get-OptimizedMWFrozenFile $bindingPath))
     Write-OptimizedMWRouteJson (Join-Path $output 'SESSION.json') $manifest
@@ -368,7 +382,8 @@ function Copy-OptimizedMWRouteStartSave {
     $checkpoint=$Summary.checkpoint_save
     if(-not $checkpoint){throw 'Route starting checkpoint metadata missing'}
     $expectedDescription='OptimizedMW route '+[string]$Session.manifest.route+' '+[string]$Session.id
-    if([string]$checkpoint.source -cne 'private_menu_new_save_slot' -or [string]$checkpoint.request -cne ($Session.id+':start') -or [string]$checkpoint.description -cne $expectedDescription){throw 'Starting checkpoint is not the authenticated new private route slot'}
+    $requestPattern='^'+[regex]::Escape($Session.id)+':start(?::(?:[2-9]|[1-9][0-9]{1,5}))?$'
+    if([string]$checkpoint.source -cne 'private_menu_new_save_slot' -or [string]$checkpoint.request -cnotmatch $requestPattern -or [string]$checkpoint.description -cne $expectedDescription){throw 'Starting checkpoint is not the authenticated new private route slot'}
     $directory=[string]$checkpoint.directory;$filename=[string]$checkpoint.filename
     foreach($part in @($directory,$filename)){
         if(-not $part -or $part.Length -gt 256 -or $part -match '[\\/:\r\n]|^\.{1,2}$|[. ]$' -or [IO.Path]::IsPathRooted($part)){throw 'Unsafe checkpoint save identity'}
@@ -406,7 +421,7 @@ function Invoke-OptimizedMWRouteRecorder {
     $package=$RecorderPackageDirectory;if(-not $package){$package=Join-Path $game 'RouteRecorder'}
     $choice=$Route
     if(-not $choice){
-        Write-Host '1 = Record existing route';Write-Host '2 = Record Balmora route';Write-Host '0 = Exit'
+        Write-Host '1 = Record Seyda Neen route';Write-Host '2 = Record Balmora route';Write-Host '0 = Exit'
         do{$number=Read-Host 'Route (0-2)'}while($number -notin @('0','1','2'))
         if($number -eq '0'){return}
         $choice=$(if($number -eq '1'){'existing'}else{'balmora'})
@@ -414,12 +429,17 @@ function Invoke-OptimizedMWRouteRecorder {
     $frozen=$FrozenConfigDirectory
     if(-not $frozen){$frozen=Join-Path $game $(if($choice -eq 'balmora'){'Configuration\Benchmark-SaintJs-Balmora'}else{'Configuration\Benchmark-SaintJs'})}
     if(@(Get-Process -Name openmw -ErrorAction SilentlyContinue).Count){throw 'Close the existing OpenMW instance before preparing a route recording'}
-    $session=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $frozen -PackageDirectory $package -RouteName $choice -SmokeRun:$Smoke -SmokeDuration $SmokeSeconds -SmallValidationWindow:$ValidationWindow
+    $session=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $frozen -PackageDirectory $package -RouteName $choice -SmokeRun:$Smoke -SmokeDuration $SmokeSeconds -SmallValidationWindow:$ValidationWindow -PlaybackCompatible:(-not $Smoke) -NativeMovement:(-not $AnimationMovement)
     Write-Host ('Private recording profile: '+$session.runtime.directory)
     Write-Host ('Route output: '+$session.directory)
     Write-Host ('Private encounter policy: '+$session.manifest.encounter_policy.explicit_record_count+' creature records; ordinary NPCs retained.')
+    if($choice -eq 'existing'){Write-Host 'Walk outside the Census office BEFORE F6. Choose the usual outdoor starting view.'}
+    else{Write-Host 'Walk outside Caius Cosades House BEFORE F6. Choose the usual outdoor starting view.'}
+    Write-Host ('Private movement cohort: '+$session.manifest.movement_cohort.model+'; visual animations remain enabled.')
+    Write-Host 'Recording waits for an outdoor first-person view, collision and hostile-policy readiness.'
     Write-Host 'F6 starts; F9 marks a numbered stage; F10 finishes and exits; F11 aborts and exits. Press these keys alone; no Ctrl or Shift.'
-    Write-Host 'Keep the same first-person view. Record the 45-second fixed view, then your route. This is route setup, not a performance capture.'
+    Write-Host 'Hold the fixed view for 45 seconds after Recording appears, press F9, then walk the outdoor route. No doors, menus, combat, jump or autorun toggles.'
+    Write-Host 'Press F10 before 180 simulation seconds total (including the fixed view). This is route setup, not a performance capture.'
     if($PrepareOnly){Write-Host 'Prepared only; no game launched.';return $session}
     Assert-OptimizedMWRouteSessionInputs $session
     $envBefore=@{};$observerNames=@(Get-ChildItem Env: | Where-Object {$_.Name -like 'OPENMW_*'})

@@ -1,6 +1,7 @@
 param(
     [string]$GameDir=$PSScriptRoot,
     [string]$CaptureDirectory='',
+    [ValidateSet('','existing','balmora')][string]$Route='',
     [string]$FrozenConfigDirectory='',
     [string]$PythonExecutable='',
     [switch]$RawInputs,
@@ -10,7 +11,7 @@ param(
 )
 $ErrorActionPreference='Stop'
 # Dot-sourced recorder parameters must not replace this invocation's switches.
-$playbackInvocation=@{Game=$GameDir;Capture=$CaptureDirectory;Frozen=$FrozenConfigDirectory;Python=$PythonExecutable;Raw=[bool]$RawInputs;Animation=[bool]$AnimationMovement;Prepare=[bool]$PrepareOnly;Library=[bool]$LibraryOnly}
+$playbackInvocation=@{Game=$GameDir;Capture=$CaptureDirectory;Route=$Route;Frozen=$FrozenConfigDirectory;Python=$PythonExecutable;Raw=[bool]$RawInputs;Animation=[bool]$AnimationMovement;Prepare=[bool]$PrepareOnly;Library=[bool]$LibraryOnly}
 . (Join-Path $PSScriptRoot 'OptimizedMW_FrozenConfig.ps1')
 . (Join-Path $PSScriptRoot 'OptimizedMW_RouteRecorder.ps1') -GameDir $playbackInvocation.Game -LibraryOnly
 
@@ -22,30 +23,52 @@ function Assert-OptimizedMWPlaybackIdentities {
     }
 }
 
+function Read-OptimizedMWPlaybackCapture {
+    param([string]$Directory,[ValidateSet('','existing','balmora')][string]$ExpectedRoute='')
+    $capture=Assert-OptimizedMWPlainPath $Directory
+    $sessionIdentity=Get-OptimizedMWFrozenFile (Join-Path $capture 'SESSION.json')
+    $summaryIdentity=Get-OptimizedMWFrozenFile (Join-Path $capture 'SUMMARY.json')
+    if($sessionIdentity.bytes -gt 8388608 -or $summaryIdentity.bytes -gt 1048576){throw 'Capture admission metadata exceeds its budget'}
+    $source=[IO.File]::ReadAllText($sessionIdentity.path) | ConvertFrom-Json
+    $status=[IO.File]::ReadAllText($summaryIdentity.path) | ConvertFrom-Json
+    if($source.schema -ne 1 -or [string]$source.route -cnotin @('existing','balmora') -or [string]$source.session -cnotmatch '^[a-f0-9]{32}$'){throw 'Capture route/session metadata is invalid'}
+    if($ExpectedRoute -and [string]$source.route -cne $ExpectedRoute){throw 'Selected capture belongs to a different route'}
+    if($status.complete -isnot [bool] -or -not $status.complete -or [string]$status.qualification -cne 'RECORDED_NOT_REPLAY_VALIDATED' -or [string]$status.session -cne [string]$source.session){throw 'Capture is incomplete or does not have a qualified recording footer; record a fresh outdoor route'}
+    $cohort=$null
+    if($source.PSObject.Properties['movement_cohort']){$cohort=$source.movement_cohort}
+    if($null -ne $cohort -and ($cohort.private_override -isnot [bool] -or [string]$cohort.model -cnotin @('native_input_displacement_with_visual_animations','animation_displacement') -or ($cohort.private_override -ne ([string]$cohort.model -ceq 'native_input_displacement_with_visual_animations')))){throw 'Capture movement cohort metadata is invalid'}
+    if([string]$source.route -ceq 'existing' -and ($null -eq $cohort -or [string]$cohort.model -cne 'native_input_displacement_with_visual_animations' -or -not $cohort.private_override)){throw 'Seyda Neen requires a fresh outdoor recording made with the matching native movement profile'}
+    Assert-OptimizedMWPlaybackIdentities @($sessionIdentity,$summaryIdentity)
+    return [pscustomobject]@{directory=$capture;route=[string]$source.route;session=[string]$source.session;movement_cohort=$cohort;metadata_identities=@($sessionIdentity,$summaryIdentity)}
+}
+
 function New-OptimizedMWPlaybackSession {
-    param([string]$GameDirectory,[string]$Capture,[string]$Frozen,[string]$Python,[switch]$Raw,[switch]$Animation)
+    param([string]$GameDirectory,[string]$Capture,[string]$Frozen,[string]$Python,[switch]$Raw,[switch]$Animation,[ValidateSet('','existing','balmora')][string]$RouteName='')
     $game=Assert-OptimizedMWPlainPath $GameDirectory
-    $capture=Assert-OptimizedMWPlainPath $Capture
-    if(-not $Frozen){$Frozen=Join-Path $game 'Configuration\Benchmark-SaintJs-Balmora'}
+    # Refuse old/incomplete sources before creating a private session.
+    $source=Read-OptimizedMWPlaybackCapture -Directory $Capture -ExpectedRoute $RouteName
+    $capture=$source.directory;$RouteName=$source.route
+    if(-not $Frozen){$Frozen=Join-Path $game $(if($RouteName -ceq 'balmora'){'Configuration\Benchmark-SaintJs-Balmora'}else{'Configuration\Benchmark-SaintJs'})}
     if(-not $Python){$Python=(Get-Command python.exe -ErrorAction Stop).Source}
     $pythonIdentity=Get-OptimizedMWFrozenFile $Python
     $package=Assert-OptimizedMWPlainPath (Join-Path $game 'RoutePlayback')
-    $session=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $Frozen -PackageDirectory (Join-Path $game 'RouteRecorder') -RouteName balmora -SmallValidationWindow -OutputCategory Playback
+    $session=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $Frozen -PackageDirectory (Join-Path $game 'RouteRecorder') -RouteName $RouteName -SmallValidationWindow -OutputCategory Playback
     # Guided feedback needs the native input vector to determine displacement.
     # Keep authored animation displacement for the raw control/explicit experiment.
-    $nativeMovement=(-not $Raw -and -not $Animation)
-    if($nativeMovement){Set-OptimizedMWRouteIniValue -Path $session.runtime.settings_path -Section 'Game' -Key 'player movement ignores animation' -Value 'true'}
+    $sourceNative=($null -ne $source.movement_cohort -and $source.movement_cohort.private_override)
+    $nativeMovement=(-not $Animation -and (-not $Raw -or $sourceNative))
+    if($nativeMovement -or $Animation){Set-OptimizedMWRouteIniValue -Path $session.runtime.settings_path -Section 'Game' -Key 'player movement ignores animation' -Value $(if($nativeMovement){'true'}else{'false'})}
     $data=Join-Path $session.runtime.user_data_directory 'data'
     $relativeFiles=@('optimizedmw_route_playback.omwscripts','scripts\optimizedmw_route_playback\core.lua','scripts\optimizedmw_route_playback\player.lua','scripts\optimizedmw_route_playback\guidance.lua')
     $playbackInputs=[Collections.Generic.List[object]]::new()
     foreach($relative in $relativeFiles){
-        $source=Get-OptimizedMWFrozenFile (Join-Path $package $relative)
+        $packageSource=Get-OptimizedMWFrozenFile (Join-Path $package $relative)
         $target=Assert-OptimizedMWPlainPath (Join-Path $data $relative)
         [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
-        [IO.File]::Copy($source.path,$target,$false)
+        [IO.File]::Copy($packageSource.path,$target,$false)
         $copied=Get-OptimizedMWFrozenFile $target
-        if($source.sha256 -cne $copied.sha256 -or $source.bytes -ne $copied.bytes){throw 'Playback package copy mismatch'}
-        $playbackInputs.Add($source);$playbackInputs.Add($copied)
+        if($packageSource.sha256 -cne $copied.sha256 -or $packageSource.bytes -ne $copied.bytes){throw 'Playback package copy mismatch'}
+        $playbackInputs.Add($packageSource);$playbackInputs.Add($copied)
     }
     $compiler=Get-OptimizedMWFrozenFile (Join-Path $package 'compile_route.py')
     $timeline=Join-Path $data 'scripts\optimizedmw_route_playback\timeline.lua'
@@ -55,6 +78,8 @@ function New-OptimizedMWPlaybackSession {
     Write-Host ($compilerOutput -join "`n")
     $receipt=[IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json
     if($receipt.qualification -cne 'COMPILED_NOT_REPLAY_VALIDATED' -or -not $receipt.source_evidence_unchanged){throw 'Playback compiler receipt is unqualified'}
+    if([string]$receipt.route_name -cne $RouteName){throw 'Compiled route differs from the selected source'}
+    Assert-OptimizedMWPlaybackIdentities $source.metadata_identities
     Assert-OptimizedMWPlaybackIdentities $receipt.inputs_before
     $sourceStart=Get-OptimizedMWFrozenFile (Join-Path $capture 'Start.omwsave')
     $privateStart=Assert-OptimizedMWPlainPath (Join-Path ([IO.Path]::GetDirectoryName($session.runtime.save_path)) 'Playback-Start.omwsave')
@@ -70,7 +95,7 @@ function New-OptimizedMWPlaybackSession {
     [IO.File]::WriteAllText($recorderOptions,$text,[Text.UTF8Encoding]::new($false))
     $options=Join-Path $data 'scripts\optimizedmw_route_playback\options.lua'
     $guided=$(if($Raw){'false'}else{'true'})
-    [IO.File]::WriteAllText($options,("return { enabled=true, session='"+$session.id+"', guidance_enabled="+$guided+", autostart_seconds=3, quit_on_finish=true, setup_timeout_seconds=90, position_tolerance=128, abort_position_error=2048, max_duration_seconds=180 }"),[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($options,("return { enabled=true, session='"+$session.id+"', guidance_enabled="+$guided+", autostart_seconds=3, quit_on_finish=true, setup_timeout_seconds=90, position_tolerance=128, abort_position_error=2048, max_duration_seconds=195 }"),[Text.UTF8Encoding]::new($false))
     [IO.File]::AppendAllText($session.runtime.config_path,"`ncontent=optimizedmw_route_playback.omwscripts`n",[Text.UTF8Encoding]::new($false))
     $session.arguments=@(Get-OptimizedMWFrozenArguments $session.runtime)+@('--load-savegame',('"'+$privateStart+'"'),'--skip-menu')
     $session.manifest.arguments=$session.arguments
@@ -79,8 +104,10 @@ function New-OptimizedMWPlaybackSession {
     $session.manifest.mode=$(if($Raw){'private_physics_input_replay_preview'}else{'private_guided_physics_route_preview'})
     $session.manifest.scope='Visible private route preview. Guided controls and any source-clock holds are recorded; no exact timed-input equivalence or performance acceptance.'
     $session.manifest | Add-Member -NotePropertyName playback_protocol -NotePropertyValue $(if($Raw){'raw_physics_input'}else{'physical_xy_follower_v1'})
-    $session.manifest | Add-Member -NotePropertyName movement_model -NotePropertyValue $(if($nativeMovement){'native_input_displacement_with_visual_animations'}else{'frozen_animation_movement_setting'})
-    $session.manifest | Add-Member -NotePropertyName private_movement_override -NotePropertyValue $(if($nativeMovement){[pscustomobject]@{section='Game';key='player movement ignores animation';value='true';scope='private preview only; different from recorded movement cohort'}}else{$null})
+    $session.manifest | Add-Member -NotePropertyName movement_model -NotePropertyValue $(if($nativeMovement){'native_input_displacement_with_visual_animations'}elseif($Animation){'animation_displacement'}else{'frozen_animation_movement_setting'})
+    $session.manifest | Add-Member -NotePropertyName private_movement_override -NotePropertyValue $(if($nativeMovement -or $Animation){[pscustomobject]@{section='Game';key='player movement ignores animation';value=$(if($nativeMovement){'true'}else{'false'});scope='private preview only; source cohort recorded separately'}}else{$null})
+    $session.manifest | Add-Member -NotePropertyName source_movement_cohort -NotePropertyValue $source.movement_cohort
+    $session.manifest | Add-Member -NotePropertyName source_movement_cohort_matches -NotePropertyValue $(if($null -ne $source.movement_cohort){[bool]($nativeMovement -eq $sourceNative)}else{$null})
     $session.manifest.starting_location_mode='load_copied_captured_start_no_teleport'
     $session.manifest.frozen_configuration.mode='verified_baseline_inputs_before_playback_derivation'
     $session.manifest.frozen_configuration.save_load_status='Baseline seed retained privately; separate playback_start copy is loaded by top-level arguments'
@@ -164,17 +191,21 @@ function Invoke-OptimizedMWRoutePlayback {
     $game=Assert-OptimizedMWPlainPath $playbackInvocation.Game
     if(@(Get-Process -Name openmw -ErrorAction SilentlyContinue).Count){throw 'Close the existing OpenMW instance before playback'}
     $capture=$playbackInvocation.Capture
+    $route=$playbackInvocation.Route
     if(-not $capture){
-        $candidates=@(Get-ChildItem -LiteralPath (Join-Path $game 'Benchmarks\Routes') -Directory | Where-Object {$_.Name -like 'balmora_*'} | Sort-Object LastWriteTimeUtc -Descending)
-        foreach($candidate in $candidates){
-            $summary=Join-Path $candidate.FullName 'SUMMARY.json'
-            if(-not [IO.File]::Exists($summary)){continue}
-            $status=[IO.File]::ReadAllText($summary) | ConvertFrom-Json
-            if($status.complete -eq $true -and $status.qualification -ceq 'RECORDED_NOT_REPLAY_VALIDATED'){$capture=$candidate.FullName;break}
+        if(-not $route){
+            Write-Host '1 = Preview Seyda Neen route';Write-Host '2 = Preview Balmora route';Write-Host '0 = Exit'
+            do{$number=Read-Host 'Route (0-2)'}while($number -notin @('0','1','2'))
+            if($number -eq '0'){return}
+            $route=$(if($number -eq '1'){'existing'}else{'balmora'})
         }
-        if(-not $capture){throw 'No complete Balmora recording found'}
+        $candidates=@(Get-ChildItem -LiteralPath (Join-Path $game 'Benchmarks\Routes') -Directory | Where-Object {$_.Name -like ($route+'_*')} | Sort-Object LastWriteTimeUtc -Descending)
+        foreach($candidate in $candidates){
+            try{$null=Read-OptimizedMWPlaybackCapture -Directory $candidate.FullName -ExpectedRoute $route;$capture=$candidate.FullName;break}catch{continue}
+        }
+        if(-not $capture){throw 'No compatible complete recording found for this route. Use START-OptimizedMW-RecordRoute.bat to record it outdoors first.'}
     }
-    $session=New-OptimizedMWPlaybackSession -GameDirectory $game -Capture $capture -Frozen $playbackInvocation.Frozen -Python $playbackInvocation.Python -Raw:$playbackInvocation.Raw -Animation:$playbackInvocation.Animation
+    $session=New-OptimizedMWPlaybackSession -GameDirectory $game -Capture $capture -Frozen $playbackInvocation.Frozen -Python $playbackInvocation.Python -Raw:$playbackInvocation.Raw -Animation:$playbackInvocation.Animation -RouteName $route
     Write-Host ('Source recording: '+$capture)
     Write-Host ('Playback evidence: '+$session.directory)
     Write-Host ('Playback protocol: '+$session.manifest.playback_protocol+'; preview only.')
@@ -215,5 +246,5 @@ function Invoke-OptimizedMWRoutePlayback {
 if(-not $playbackInvocation.Library){
     $playbackResult=Invoke-OptimizedMWRoutePlayback
     $playbackResult
-    if(-not $playbackInvocation.Prepare -and -not $playbackResult.playback_complete){exit 1}
+    if($null -ne $playbackResult -and -not $playbackInvocation.Prepare -and -not $playbackResult.playback_complete){exit 1}
 }

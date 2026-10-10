@@ -73,6 +73,38 @@ try{
     $tokens=$null;$parseErrors=$null;$null=[Management.Automation.Language.Parser]::ParseFile($hostPath,[ref]$tokens,[ref]$parseErrors)
     Check-Playback ($parseErrors.Count -eq 0) 'Playback host source does not parse'
 
+    # Admit route metadata before any session allocation; raw compiler checks follow.
+    $captureFixture=Join-Path $fixture 'qualified-route';[void][IO.Directory]::CreateDirectory($captureFixture)
+    $sourceManifest=[ordered]@{schema=1;session=$session;route='balmora'}
+    $sourceSummary=[ordered]@{schema=1;session=$session;complete=$true;qualification='RECORDED_NOT_REPLAY_VALIDATED'}
+    $manifestPath=Join-Path $captureFixture 'SESSION.json';$summaryPath=Join-Path $captureFixture 'SUMMARY.json'
+    Write-OptimizedMWRouteJson $manifestPath $sourceManifest;Write-OptimizedMWRouteJson $summaryPath $sourceSummary
+    $admitted=Read-OptimizedMWPlaybackCapture -Directory $captureFixture -ExpectedRoute balmora
+    Check-Playback ($admitted.route -ceq 'balmora' -and $admitted.movement_cohort -eq $null -and $admitted.metadata_identities.Count -eq 2) 'Legacy complete Balmora preview control was rejected'
+    Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture -ExpectedRoute existing} 'Balmora source was accepted as a selected Seyda route'
+    $sourceManifest.route='existing';Write-OptimizedMWRouteJson $manifestPath $sourceManifest
+    Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture} 'Legacy Seyda source without matching native movement evidence accepted'
+    $sourceManifest.movement_cohort=[ordered]@{model='native_input_displacement_with_visual_animations';private_override=$true};Write-OptimizedMWRouteJson $manifestPath $sourceManifest
+    $admitted=Read-OptimizedMWPlaybackCapture -Directory $captureFixture -ExpectedRoute existing
+    Check-Playback ($admitted.route -ceq 'existing' -and $admitted.movement_cohort.private_override -eq $true) 'Fresh native Seyda route rejected'
+    $sourceManifest.movement_cohort.private_override='true';Write-OptimizedMWRouteJson $manifestPath $sourceManifest
+    Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture} 'String movement override flag accepted'
+    $sourceManifest.movement_cohort.private_override=$false;Write-OptimizedMWRouteJson $manifestPath $sourceManifest
+    Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture} 'Native model with disabled native override accepted'
+    $sourceManifest.movement_cohort=[ordered]@{model='animation_displacement';private_override=$false};Write-OptimizedMWRouteJson $manifestPath $sourceManifest
+    Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture} 'Seyda animation-dependent diagnostic control admitted to default replay'
+    $sourceManifest.movement_cohort=[ordered]@{model='native_input_displacement_with_visual_animations';private_override=$true};Write-OptimizedMWRouteJson $manifestPath $sourceManifest
+    foreach($badComplete in @($false,'true',$null)){
+        $sourceSummary.complete=$badComplete;Write-OptimizedMWRouteJson $summaryPath $sourceSummary
+        Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture} 'Incomplete or non-boolean recording admission accepted'
+    }
+    $sourceSummary.complete=$true;$sourceSummary.session=('b'*32);Write-OptimizedMWRouteJson $summaryPath $sourceSummary
+    Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture} 'Mixed session summary admitted'
+    $sourceSummary.session=$session;$sourceSummary.qualification='INCOMPLETE';Write-OptimizedMWRouteJson $summaryPath $sourceSummary
+    Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture} 'Incomplete qualification admitted despite complete flag'
+    . $hostPath -GameDir $fixture -Route existing -PrepareOnly -LibraryOnly
+    Check-Playback ($playbackInvocation.Route -ceq 'existing') 'Dot-sourced recorder replaced selected playback route'
+
     # Derive the movement setting in a private copy and retain the original cohort.
     $baselineSettings=Join-Path $fixture 'frozen-baseline-settings.cfg'
     $privateSettings=Join-Path $fixture 'derived-private-settings.cfg'

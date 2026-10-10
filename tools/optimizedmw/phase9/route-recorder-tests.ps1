@@ -51,6 +51,16 @@ try{
     Check-Route ([IO.File]::ReadAllText($existing.manifest.options.path) -match "hostile_record_ids=\{'rat','kwama forager','scrib','nix-hound'\}") 'Alternative encounter records are not admitted independently of Fight'
     Check-Route ($existing.manifest.encounter_policy.explicit_record_count -eq 4 -and $existing.manifest.encounter_policy.identity.sha256 -ceq (Get-OptimizedMWFrozenFile $encounterPolicyPath).sha256) 'Encounter policy identity or count is not frozen in the session'
     Assert-OptimizedMWRouteSessionInputs $existing;Check-Route $true 'Unchanged recorder inputs failed prelaunch qualification'
+    $native=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing -PlaybackCompatible -NativeMovement
+    Check-Route ($native.manifest.playback_compatible -and $native.manifest.maximum_acquisition_simulation_seconds -eq 180 -and $native.manifest.movement_cohort.private_override -eq $true -and $native.manifest.movement_cohort.model -ceq 'native_input_displacement_with_visual_animations') 'Outdoor recording receipt does not identify its bounded native movement cohort'
+    Check-Route ([IO.File]::ReadAllText($native.runtime.settings_path) -match 'player movement ignores animation = true' -and [IO.File]::ReadAllText($native.manifest.options.path) -match 'playback_compatible=true' -and [IO.File]::ReadAllText($native.manifest.options.path) -match 'max_seconds=180' -and [IO.File]::ReadAllText($native.manifest.options.path).Contains("movement_cohort={model='native_input_displacement_with_visual_animations',private_override=true}")) 'Private recording setting, Lua metadata and duration disagree'
+    Check-Route ($native.arguments -notcontains '--script-run' -and $native.manifest.starting_location_mode -ceq 'load_saved_location') 'Outdoor guard preparation relocated the saved world'
+    Assert-OptimizedMWRouteSessionInputs $native;Check-Route $true 'Native derivative identities were captured before settings writes finished'
+    $animation=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing -PlaybackCompatible
+    Check-Route ($animation.manifest.movement_cohort.model -ceq 'animation_displacement' -and $animation.manifest.movement_cohort.private_override -eq $false -and [IO.File]::ReadAllText($animation.runtime.settings_path) -match 'player movement ignores animation = false') 'Explicit animation displacement control silently uses native movement'
+    Check-Route ($existing.manifest.movement_cohort -eq $null -and $existing.manifest.playback_compatible -eq $false -and $existing.manifest.maximum_acquisition_simulation_seconds -eq $null -and $existing.manifest.maximum_acquisition_wall_seconds -eq 600) 'Legacy recording constructor inherited outdoor/native restrictions'
+    Check-Route ($native.manifest.maximum_acquisition_wall_seconds -eq 300 -and [IO.File]::ReadAllText($native.manifest.options.path).Contains('max_wall_seconds=300')) 'Compatible acquisition wallclock bound differs from compiler admission'
+    Check-Route (Compare-OptimizedMWRouteProtectedInputs $before (Get-OptimizedMWRouteProtectedInputs $baseline)) 'Native recording override altered frozen/normal originals'
     [IO.File]::AppendAllText($existing.runtime.config_path,'# mutation')
     Reject-Route {Assert-OptimizedMWRouteSessionInputs $existing} 'Changed private recorder configuration accepted'
     $balmora=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName balmora -SmokeRun -SmokeDuration 5 -SmallValidationWindow
@@ -176,6 +186,16 @@ try{
     [IO.File]::WriteAllBytes((Join-Path $existing.runtime.user_data_directory 'saves/Character/route.omwsave'),[byte[]]@(8,9,10))
     $startCopy=Copy-OptimizedMWRouteStartSave $summary $existing
     Check-Route ($startCopy.source.sha256 -ceq $startCopy.route_copy.sha256) 'Starting checkpoint identity changed during copying'
+    $retryOutput=Join-Path $fixture 'retry-output';[void][IO.Directory]::CreateDirectory($retryOutput)
+    $retrySession=[pscustomobject]@{id=$existing.id;manifest=$existing.manifest;runtime=$existing.runtime;directory=$retryOutput}
+    $summary.checkpoint_save.request=$existing.id+':start:2'
+    $retryCopy=Copy-OptimizedMWRouteStartSave $summary $retrySession
+    Check-Route ($retryCopy.source.sha256 -ceq $retryCopy.route_copy.sha256) 'Fresh authenticated checkpoint retry was rejected'
+    foreach($badRequest in @($existing.id+':start:1',$existing.id+':start:02',$existing.id+':start:1000000',('b'*32)+':start:2')){
+        $summary.checkpoint_save.request=$badRequest
+        Reject-Route {Copy-OptimizedMWRouteStartSave $summary $retrySession} 'Noncanonical or foreign checkpoint retry accepted'
+    }
+    $summary.checkpoint_save.request=$existing.id+':start'
     $summary.checkpoint_save.filename='save.omwsave';Reject-Route {Copy-OptimizedMWRouteStartSave $summary $existing} 'Initial copied save accepted as a new checkpoint';$summary.checkpoint_save.filename='route.omwsave'
     $summary.checkpoint_save.source='forged';Reject-Route {Copy-OptimizedMWRouteStartSave $summary $existing} 'Unauthenticated starting checkpoint source accepted';$summary.checkpoint_save.source='private_menu_new_save_slot'
     $summary.checkpoint_save.directory='..';Reject-Route {Copy-OptimizedMWRouteStartSave $summary $existing} 'Traversal starting checkpoint accepted'
