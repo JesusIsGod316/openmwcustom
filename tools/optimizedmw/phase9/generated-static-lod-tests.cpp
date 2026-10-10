@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <set>
@@ -87,6 +88,56 @@ namespace
         }
     };
     struct Callback final : osg::NodeCallback {};
+    struct GlMutationAudit final : osg::NodeVisitor
+    {
+        std::map<std::string,std::uint64_t> values;
+        explicit GlMutationAudit(osg::Node& root):osg::NodeVisitor(TRAVERSE_ALL_CHILDREN) { root.accept(*this); }
+        void field(const void* object,const char* name,std::uint64_t value)
+        {values[std::to_string(reinterpret_cast<std::uintptr_t>(object))+":"+name]=value;}
+        void apply(osg::Node& node) override
+        {
+            field(&node,"node_variance",node.getDataVariance());
+            const auto* state=node.getStateSet();
+            if(state)
+            {
+                field(state,"state_variance",state->getDataVariance());
+                for(const auto& unit:state->getTextureAttributeList())
+                    for(const auto& [key,value]:unit)
+                        if(const auto* texture=dynamic_cast<const osg::Texture2D*>(value.first.get()))
+                        {
+                            field(texture,"texture_variance",texture->getDataVariance());
+                            field(texture,"internal_format",texture->getInternalFormat());
+                            field(texture,"source_format",texture->getSourceFormat());
+                            field(texture,"image_pointer",reinterpret_cast<std::uintptr_t>(texture->getImage()));
+                            if(const auto* image=texture->getImage())
+                            {
+                                field(image,"image_variance",image->getDataVariance());
+                                field(image,"image_generation",image->getModifiedCount());
+                                field(image,"image_format",image->getInternalTextureFormat());
+                                field(image,"image_data",reinterpret_cast<std::uintptr_t>(image->data()));
+                            }
+                        }
+            }
+            if(const auto* geometry=node.asGeometry())
+            {
+                const auto stream=[&](const osg::BufferData* data) {
+                    if(data){field(data,"stream_variance",data->getDataVariance());field(data,"stream_generation",data->getModifiedCount());}
+                };
+                stream(geometry->getVertexArray());stream(geometry->getNormalArray());stream(geometry->getColorArray());
+                for(unsigned i=0;i<geometry->getNumTexCoordArrays();++i)stream(geometry->getTexCoordArray(i));
+                for(unsigned i=0;i<geometry->getNumPrimitiveSets();++i)stream(geometry->getPrimitiveSet(i));
+            }
+            traverse(node);
+        }
+        void compare(osg::Node& root,const char* phase) const
+        {
+            GlMutationAudit current(root);
+            for(const auto& [key,value]:values)
+                if(const auto found=current.values.find(key);found==current.values.end() || found->second!=value)
+                    std::cout<<"L1_GL_MUTATION phase="<<phase<<" field="<<key<<" before="<<value
+                        <<" after="<<(found==current.values.end()?~std::uint64_t{}:found->second)<<'\n';
+        }
+    };
     struct PagingOptimize final : SceneUtil::Optimizer::IsOperationPermissibleForObjectCallback
     {
         bool isOperationPermissibleForObjectImplementation(const SceneUtil::Optimizer*,const osg::Drawable*,unsigned) const override { return true; }
@@ -386,6 +437,18 @@ int main(int argc, char** argv) try
     }
     {
         auto* original=originals.values.front(); auto* tier=tiers.values.front();
+        auto* sourceState=original->getStateSet();
+        require(sourceState,"actual material StateSet required for variance regression");
+        const auto initialVariance=sourceState->getDataVariance();
+        sourceState->setDataVariance(osg::Object::UNSPECIFIED);
+        const auto metadataGuard=L1::MaterialGuard::capture(*selected.node->original(),*selected.node->derived(),true);
+        require(metadataGuard && metadataGuard->current(),"unspecified immutable material recipe must capture");
+        sourceState->setDataVariance(osg::Object::STATIC);
+        require(metadataGuard->current(),"viewer static variance promotion must preserve the identical recipe");
+        sourceState->setDataVariance(osg::Object::DYNAMIC);
+        require(!metadataGuard->current(),"dynamic material variance must still invalidate the captured recipe");
+        sourceState->setDataVariance(initialVariance);
+        std::cout<<"L1_VARIANCE_PROMOTION unspecified_to_static=1 dynamic_refused=1 exact_contents_retained=1\n";
         osg::ref_ptr<osg::Geometry> borrowed=new osg::Geometry(*tier,osg::CopyOp::SHALLOW_COPY);
         require(!L1::temporalDrawRecipeCurrent(*borrowed), "borrowed derived receipt cannot qualify another geometry owner");
         unsigned unit=0;
@@ -536,6 +599,7 @@ int main(int argc, char** argv) try
     require(SceneUtil::temporalVertexLineage(*originals.values.front()) && SceneUtil::temporalVertexLineage(*tiers.values.front()),
         "the independently mutated lineage pair must preserve the selected immutable candidate");
     if (!draw) return 0;
+    GlMutationAudit glMutation(*selected.node);
 
     osg::ref_ptr<osg::GraphicsContext::Traits> traits = new osg::GraphicsContext::Traits;
     traits->readDISPLAY(); traits->width=128; traits->height=128; traits->pbuffer=true; traits->doubleBuffer=false; traits->windowDecoration=false;
@@ -560,7 +624,9 @@ int main(int argc, char** argv) try
     sun->setAmbient({.5f,.5f,.5f,1}); sun->setSpecular({.15f,.15f,.15f,1}); lighting->setSunlight(sun);
     lighting->addChild(selected.node);
     viewer.setIncrementalCompileOperation(ico); viewer.setSceneData(lighting); viewer.realize();
+    glMutation.compare(*selected.node,"after_realize");
     const auto beforeDraw = L1::Counters::derivedDraws.load(), beforeControl = L1::Counters::controlDraws.load(); viewer.frame();
+    glMutation.compare(*selected.node,"after_first_draw");
     require(L1::Counters::derivedDraws == beforeDraw && L1::Counters::controlDraws > beforeControl, "pending compile renders original");
     const auto controlPixels = pixels->data;
     Programs programs; selected.node->original()->accept(programs);

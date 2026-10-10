@@ -1139,7 +1139,14 @@ namespace SceneUtil::GeneratedStaticLod
                     if(i!=streams.size()) return false;
                 }
                 if(!state) return true;
-                if(state->getDataVariance()!=frozen->getDataVariance() || state->getUpdateCallback()!=frozen->getUpdateCallback()
+                // Viewer::setSceneData resolves unspecified StateSet variance
+                // to STATIC. That one-way bookkeeping promotion changes no
+                // material recipe; every callback/value/attribute check below
+                // still applies. Dynamic or reverse variance changes refuse.
+                const bool stableVariance=state->getDataVariance()==frozen->getDataVariance()
+                    || (frozen->getDataVariance()==osg::Object::UNSPECIFIED
+                        && state->getDataVariance()==osg::Object::STATIC);
+                if(!stableVariance || state->getUpdateCallback()!=frozen->getUpdateCallback()
                     || state->getEventCallback()!=frozen->getEventCallback() || state->getModeList()!=frozen->getModeList()
                     || state->getTextureModeList()!=frozen->getTextureModeList() || state->getDefineList()!=frozen->getDefineList()
                     || state->getRenderingHint()!=frozen->getRenderingHint() || state->getBinNumber()!=frozen->getBinNumber()
