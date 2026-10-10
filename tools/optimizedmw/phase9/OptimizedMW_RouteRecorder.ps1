@@ -272,6 +272,7 @@ function Export-OptimizedMWRouteLog {
     if($SessionId -notmatch '^[a-f0-9]{32}$'){throw 'Invalid route session identity'}
     $errors=[Collections.Generic.List[string]]::new();$events=[Collections.Generic.Dictionary[string,int]]::new()
     $seq=0L;$lastTime=-1.0;$lastSimulation=-1.0;$lastFrame=-1L;$started=$false;$finished=$false;$startTime=0.0;$finish=$null;$bytes=0L;$cellKnown=$false;$checkpointSave=$null
+    $durationWall=$null;$finishElapsedWall=$null;$observationSettleWall=$null
     $controlSequences=[Collections.Generic.HashSet[long]]::new()
     $writer=[IO.StreamWriter]::new($OutputPath,$false,[Text.UTF8Encoding]::new($false))
     try{
@@ -341,6 +342,31 @@ function Export-OptimizedMWRouteLog {
     if(-not $checkpointSave -or -not [string]$checkpointSave.directory -or -not [string]$checkpointSave.filename){$errors.Add('Starting checkpoint save missing')}
     if($finished){
         if($lastTime-$startTime -gt 610){$errors.Add('Recording duration exceeds 600-second budget')}
+        if($started){$finishElapsedWall=[double]$finish.t-$startTime}
+        if(-not (Test-OptimizedMWRouteNumber $finish.duration_wall 0 610)){$errors.Add('Finish wall duration missing or invalid')}
+        else{$durationWall=$finish.duration_wall}
+        $compatible=$false
+        if($finish.PSObject.Properties['capture_scope'] -and $finish.capture_scope.PSObject.Properties['playback_compatible']){
+            if($finish.capture_scope.playback_compatible -isnot [bool]){$errors.Add('Finish playback-compatible scope must be boolean')}
+            else{$compatible=$finish.capture_scope.playback_compatible}
+        }
+        if($finish.PSObject.Properties['observation_settle_wall']){
+            if(-not (Test-OptimizedMWRouteNumber $finish.observation_settle_wall 0 86400)){$errors.Add('Finish observation-settle wall duration invalid')}
+            else{$observationSettleWall=$finish.observation_settle_wall}
+        }
+        if($compatible){
+            if(-not (Test-OptimizedMWRouteNumber $finish.acquisition_end_wall 0 610)){$errors.Add('Compatible acquisition-end wall duration missing or invalid')}
+            elseif($null -ne $durationWall -and [Math]::Abs([double]$finish.acquisition_end_wall-[double]$durationWall) -gt 0.000001){$errors.Add('Compatible acquisition-end/footer wall duration mismatch')}
+            if($null -eq $observationSettleWall){$errors.Add('Compatible observation-settle wall duration missing or invalid')}
+        }
+        # Compatible duration stops at F10 before the independent observer drain.
+        # Legacy footer durations include their drain. Copy the footer value exactly
+        # for the compiler join; use a tolerance only for arithmetic clock closure.
+        if($started -and $null -ne $durationWall -and (-not $compatible -or $null -ne $observationSettleWall)){
+            $expectedElapsed=[double]$durationWall
+            if($compatible){$expectedElapsed+=[double]$observationSettleWall}
+            if([Math]::Abs([double]$finishElapsedWall-$expectedElapsed) -gt 0.000001){$errors.Add('Finish elapsed/acquisition/drain wall clock mismatch')}
+        }
         if(-not $finish.PSObject.Properties['expected_records'] -or [long]$finish.expected_records -ne $seq){$errors.Add('Finish record-count mismatch')}
         if($finish.PSObject.Properties['complete'] -and -not [bool]$finish.complete){$errors.Add('Recorder marks route incomplete')}
         if(-not $finish.PSObject.Properties['flags'] -or $finish.flags.complete -isnot [bool] -or -not $finish.flags.complete){$errors.Add('Recorder flags route incomplete')}
@@ -372,7 +398,8 @@ function Export-OptimizedMWRouteLog {
     }
     if($null -eq $ExitCode -or $ExitCode -ne 0){$errors.Add('Game did not exit normally')}
     return [pscustomobject][ordered]@{schema=1;session=$SessionId;complete=($errors.Count -eq 0);qualification=$(if($errors.Count -eq 0){'RECORDED_NOT_REPLAY_VALIDATED'}else{'INCOMPLETE'});
-        record_count=$seq;events=$events;duration_seconds=$(if($finished -and $started){$lastTime-$startTime}else{$null});errors=@($errors | Select-Object -Unique);
+        record_count=$seq;events=$events;duration_seconds=$durationWall;duration_seconds_source='finish.duration_wall';
+        finish_elapsed_wall_seconds=$finishElapsedWall;observation_settle_wall_seconds=$observationSettleWall;errors=@($errors | Select-Object -Unique);
         route_file=(Get-OptimizedMWFrozenFile $OutputPath);source_log=$LogPath;exit_code=$ExitCode;checkpoint_save=$checkpointSave;
         limitation='Recording integrity is distinct from exact replay, actor repeatability, candidate engagement, and runtime performance acceptance.'}
 }

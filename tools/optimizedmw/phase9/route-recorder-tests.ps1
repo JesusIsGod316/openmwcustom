@@ -1,4 +1,5 @@
 # Hermetic recorder host checks. No game, UI, ETW, or original profile writes.
+param([string]$CompilerIntegrationCapture='')
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'OptimizedMW_FrozenConfig.ps1')
 . (Join-Path $PSScriptRoot 'OptimizedMW_RouteRecorder.ps1') -LibraryOnly
@@ -127,11 +128,34 @@ try{
         @{schema=1;session=$sessionId;event='sample';seq=4;t=1.05;f=1;control_sequence=3;simulation=0.05;wall_since_start=0.05;game=0.05;dt_real=0.05;position=@{x=1;y=2;z=3};rotation=@{x=0;y=0;z=0};camera=@{yaw=0;pitch=0;extra_yaw=0;extra_pitch=0;roll=0;fov=60};cell=@{name='Balmora';exterior=$true}},
         @{schema=1;session=$sessionId;event='checkpoint';seq=5;t=1.1},
         @{schema=1;session=$sessionId;event='sample';seq=6;t=1.15;f=2;control_sequence=3;simulation=0.15;wall_since_start=0.15;game=0.15;dt_real=0.05;position=@{x=2;y=3;z=4};rotation=@{x=0;y=0;z=0};camera=@{yaw=0;pitch=0;extra_yaw=0;extra_pitch=0;roll=0;fov=60};cell=@{name='Balmora';exterior=$true}},
-        @{schema=1;session=$sessionId;event='finish';seq=7;t=2;expected_records=7;counts=@{ready=1;start=1;control=1;sample=2;checkpoint=1};flags=@{complete=$true;door_observer_ready=$true;policy_ready=$true;policy_qualified=$true};policy=@{qualified=$true;ready=$true;enabled=$true;failed=$false;combat_during_recording=0;pending_disable=0};private_camera_setup=@{source='private_setup_vanity_control_switch';vanity_disabled=$true;verified=$true};reason='user_finished'})
+        @{schema=1;session=$sessionId;event='finish';seq=7;t=2;duration_wall=1;expected_records=7;counts=@{ready=1;start=1;control=1;sample=2;checkpoint=1};flags=@{complete=$true;door_observer_ready=$true;policy_ready=$true;policy_qualified=$true};policy=@{qualified=$true;ready=$true;enabled=$true;failed=$false;combat_during_recording=0;pending_disable=0};private_camera_setup=@{source='private_setup_vanity_control_switch';vanity_disabled=$true;verified=$true};reason='user_finished'})
     function Write-RouteFixture {param([object[]]$Entries) [IO.File]::WriteAllLines($log,@($Entries | ForEach-Object {'[12:34:56] OMWROUTE|'+($_ | ConvertTo-Json -Depth 8 -Compress)}),[Text.UTF8Encoding]::new($false))}
     Write-RouteFixture $records;$summary=Export-OptimizedMWRouteLog $log $out $sessionId 0
     Check-Route $summary.complete 'Valid route fixture rejected'
     Check-Route ($summary.record_count -eq 7 -and $summary.events.sample -eq 2 -and $summary.route_file.sha256 -match '^[a-f0-9]{64}$') 'Route count or checksum absent'
+    Check-Route ($summary.duration_seconds -eq 1 -and $summary.finish_elapsed_wall_seconds -eq 1 -and $null -eq $summary.observation_settle_wall_seconds -and $summary.duration_seconds_source -ceq 'finish.duration_wall') 'Legacy footer duration was not preserved explicitly'
+    foreach($badDuration in @($null,-1,'1',[double]::NaN)){
+        $records[6].duration_wall=$badDuration;Write-RouteFixture $records;$invalidDuration=Export-OptimizedMWRouteLog $log $out $sessionId 0
+        Check-Route (-not $invalidDuration.complete) 'Missing or invalid footer wall duration accepted'
+    }
+    $records[6].duration_wall=1
+    $records[6].capture_scope=@{playback_compatible=$true};$records[6].acquisition_end_wall=1;$records[6].observation_settle_wall=0.075;$records[6].t=2.075
+    foreach($finishReason in @('user_finished','smoke_finished')){
+        $records[6].reason=$finishReason;Write-RouteFixture $records;$drained=Export-OptimizedMWRouteLog $log $out $sessionId 0
+        Check-Route ($drained.complete -and $drained.duration_seconds -eq $records[6].duration_wall -and $drained.observation_settle_wall_seconds -eq 0.075 -and [Math]::Abs($drained.finish_elapsed_wall_seconds-1.075) -lt 0.000001) 'Compatible finish includes drain in acquisition duration or loses separate drain evidence'
+    }
+    foreach($badDrain in @($null,-1,'0.075',0.15)){
+        $records[6].observation_settle_wall=$badDrain;Write-RouteFixture $records;$invalidDrain=Export-OptimizedMWRouteLog $log $out $sessionId 0
+        Check-Route (-not $invalidDrain.complete) 'Missing, invalid or clock-inconsistent compatible drain accepted'
+    }
+    $records[6].observation_settle_wall=0.075
+    $records[6].Remove('acquisition_end_wall');Write-RouteFixture $records;$missingAcquisition=Export-OptimizedMWRouteLog $log $out $sessionId 0
+    Check-Route (-not $missingAcquisition.complete -and $missingAcquisition.errors -contains 'Compatible acquisition-end wall duration missing or invalid') 'Compatible acquisition-end metadata may be absent'
+    $records[6].acquisition_end_wall=1.1;Write-RouteFixture $records;$badAcquisition=Export-OptimizedMWRouteLog $log $out $sessionId 0
+    Check-Route (-not $badAcquisition.complete -and $badAcquisition.errors -contains 'Compatible acquisition-end/footer wall duration mismatch') 'Acquisition end may differ from footer duration'
+    $records[6].acquisition_end_wall=1;$records[6].capture_scope.playback_compatible='true';Write-RouteFixture $records;$badScope=Export-OptimizedMWRouteLog $log $out $sessionId 0
+    Check-Route (-not $badScope.complete -and $badScope.errors -contains 'Finish playback-compatible scope must be boolean') 'Nonboolean compatible scope accepted'
+    $records[6].Remove('capture_scope');$records[6].Remove('acquisition_end_wall');$records[6].Remove('observation_settle_wall');$records[6].t=2;$records[6].reason='user_finished'
     $records[6].policy.combat_during_recording=1;Write-RouteFixture $records;$combatSummary=Export-OptimizedMWRouteLog $log $out $sessionId 0
     Check-Route (-not $combatSummary.complete -and $combatSummary.errors -contains 'Combat/Pursue was observed during recording (events=1)' -and -not ($combatSummary.errors -match 'pending|unclosed')) 'Observed combat is accepted or misreported as pending suppression'
     $records[6].policy.combat_during_recording=0;$records[6].policy.pending_disable=1;Write-RouteFixture $records;$pendingSummary=Export-OptimizedMWRouteLog $log $out $sessionId 0
@@ -199,6 +223,32 @@ try{
     $summary.checkpoint_save.filename='save.omwsave';Reject-Route {Copy-OptimizedMWRouteStartSave $summary $existing} 'Initial copied save accepted as a new checkpoint';$summary.checkpoint_save.filename='route.omwsave'
     $summary.checkpoint_save.source='forged';Reject-Route {Copy-OptimizedMWRouteStartSave $summary $existing} 'Unauthenticated starting checkpoint source accepted';$summary.checkpoint_save.source='private_menu_new_save_slot'
     $summary.checkpoint_save.directory='..';Reject-Route {Copy-OptimizedMWRouteStartSave $summary $existing} 'Traversal starting checkpoint accepted'
+    if($CompilerIntegrationCapture){
+        # Re-export real raw evidence into this disposable fixture. The original
+        # capture, checkpoint and protected-input claims are read only throughout.
+        $sourceCapture=[IO.Path]::GetFullPath($CompilerIntegrationCapture)
+        $sourcePaths=@('SUMMARY.json','SESSION.json','route.jsonl','Start.omwsave','stdout.log') | ForEach-Object {Join-Path $sourceCapture $_}
+        $sourceBefore=@($sourcePaths | ForEach-Object {Get-OptimizedMWFrozenFile $_})
+        $originalSummary=Get-Content -LiteralPath $sourcePaths[0] -Raw | ConvertFrom-Json
+        Check-Route ($originalSummary.complete -is [bool] -and $originalSummary.complete -and $originalSummary.protected_inputs_unchanged -is [bool] -and $originalSummary.protected_inputs_unchanged -and $originalSummary.exit_code -eq 0) 'Integration source is not a complete normally exited capture with protected inputs intact'
+        $integration=Join-Path $fixture 'real-export-compiler';[void][IO.Directory]::CreateDirectory($integration)
+        [IO.File]::Copy($sourcePaths[1],(Join-Path $integration 'SESSION.json'))
+        [IO.File]::Copy($sourcePaths[3],(Join-Path $integration 'Start.omwsave'))
+        $integrationSummary=Export-OptimizedMWRouteLog -LogPath $sourcePaths[4] -OutputPath (Join-Path $integration 'route.jsonl') -SessionId $originalSummary.session -ExitCode $originalSummary.exit_code
+        Check-Route $integrationSummary.complete ('Real capture re-export failed: '+($integrationSummary.errors -join '; '))
+        $integrationSummary | Add-Member -NotePropertyName starting_save -NotePropertyValue ([pscustomobject]@{source=$originalSummary.starting_save.source;route_copy=(Get-OptimizedMWFrozenFile (Join-Path $integration 'Start.omwsave'));metadata=$originalSummary.starting_save.metadata})
+        $integrationSummary | Add-Member -NotePropertyName protected_inputs_unchanged -NotePropertyValue $originalSummary.protected_inputs_unchanged
+        Write-OptimizedMWRouteJson (Join-Path $integration 'SUMMARY.json') $integrationSummary
+        $compiler=Join-Path $PSScriptRoot 'route-playback/compile_route.py'
+        $compiledOutput=& python $compiler --capture $integration --output (Join-Path $fixture 'real-timeline.lua') --receipt (Join-Path $fixture 'REAL-COMPILED.json')
+        Check-Route ($LASTEXITCODE -eq 0) ('Real PowerShell export-to-Python compiler handoff failed: '+($compiledOutput -join ' '))
+        $compiled=Get-Content -LiteralPath (Join-Path $fixture 'REAL-COMPILED.json') -Raw | ConvertFrom-Json
+        Check-Route ($compiled.source_session -ceq $originalSummary.session -and $compiled.source_evidence_unchanged -and $compiled.source_record_count -eq $integrationSummary.record_count) 'Compiler accepted different source evidence or lost the capture identity'
+        for($i=0;$i -lt $sourcePaths.Count;$i++){
+            $sourceAfter=Get-OptimizedMWFrozenFile $sourcePaths[$i]
+            Check-Route ($sourceAfter.sha256 -ceq $sourceBefore[$i].sha256 -and $sourceAfter.bytes -eq $sourceBefore[$i].bytes) 'Original integration capture changed during isolated re-export/compilation'
+        }
+    }
     Write-Host ("PASS: $checks route recorder checks; no game launched")
 }finally{
     # This unique hermetic fixture alone is disposable. Verify the exact
