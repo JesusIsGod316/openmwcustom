@@ -2,14 +2,19 @@ OptimizedMW route recorder - guided setup only
 
 Start START-OptimizedMW-RecordRoute.bat. Choose 1 for the existing route,
 2 for Balmora, or 0 to exit. Only this launcher adds the recorder scripts.
-Each launch copies the locked SaintJs profile and Wake up save into its own
+Each launch copies the locked SaintJs profile and selected route save into its own
 private writable TestSessions/FrozenConfig_<id> directory. Regular gameplay
 configurations, saves, persistent Lua state, and input bindings stay separate.
 
-The existing route starts from that copied save. Balmora loads the same save
-then uses the engine's startup console script to resolve COC Balmora. This is
-setup, not a measured route segment. Wait for the loaded scene to settle and
-choose your exact starting view before beginning.
+The existing route uses Configuration/Benchmark-SaintJs and the original copied
+Gallus Darkwind Wake up slot. Balmora uses Configuration/Benchmark-SaintJs-Balmora
+and the separate '_zZz__Wake_up - 1.omwsave' slot saved in Caius Cosades' House.
+The normal Balmora recorder loads that saved position directly. It never uses
+COC to move the selected starting point. Step outside for the outdoor benchmark,
+let the loaded scene settle, then choose your exact view before pressing F6.
+The host rejects a missing/mismatched Balmora save binding. Developer smoke
+checks may use COC setup, clearly labelled as diagnostic rather than saved-location
+validation; those checks are not normal guided route recordings.
 
 The historical copied Wake up save may display an initial compatibility warning
 for two old OMW_lanterns content entries. This is a warning about that copied

@@ -118,6 +118,9 @@ Smoke mode
 Generated smoke options can automatically start after two seconds in a stable,
 unpaused exterior whose name matches smoke_expected_cell, acquire 1-60 seconds,
 save/export, then quit. Host console COC setup happens before START and is excluded.
+Normal Balmora acquisition instead uses a dedicated frozen starting-save binding,
+loads its exact copied save and omits COC. Only developer smokes may displace that
+position; SESSION records the distinction as starting_location_mode.
 This validates recorder execution and artifact binding, not route repeatability,
 combat preemption, candidate performance, or automatic replay.
 

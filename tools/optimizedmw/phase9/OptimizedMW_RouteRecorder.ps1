@@ -88,6 +88,16 @@ function New-OptimizedMWRouteSession {
     $game=Assert-OptimizedMWPlainPath $GameDirectory
     $package=Assert-OptimizedMWPlainPath $PackageDirectory
     $baseline=Read-OptimizedMWFrozenLock $FrozenDirectory
+    $boundStart=$null
+    if($baseline.lock.PSObject.Properties['route_start']){
+        $boundStart=$baseline.lock.route_start
+        if($boundStart.schema -ne 1 -or [string]$boundStart.route -cne $RouteName -or [string]$boundStart.mode -cne 'load_saved_location' -or
+            [string]$boundStart.save_relative_path -cne $baseline.save.relative_path -or [string]$boundStart.save_sha256 -cne $baseline.save.sha256 -or
+            [string]::IsNullOrWhiteSpace([string]$boundStart.saved_cell)){
+            throw 'Frozen route starting-save binding does not match the selected route/save'
+        }
+    }
+    if($RouteName -eq 'balmora' -and -not $SmokeRun -and -not $boundStart){throw 'Balmora requires its dedicated frozen starting-save binding'}
     $encounterPolicyPath=Join-Path $package 'encounter-policy.json'
     $encounterPolicyIdentity=Get-OptimizedMWFrozenFile $encounterPolicyPath
     if($encounterPolicyIdentity.bytes -gt 1048576){throw 'Route encounter policy exceeds 1 MiB'}
@@ -164,7 +174,7 @@ function New-OptimizedMWRouteSession {
     # A console setup script executes only once the loaded game is running.
     # COC resolves the modded city from its cell name; no coordinates are guessed.
     $setup=$null
-    if($RouteName -eq 'balmora' -or $SmokeRun){
+    if(($RouteName -eq 'balmora' -and -not $boundStart) -or $SmokeRun){
         $setupCell=$(if($RouteName -eq 'balmora'){'Balmora'}else{'Seyda Neen'})
         $setup=Join-Path $runtime.directory 'City-Setup.txt'
         [IO.File]::WriteAllText($setup,('coc "'+$setupCell+'"'+"`n"),[Text.UTF8Encoding]::new($false))
@@ -178,6 +188,8 @@ function New-OptimizedMWRouteSession {
         setup_script=$(if($setup){Get-OptimizedMWFrozenFile $setup}else{$null});
         scope='Route recorder only. No optimization matrix, Windows trace, automated replay, or benchmark performance claim.';
         actor_policy='Host does not remove actors. Lua policy and unexpected combat qualification are recorded separately.'}
+    $manifest | Add-Member -NotePropertyName route_start -NotePropertyValue $boundStart
+    $manifest | Add-Member -NotePropertyName starting_location_mode -NotePropertyValue $(if($setup){'diagnostic_coc_setup_not_saved_location'}else{'load_saved_location'})
     $manifest | Add-Member -NotePropertyName encounter_policy -NotePropertyValue ([pscustomobject]@{identity=$encounterPolicyIdentity;frozen_config_sha256=$encounterPolicy.frozen_config_sha256;explicit_record_count=$hostileRecords.Count;verified_content_files=$contentFiles.Count;scope=$encounterPolicy.scope})
     $manifest | Add-Member -NotePropertyName native_recorder_bindings_parked -NotePropertyValue $parkedBindings
     $manifest | Add-Member -NotePropertyName validation_window -NotePropertyValue ([bool]$SmallValidationWindow)
@@ -378,7 +390,6 @@ function Invoke-OptimizedMWRouteRecorder {
     $game=[IO.Path]::GetFullPath($GameDir)
     . (Join-Path $game 'OptimizedMW_FrozenConfig.ps1')
     $game=Assert-OptimizedMWPlainPath $game
-    $frozen=$FrozenConfigDirectory;if(-not $frozen){$frozen=Join-Path $game 'Configuration\Benchmark-SaintJs'}
     $package=$RecorderPackageDirectory;if(-not $package){$package=Join-Path $game 'RouteRecorder'}
     $choice=$Route
     if(-not $choice){
@@ -387,6 +398,8 @@ function Invoke-OptimizedMWRouteRecorder {
         if($number -eq '0'){return}
         $choice=$(if($number -eq '1'){'existing'}else{'balmora'})
     }
+    $frozen=$FrozenConfigDirectory
+    if(-not $frozen){$frozen=Join-Path $game $(if($choice -eq 'balmora'){'Configuration\Benchmark-SaintJs-Balmora'}else{'Configuration\Benchmark-SaintJs'})}
     if(@(Get-Process -Name openmw -ErrorAction SilentlyContinue).Count){throw 'Close the existing OpenMW instance before preparing a route recording'}
     $session=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $frozen -PackageDirectory $package -RouteName $choice -SmokeRun:$Smoke -SmokeDuration $SmokeSeconds -SmallValidationWindow:$ValidationWindow
     Write-Host ('Private recording profile: '+$session.runtime.directory)

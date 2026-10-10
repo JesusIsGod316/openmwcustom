@@ -59,6 +59,17 @@ try{
     Check-Route ([IO.File]::ReadAllText($balmora.manifest.options.path) -match "smoke_autostart=true" -and [IO.File]::ReadAllText($balmora.manifest.options.path) -match "route_name='balmora'") 'Smoke options are not bounded and explicit'
     Check-Route ([IO.File]::ReadAllText($balmora.manifest.options.path) -match "hostile_record_ids=\{'rat','kwama forager','scrib','nix-hound'\}") 'Balmora private policy does not retain the audited encounter group'
     Check-Route ($balmora.manifest.validation_window -and [IO.File]::ReadAllText($balmora.runtime.settings_path) -match 'resolution x = 1280' -and [IO.File]::ReadAllText($balmora.runtime.settings_path) -match 'resolution y = 720') 'Validation display is not marked separately'
+    Reject-Route {New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName balmora} 'Normal Balmora acquisition accepted an unbound seed and implicit teleport'
+    $balmoraLock=Get-Content -LiteralPath (Join-Path $locked 'LOCK.json') -Raw | ConvertFrom-Json
+    $balmoraLock | Add-Member -NotePropertyName route_start -NotePropertyValue ([pscustomobject]@{schema=1;route='balmora';mode='load_saved_location';save_relative_path=$baseline.save.relative_path;save_sha256=$baseline.save.sha256;saved_cell="Balmora, Caius Cosades' House"})
+    Write-OptimizedMWRouteJson (Join-Path $locked 'LOCK.json') $balmoraLock
+    $boundBalmora=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName balmora
+    Check-Route ($boundBalmora.arguments -notcontains '--script-run' -and $null -eq $boundBalmora.manifest.setup_script -and $boundBalmora.manifest.starting_location_mode -ceq 'load_saved_location') 'Bound Balmora seed was displaced by a COC setup script'
+    Check-Route ($boundBalmora.manifest.route_start.save_sha256 -ceq (Get-OptimizedMWFrozenFile $boundBalmora.runtime.save_path).sha256 -and $boundBalmora.manifest.route_start.saved_cell -ceq "Balmora, Caius Cosades' House") 'Balmora starting-save identity/location binding not retained'
+    Reject-Route {New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing} 'Balmora starting-save binding accepted for the Seyda route'
+    $balmoraLock.route_start.save_sha256=('0'*64);Write-OptimizedMWRouteJson (Join-Path $locked 'LOCK.json') $balmoraLock
+    Reject-Route {New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName balmora} 'Mismatched starting-save binding accepted'
+    $balmoraLock.PSObject.Properties.Remove('route_start');Write-OptimizedMWRouteJson (Join-Path $locked 'LOCK.json') $balmoraLock
     $seydaSmoke=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing -SmokeRun
     Check-Route ([IO.File]::ReadAllText($seydaSmoke.manifest.setup_script.path) -ceq ('coc "Seyda Neen"'+"`n")) 'Multiword smoke cell name is not quoted as one console argument'
     Check-Route (Compare-OptimizedMWRouteProtectedInputs $before (Get-OptimizedMWRouteProtectedInputs $baseline)) 'Original profile changed during recording setup'
