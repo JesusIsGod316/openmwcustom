@@ -113,6 +113,19 @@ function New-OptimizedMWRouteSession {
         $identity=Get-OptimizedMWFrozenFile $file.path
         if([string]$file.sha256 -notmatch '^[a-fA-F0-9]{64}$' -or $identity.sha256 -ine [string]$file.sha256 -or $null -eq $file.bytes -or $identity.bytes -ne $file.bytes){throw ('Route encounter content changed since audit: '+$file.path)}
     }
+    # User development mods retain observed identities without an exact-version gate.
+    $mutableFiles=@()
+    if($encounterPolicy.PSObject.Properties['mutable_development_content_files']){$mutableFiles=@($encounterPolicy.mutable_development_content_files)}
+    if($mutableFiles.Count -gt 32){throw 'Too many mutable development content files'}
+    $mutableIdentities=[Collections.Generic.List[object]]::new()
+    foreach($file in $mutableFiles){
+        if(-not [IO.Path]::IsPathRooted([string]$file.path) -or -not $seenContent.Add([string]$file.path) -or
+            [string]::IsNullOrWhiteSpace([string]$file.content) -or [IO.Path]::GetFileName([string]$file.path) -ine [string]$file.content){
+            throw 'Invalid, duplicate or bound mutable development content path'
+        }
+        $identity=Get-OptimizedMWFrozenFile $file.path
+        $mutableIdentities.Add([pscustomobject]@{content=[string]$file.content;path=$identity.path;sha256=$identity.sha256;bytes=$identity.bytes;binding='observed_at_preparation_not_required_version'})
+    }
     $hostileRecords=@($encounterPolicy.hostile_record_ids)
     if($hostileRecords.Count -lt 1 -or $hostileRecords.Count -gt 4096){throw 'Route encounter policy must have 1-4096 explicit records'}
     $seenRecords=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -190,7 +203,7 @@ function New-OptimizedMWRouteSession {
         actor_policy='Host does not remove actors. Lua policy and unexpected combat qualification are recorded separately.'}
     $manifest | Add-Member -NotePropertyName route_start -NotePropertyValue $boundStart
     $manifest | Add-Member -NotePropertyName starting_location_mode -NotePropertyValue $(if($setup){'diagnostic_coc_setup_not_saved_location'}else{'load_saved_location'})
-    $manifest | Add-Member -NotePropertyName encounter_policy -NotePropertyValue ([pscustomobject]@{identity=$encounterPolicyIdentity;frozen_config_sha256=$encounterPolicy.frozen_config_sha256;explicit_record_count=$hostileRecords.Count;verified_content_files=$contentFiles.Count;scope=$encounterPolicy.scope})
+    $manifest | Add-Member -NotePropertyName encounter_policy -NotePropertyValue ([pscustomobject]@{identity=$encounterPolicyIdentity;frozen_config_sha256=$encounterPolicy.frozen_config_sha256;explicit_record_count=$hostileRecords.Count;verified_content_files=$contentFiles.Count;mutable_development_content=$mutableIdentities.ToArray();scope=$encounterPolicy.scope})
     $manifest | Add-Member -NotePropertyName native_recorder_bindings_parked -NotePropertyValue $parkedBindings
     $manifest | Add-Member -NotePropertyName validation_window -NotePropertyValue ([bool]$SmallValidationWindow)
     $manifest | Add-Member -NotePropertyName frozen_configuration -NotePropertyValue $validatedFrozen.frozen_configuration

@@ -85,6 +85,21 @@ try{
     $encounterPolicy.content_files=@($asset,$asset);Write-OptimizedMWRouteJson $encounterPolicyPath $encounterPolicy
     Reject-Route {New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing} 'Duplicate encounter source content identity accepted'
     $encounterPolicy.content_files=@($asset)
+    $developmentPath=Join-Path $live 'Development.esp';[IO.File]::WriteAllText($developmentPath,'version one')
+    $developmentFile=[ordered]@{content='Development.esp';path=$developmentPath}
+    $encounterPolicy.mutable_development_content_files=@($developmentFile);Write-OptimizedMWRouteJson $encounterPolicyPath $encounterPolicy
+    $mutableFirst=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing
+    Check-Route ($mutableFirst.manifest.encounter_policy.mutable_development_content.Count -eq 1 -and $mutableFirst.manifest.encounter_policy.verified_content_files -eq 1) 'Mutable development entry weakened unrelated content binding'
+    [IO.File]::WriteAllText($developmentPath,'version two has different bytes')
+    $mutableSecond=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing
+    Check-Route ($mutableSecond.manifest.encounter_policy.mutable_development_content[0].sha256 -ceq (Get-OptimizedMWFrozenFile $developmentPath).sha256 -and $mutableSecond.manifest.encounter_policy.mutable_development_content[0].sha256 -cne $mutableFirst.manifest.encounter_policy.mutable_development_content[0].sha256) 'Changed development content blocked preparation or lost its observed identity'
+    $encounterPolicy.mutable_development_content_files=@($developmentFile,$developmentFile);Write-OptimizedMWRouteJson $encounterPolicyPath $encounterPolicy
+    Reject-Route {New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing} 'Duplicate mutable development source accepted'
+    $encounterPolicy.mutable_development_content_files=@([ordered]@{content='fixture.dds';path=$asset.path});Write-OptimizedMWRouteJson $encounterPolicyPath $encounterPolicy
+    Reject-Route {New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing} 'Mutable development entry bypassed an already bound file'
+    $encounterPolicy.mutable_development_content_files=@([ordered]@{content='Wrong.esp';path=$developmentPath});Write-OptimizedMWRouteJson $encounterPolicyPath $encounterPolicy
+    Reject-Route {New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing} 'Mutable development content filename mismatch accepted'
+    $encounterPolicy.mutable_development_content_files=@();Write-OptimizedMWRouteJson $encounterPolicyPath $encounterPolicy
     foreach($invalidList in @(@(),@('rat','rat'),@("rat'"),@('rat','Scrib'),@($null))){
         $encounterPolicy.hostile_record_ids=$invalidList;Write-OptimizedMWRouteJson $encounterPolicyPath $encounterPolicy
         Reject-Route {New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing} 'Invalid, duplicate or unsafe encounter list accepted'

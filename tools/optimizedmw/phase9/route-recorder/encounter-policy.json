@@ -44,7 +44,8 @@
     "Content read live from captured data paths; record hashes and file identities retained.",
     "Script-created/dynamic/override creatures outside content placements remain unproven.",
     "Exterior cell union is a bounded route subset; neighboring active grid may contain other encounters.",
-    "Queued enabled=false still cannot guarantee AI preemption."
+    "Queued enabled=false still cannot guarantee AI preemption.",
+    "User development content versions are observed at preparation but are not exact-version requirements; future encounter changes in those mods are not re-audited automatically."
   ],
   "content_files": [
     {
@@ -858,18 +859,6 @@
       "sha256": "1becc3623462f80874589c2a04ca51a5bba05f592abc38ad0685c30bea6f01ad"
     },
     {
-      "content": "Clocks and Compass.ESP",
-      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\OpenMW Clocks and Compass\\Data Files\\Clocks and Compass.ESP",
-      "bytes": 5619,
-      "sha256": "19f49dbd6d89b462a80ecd98a3ca1eeb264f72440c85a9843a1a6e8d1c646f98"
-    },
-    {
-      "content": "Physical Maps.esp",
-      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\Openmw Physical Maps\\Data Files\\Physical Maps.esp",
-      "bytes": 3840,
-      "sha256": "2e832870e711bb38cb1d9071a6086df98629c73f403fffcbdba27e2db6904439"
-    },
-    {
       "content": "S3LightFixes.omwaddon",
       "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Tools\\MOMWToolsPack\\S3LightFixes.omwaddon",
       "bytes": 368306,
@@ -882,5 +871,31 @@
       "sha256": "d67cf3b867314bc3ea61744940030803b2544f0ca98493331d64646929684338"
     }
   ],
-  "independent_verification_sha256": "dd056fcdd4bf28b07175392af07efaf50f819be827cb1922536dbc0b9bd350e3"
+  "independent_verification_sha256": "dd056fcdd4bf28b07175392af07efaf50f819be827cb1922536dbc0b9bd350e3",
+  "mutable_development_content_files": [
+    {
+      "content": "Hip Lanterns.omwscripts",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Lighting\\Belt Lanterns\\Data Files\\Hip Lanterns.omwscripts"
+    },
+    {
+      "content": "Clocks and Compass.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\OpenMW Clocks and Compass\\Data Files\\Clocks and Compass.ESP"
+    },
+    {
+      "content": "Physical Maps.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\Openmw Physical Maps\\Data Files\\Physical Maps.esp"
+    },
+    {
+      "content": "Physical Maps - Held Prototype.omwscripts",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\Openmw Physical Maps\\Data Files\\Physical Maps - Held Prototype.omwscripts"
+    },
+    {
+      "content": "Physical Maps - Test Copies.omwscripts",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\Openmw Physical Maps\\Optional\\Test Copies\\Physical Maps - Test Copies.omwscripts"
+    }
+  ],
+  "mutable_development_authorization": "User requested removal of exact-version requirements for actively developed Physical Maps, Belt Lanterns, and Clocks and Compass; keep them enabled and retain preparation-time observations.",
+  "mutable_development_review_sha256": "7648a9d3eb292b16c8f8c225469511a93bfde035c87754a255d0dff423b4412c",
+  "current_content_reaudit_sha256": "62e25e6dbf0bbb625fa0bfb781461582f239e52a036abcedef26f139394a601a",
+  "current_independent_verification_sha256": "6dbabb3d3821e397f4b348c718fc1208d416bfb455297052c32ea5b39e499abe"
 }

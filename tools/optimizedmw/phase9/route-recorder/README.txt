@@ -103,8 +103,13 @@ Rats, foragers, scribs, parasol spiders, netches and listed variants therefore
 bypass Fight discovery. Both route profiles use the same list; those species
 are suppressed throughout the private world, including passive individuals.
 NPC list descendants are excluded. The policy/config hash is bound in SESSION,
-and all 139 consumed ESM/ESP/omwaddon file hashes are checked before preparation.
-Changing the frozen openmw.cfg or these files requires a new audited policy. This is a bounded
+and 137 audited ESM/ESP/omwaddon file hashes are checked before preparation.
+User development content (Physical Maps, Clocks and Compass, and Hip Lanterns
+from Belt Lanterns) stays enabled but has no exact-version requirement. The
+explicit mutable file list records its current entry-point hashes in SESSION
+at preparation; these are observations, not proof that future encounter changes
+were audited. Compare those identities when comparing recordings.
+Changing the frozen openmw.cfg or the 137 bound files requires a new audited policy. This is a bounded
 encounter audit, not complete scripted-spawn or neighboring-grid coverage.
 The original rat's modified Fight was not recorded and is not inferred from its
 base definition. Actor activation still queues the disable, so the change needs

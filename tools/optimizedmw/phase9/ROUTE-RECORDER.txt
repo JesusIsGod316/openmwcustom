@@ -72,8 +72,12 @@ disable 32 creature records from the checked effective encounter-list closure.
 That includes rats, kwama foragers, scribs, parasol spiders, netches and their
 listed variants, rather than assuming the observed rat always spawns. The list
 bypasses Fight discovery and is tied to the exact frozen openmw.cfg hash plus
-the hashes of 139 audited content files; a changed setup requires a new encounter
-audit. Both route profiles
+the hashes of 137 audited content files; changing those files requires a new
+encounter audit. Physical Maps, Clocks and Compass, and Hip Lanterns from Belt
+Lanterns are user development exceptions: their current entry-point hashes are
+recorded at preparation, but editing their versions does not block the recorder.
+They remain enabled. Those observations do not re-audit future actor/cell changes.
+Both route profiles
 use it. These listed creature species are suppressed throughout the private
 world, even if an individual is passive. Ordinary townspeople and their AI stay
 present. This covers the checked encounter group, not every possible scripted
