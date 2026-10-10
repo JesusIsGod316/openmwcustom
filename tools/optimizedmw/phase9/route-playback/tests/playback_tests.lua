@@ -73,7 +73,7 @@ check(seydaPose.cell_id=='Esm3ExteriorCell:0:-8' and seydaPose.cell_name=='Pelag
 r=existingRoute();r.samples[3].cell_id='Esm3ExteriorCell:-1:-8';r.samples[3].grid_x=-1;r.samples[3].cell_name='Andrano Tomb'
 check(pcall(pure.validate,r), 'Andrano Tomb exterior label does not imply an interior door transition')
 r=existingRoute();r.movement_cohort=nil
-check(not pcall(pure.validate,r), 'existing route requires recorded native movement semantics')
+check(not pcall(pure.validate,r), 'existing route requires explicit recorded movement semantics')
 r=existingRoute();r.movement_cohort.private_override=1
 check(not pcall(pure.validate,r), 'numeric private override cannot claim native cohort')
 r=existingRoute();r.movement_cohort.model='frozen_animation_movement_setting'
@@ -82,6 +82,44 @@ r=existingRoute();r.movement_cohort_status='legacy_unrecorded'
 check(not pcall(pure.validate,r), 'native source cohort cannot be labeled legacy')
 r=route();r.movement_cohort_status='legacy_unrecorded'
 check(pcall(pure.validate,r), 'old grid-less Balmora timeline remains explicitly legacy-compatible')
+local function animationRoute()
+    local value=existingRoute()
+    value.movement_cohort={model='animation_displacement',private_override=false}
+    value.movement_cohort_status='recorded_animation'
+    return value
+end
+check(pcall(pure.validate,animationRoute()), 'explicitly compiled animation-displacement cohort permits a private Seyda preview')
+local animationLookup=pure.newSampler(animationRoute())
+local animationInput,animationPose=animationLookup(1)
+check(animationInput.movement==1 and near(animationPose.position.x,10)
+    and animationPose.cell_id=='Esm3ExteriorCell:-1:-9', 'animation preview retains recorded inputs and canonical cell transitions')
+local animationCommand=pure.newCommandSampler(animationRoute())
+local animationFuture,animationTime=animationCommand(1.8,0.3)
+check(animationTime==2 and animationFuture.cell_id=='Esm3ExteriorCell:0:-8', 'animation preview uses the same bounded camera command sampler')
+for _,badStatus in ipairs({'recorded_native','legacy_unrecorded','unknown',true,1}) do
+    r=animationRoute();r.movement_cohort_status=badStatus
+    check(not pcall(pure.validate,r), 'animation source rejects mismatched or non-string preview status: '..tostring(badStatus))
+end
+r=animationRoute();r.movement_cohort_status=nil
+check(not pcall(pure.validate,r), 'animation model alone does not grant runtime preview consent')
+for _,badOverride in ipairs({true,0,1,'false'}) do
+    r=animationRoute();r.movement_cohort.private_override=badOverride
+    check(not pcall(pure.validate,r), 'animation source requires exact false override: '..tostring(badOverride))
+end
+r=animationRoute();r.movement_cohort.private_override=nil
+check(not pcall(pure.validate,r), 'animation source cannot omit its false override')
+r=animationRoute();r.movement_cohort.allow_animation_source=true
+check(not pcall(pure.validate,r), 'runtime cohort cannot replace compiled status with an extra consent flag')
+r=animationRoute();r.movement_cohort.model='unknown'
+check(not pcall(pure.validate,r), 'explicit preview status does not admit unknown movement models')
+r=animationRoute();r.movement_cohort=nil
+check(not pcall(pure.validate,r), 'animation preview status does not admit a missing Seyda cohort')
+r=existingRoute();r.movement_cohort_status='recorded_animation'
+check(not pcall(pure.validate,r), 'native cohort cannot be mislabeled animation')
+r=existingRoute();r.movement_cohort_status=nil
+check(pcall(pure.validate,r), 'native cohort retains its previously accepted optional status')
+r=route();r.movement_cohort_status='recorded_animation'
+check(not pcall(pure.validate,r), 'legacy Balmora cannot claim a recorded animation cohort without metadata')
 r=route();r.route_name='suran'
 check(not pcall(pure.validate,r), 'unknown route cohort is rejected')
 for _,badId in ipairs({'Balmora1','Esm3ExteriorCell:-02:-2','Esm3ExteriorCell:-0:-2',
@@ -185,10 +223,24 @@ check(applied.nominal_movement==0 and applied.movement>0 and applied.input_norm<
 applied=guide.command(origin,{x=20,y=20,z=0},input(0,0),0,100,false)
 check(applied.movement==0 and applied.side_movement==0 and applied.stationary_source,
     'recorded fixed-view and stop inputs do not acquire corrective motion')
+check(applied.stationary_recovery_active==false, 'legacy stationary command does not claim recovery work')
+applied=guide.command(origin,{x=20,y=20,z=0},input(0,0),0,100,true,false)
+check(applied.input_norm==0 and not applied.stationary_recovery_active, 'explicitly disabled held stationary recovery stays zero')
+applied=guide.command(origin,{x=1000,y=1000,z=0},input(0,0),0,100,true,true)
+check(applied.stationary_recovery_active and applied.stationary_source and applied.nominal_movement==0
+    and applied.nominal_side_movement==0 and applied.correction_norm<=0.350000001 and applied.input_norm<=0.350000001,
+    'opted stationary held correction uses only the existing bounded XY feedback')
+applied=guide.command(origin,{x=0,y=12,z=0},input(0,0),0,100,false,true)
+check(applied.stationary_recovery_active and near(applied.movement,0.24) and applied.side_movement==0,
+    'opted stationary correction can settle small error before a reference hold is needed')
 applied=guide.setupCommand(origin,{x=100,y=100,z=0},0,100)
 check(applied.input_norm<=0.200000001, 'initial alignment has its separate slower input cap')
 check(not pcall(guide.setupCommand,origin,origin,0,0), 'missing gait speed does not invent physical velocity')
 local clock=guide.newClock(10)
+check(not clock.movement_started and not clock:observeMovement(input(0,0)), 'initial fixed-view source never enables post-motion recovery')
+check(clock:observeMovement(input(1,1)) and clock:observeMovement(input(2,0)), 'recorded movement enables recovery for later stops without resetting at zero')
+local sideClock=guide.newClock(10);local sideInput=input(0,0);sideInput.side_movement=-1
+check(sideClock:observeMovement(sideInput), 'recorded side movement also establishes the post-motion phase')
 check(clock:advance(0.1)==0.1, 'reference clock advances the elapsed prior physics interval')
 local held,changed=clock:updateHold(33)
 check(held and changed and clock:futureDelta(0.1)==0, 'corridor excess holds the current reference target')
@@ -227,12 +279,13 @@ check(not guide.finalPoseAccepted({x=25,y=0,z=0},origin) and not guide.finalPose
     'reference time alone cannot accept an inaccurate endpoint')
 
 -- Mock the actual PLAYER file for timing, override release, policy drain and errors.
-local function playerFixture(seedX, seedCell, fixtureOptions, fixtureRoute)
+local function playerFixture(seedX, seedCell, fixtureOptions, fixtureRoute, fixturePhysics)
     fixtureOptions=fixtureOptions or {}; fixtureRoute=fixtureRoute or route()
     local clock, position, yaw, pitch, paused = 0,{x=seedX or 0,y=0,z=0},math.pi-0.1,0.1,false
     local actorYaw, actorPitch = fixtureRoute.samples[1].camera.yaw,fixtureRoute.samples[1].camera.pitch
     yaw,pitch=actorYaw,actorPitch
     local collision=true
+    local velocityX,velocityY=0,0
     local calls, messages, events, quit, flags = {},{}, {},false,{movement=false,combat=false,ui=false}
     local actor = { controls={}, ATTACK_TYPE={NoAttack=0},position=position,
         cell={id=seedCell or 'Esm3ExteriorCell:-2:-2',isExterior=true}, rotation={getYaw=function() return actorYaw end,getPitch=function() return actorPitch end} }
@@ -273,8 +326,9 @@ local function playerFixture(seedX, seedCell, fixtureOptions, fixtureRoute)
     for name,value in pairs(modules) do package.loaded[name]=value end
     local beforePrint=print
     print=function() end
-    local handlers=dofile(root..'/scripts/optimizedmw_route_playback/player.lua')
+    local loaded,handlers=pcall(dofile,root..'/scripts/optimizedmw_route_playback/player.lua')
     print=beforePrint
+    assert(loaded,handlers)
     local function invoke(dt)
         local oldPrint=print; print=function() end
         handlers.engineHandlers.onFrame(dt)
@@ -290,11 +344,19 @@ local function playerFixture(seedX, seedCell, fixtureOptions, fixtureRoute)
             if not blocked then
                 local dx,dy=guide.localToWorld(actor.controls.movement or 0,actor.controls.sideMovement or 0,actorYaw)
                 local speed=actor.controls.run and 100 or 50
+                if fixturePhysics and fixturePhysics.inertia_seconds then
+                    local alpha=dt/(fixturePhysics.inertia_seconds+dt)
+                    velocityX,velocityY=velocityX+(dx*speed-velocityX)*alpha,velocityY+(dy*speed-velocityY)*alpha
+                    dx,dy,speed=velocityX,velocityY,1
+                end
                 position.x,position.y=position.x+dx*speed*dt,position.y+dy*speed*dt
+            else
+                velocityX,velocityY=0,0
             end
             clock=clock+dt
         end,
         collision=function(v) collision=v end,
+        velocity=function(x,y) velocityX,velocityY=x,y end,
         policy=function(event)
             local oldPrint=print; print=function() end
             handlers.eventHandlers.OptimizedMWRoutePolicy(event)
@@ -331,6 +393,19 @@ check(f.isQuit() and not f.flags.movement and not f.flags.combat and not f.flags
 check(lastEvent(f,'finish').reason=='route_finished' and lastEvent(f,'finish').benchmark_qualified==false,
     'finished input replay does not claim benchmark acceptance')
 check(f.layerWrites()==0 and near(f.layers.extra_pitch,0.02), 'legacy Balmora never acquires or writes additive camera channels')
+local animationFixtureRoute=animationRoute()
+f=playerFixture(0,animationFixtureRoute.samples[1].cell_id,nil,animationFixtureRoute)
+ready(f);f.tick(0,0.5);f.tick(1,0.5)
+check(lastEvent(f,'start') and f.flags.movement, 'actual PLAYER starts an explicitly compiled animation route')
+f.tick(2,1)
+check(f.actor.controls.movement==1, 'actual PLAYER commands recorded input for animation-displacement preview')
+f.tick(3,1)
+f.policy({session=string.rep('a',32),event='policy_stopped',ready=true,qualified=true})
+for i=1,4 do f.tick(3+i*0.3,0.3) end
+check(f.isQuit() and lastEvent(f,'finish').reason=='route_finished'
+    and lastEvent(f,'finish').benchmark_qualified==false, 'animation preview completes through actual PLAYER without claiming benchmark acceptance')
+check(not f.flags.movement and not f.flags.combat and not f.flags.ui and f.layerWrites()==0,
+    'animation preview releases controls and preserves legacy zero-layer camera ownership')
 f=playerFixture(200); ready(f); f.tick(0,1)
 check(f.actor.controls.movement==0 and not lastEvent(f,'start'), 'bad initial position cannot start playback')
 for i=1,7 do f.tick(i,1) end
@@ -434,6 +509,124 @@ f=playerFixture(0,nil,{guidance_enabled=true},guidedRoute()); ready(f); f.tick(0
 f.actor.position.x=40; f.tick(0.3,0.3)
 finish=guidedFinish(f,false)
 check(finish.reason=='stationary_pose_divergence', 'stationary source segment does not move the character to hide a mismatch')
+for _,badOption in ipairs({'true',0,1}) do
+    check(not pcall(playerFixture,0,nil,{guidance_enabled=true,stationary_recovery_enabled=badOption},guidedRoute()),
+        'PLAYER rejects nonboolean stationary recovery option: '..tostring(badOption))
+end
+f=playerFixture(0,nil,{guidance_enabled=true,stationary_recovery_enabled=true},guidedRoute()); ready(f); f.tick(0,1)
+f.actor.position.x=40; f.tick(0.3,0.3)
+finish=guidedFinish(f,false)
+check(finish.reason=='stationary_pose_divergence' and not finish.source_movement_started,
+    'opted recovery cannot conceal initial fixed-view divergence before any recorded movement')
+check(finish.last_guidance_command.input_norm==0 and not finish.last_guidance_command.stationary_recovery_active,
+    'initial fixed view stays physically still even when the private option is enabled')
+local function stationaryRoute(duration,withLayers)
+    duration=duration or 6
+    local value={schema=1,route_name='balmora',duration=duration,
+        controls={input(0,0),input(1,1),input(2,0)},
+        samples={row(0,0,math.pi/2),row(1,0,math.pi/2),row(2,100,math.pi/2),row(duration,100,math.pi/2)},markers={}}
+    if withLayers then
+        value.movement_cohort={model='animation_displacement',private_override=false}
+        value.movement_cohort_status='recorded_animation'
+        value.camera_layer_cohort={model='recorded_additive_first_person_v1'}
+        value.camera_layer_cohort_status='recorded_additive'
+        for i,s in ipairs(value.samples) do
+            s.camera.extra_yaw,s.camera.extra_pitch,s.camera.roll,s.camera.extra_roll=0.1*i,-0.2*i,0.3*i,-0.4*i
+            s.camera.first_person_offset={x=i,y=-2*i,z=3*i}
+        end
+    end
+    return value
+end
+local function postMotionFixture(recovery,withLayers,physics)
+    local result=playerFixture(0,nil,{guidance_enabled=true,stationary_recovery_enabled=recovery},stationaryRoute(nil,withLayers),physics)
+    ready(result);result.tick(0,1);result.tick(1,0.1)
+    result.actor.position.x=160
+    result.tick(2,0.1)
+    return result
+end
+f=postMotionFixture(false)
+finish=guidedFinish(f,false)
+check(finish.reason=='stationary_pose_divergence' and finish.source_movement_started
+    and not finish.stationary_recovery_enabled, 'default post-motion stop still rejects divergence without movement correction')
+f=postMotionFixture(true)
+check(f.actor.controls.movement<0 and math.abs(f.actor.controls.movement)<=0.350000001,
+    'opted post-motion overshoot commands bounded physical movement back toward the stationary target')
+finish=guidedFinish(f,false)
+check(finish.reason=='route_finished' and finish.route_playback_finished and not finish.input_replay_finished
+    and finish.stationary_recovery_enabled and finish.source_movement_started,
+    'actual PLAYER recovers a held post-motion stop and finishes with explicit private provenance')
+check(finish.maximum_horizontal_error<=96 and finish.maximum_vertical_error<=96
+    and finish.physical_state.collision_enabled and guide.finalPoseAccepted(f.actor.position,{x=100,y=0,z=0}),
+    'stationary recovery retains collision and hard/final pose corridors')
+local recoveredCommand
+for _,v in ipairs(f.calls) do
+    if v.guidance_command and v.guidance_command.stationary_recovery_active then recoveredCommand=v.guidance_command end
+end
+check(recoveredCommand and recoveredCommand.nominal_movement==0 and recoveredCommand.nominal_side_movement==0
+    and recoveredCommand.correction_norm<=0.350000001 and finish.reference_hold_count>=1,
+    'stationary recovery telemetry distinguishes zero source input from bounded applied correction and a held clock')
+f=postMotionFixture(true)
+finish=guidedFinish(f,true)
+check(finish.reason=='physical_movement_stalled' and not finish.route_playback_finished,
+    'collision-blocked stationary recovery still fails through the original physical stall guard')
+f=postMotionFixture(true);f.collision(false);f.tick(2.1,0.1)
+finish=guidedFinish(f,false)
+check(finish.reason=='collision_disabled' and not finish.route_playback_finished,
+    'post-motion recovery never bypasses the collision gate')
+f=postMotionFixture(true);f.actor.position.x=197;f.tick(2.1,0.1)
+finish=guidedFinish(f,false)
+check(finish.reason=='guided_horizontal_divergence', 'stationary recovery cannot widen the 96-unit hard corridor')
+f=postMotionFixture(true);f.actor.position.x=100;f.actor.position.z=49;f.tick(6,0.1)
+finish=guidedFinish(f,false)
+check(finish.reason=='final_pose_mismatch', 'post-motion recovery retains the 48-unit final vertical corridor')
+f=playerFixture(0,nil,{guidance_enabled=true,stationary_recovery_enabled=true},stationaryRoute(20));ready(f)
+f.tick(0,1);f.tick(1,0.1);f.actor.position.x=160;f.tick(2,0.1)
+for i=1,16 do
+    -- Physical movement between observations defeats the stall guard, while
+    -- neither position reaches the 16-unit reference-release corridor.
+    f.actor.position.x=i%2==0 and 160 or 140
+    f.tick(2+i,1)
+end
+finish=guidedFinish(f,false)
+check(finish.reason=='reference_clock_lag' and finish.reference_clock_lag>15,
+    'stationary recovery never waits indefinitely after the existing source-lag limit')
+f=playerFixture(0,nil,{guidance_enabled=true,stationary_recovery_enabled=true},stationaryRoute(nil,true),{inertia_seconds=0.4});ready(f)
+f.tick(0,1);f.tick(1,0.1);f.actor.position.x,f.actor.position.y=112,8;f.velocity(80,10);f.tick(2,0.1)
+finish=guidedFinish(f,false)
+check(finish.reason=='route_finished' and guide.finalPoseAccepted(f.actor.position,{x=100,y=0,z=0})
+    and guide.finalPoseAccepted(finish.final_actual_position,{x=100,y=0,z=0})
+    and finish.maximum_horizontal_error<=96 and finish.reference_clock_lag<=15,
+    '2D inertial stop overshoot settles through the actual PLAYER command/physics loop before terminal acceptance')
+check(finish.camera_layer_cohort_status=='recorded_additive' and finish.camera_layers_restored
+    and finish.maximum_camera_layer_postwrite_error==0 and finish.maximum_first_person_offset_postwrite_error==0,
+    'recovered layered animation-source preview preserves readback and release diagnostics through its finish footer')
+check(not f.flags.movement and not f.flags.combat and not f.flags.ui and not finish.benchmark_qualified
+    and near(f.layers.extra_pitch,0.02), 'stationary recovery completion releases private controls/camera and remains preview-only')
+f=playerFixture(0,nil,{guidance_enabled=true,stationary_recovery_enabled=true},stationaryRoute(2.01,true),{inertia_seconds=0.4});ready(f)
+f.tick(0,1);f.tick(1,0.1);f.actor.position.x=90;f.velocity(100,0);f.tick(2,0.01)
+check(guide.finalPoseAccepted(f.actor.position,{x=100,y=0,z=0}), 'short-stop reproduction is inside the final corridor before observer drain')
+f.tick(2.01,0.01);finish=guidedFinish(f,false)
+check(finish.reason=='final_pose_mismatch' and not finish.route_playback_finished
+    and not guide.finalPoseAccepted(finish.final_actual_position,{x=100,y=0,z=0}),
+    'residual inertia crossing the 24-unit corridor during shutdown drain cannot emit a successful guided footer')
+check(finish.camera_layers_restored and not f.flags.movement and not f.flags.combat and not f.flags.ui,
+    'post-drain final pose rejection still restores additive camera state and private controls')
+f=playerFixture(0,nil,{guidance_enabled=true,stationary_recovery_enabled=true},stationaryRoute(2.01,true),{inertia_seconds=0.4});ready(f)
+f.tick(0,1);f.tick(1,0.1);f.actor.position.x=100;f.velocity(0,0);f.tick(2,0.01);f.tick(2.01,0.01)
+finish=guidedFinish(f,false)
+check(finish.reason=='route_finished' and finish.route_playback_finished
+    and guide.finalPoseAccepted(finish.final_actual_position,{x=100,y=0,z=0}) and finish.camera_layers_restored,
+    'settled short-stop control retains successful guided completion after observer drain')
+f=playerFixture(0,nil,{guidance_enabled=false,position_tolerance=32,abort_position_error=96},stationaryRoute(2.01),{inertia_seconds=0.4});ready(f)
+f.tick(0,1);f.tick(1,0.1);f.actor.position.x=90;f.velocity(100,0);f.tick(2,0.01);f.tick(2.01,0.01)
+finish=guidedFinish(f,false)
+check(finish.reason=='route_finished' and finish.input_replay_finished
+    and not guide.finalPoseAccepted(finish.final_actual_position,{x=100,y=0,z=0}),
+    'guided post-drain endpoint gate does not replace the raw diagnostic protocol existing position tolerance')
+f=playerFixture(0,nil,{stationary_recovery_enabled=true},stationaryRoute());ready(f);f.tick(0,1);f.tick(1,0.1)
+f.actor.position.x=160;f.tick(2,0.1)
+check(f.actor.controls.movement==0 and f.actor.controls.sideMovement==0,
+    'the stationary recovery option alone cannot add guidance to the raw diagnostic control')
 f=playerFixture(0,nil,nil,layeredRoute()); ready(f); f.tick(0,1)
 local cameraCheck=lastEvent(f,'check')
 check(cameraCheck.camera_layer_cohort_status=='recorded_additive' and cameraCheck.camera_layer_cohort.model=='recorded_additive_first_person_v1',

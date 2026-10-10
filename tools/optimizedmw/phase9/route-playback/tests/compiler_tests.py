@@ -87,8 +87,9 @@ class CompilerChecks(unittest.TestCase):
             summary["camera_layer_cohort"] = copy.deepcopy(manifest["camera_layer_cohort"])
         (self.capture / "SUMMARY.json").write_text(json.dumps(summary), encoding="utf-8")
 
-    def compile(self):
-        return compiler.compile_route(self.capture, self.root / "timeline.lua", self.root / "receipt.json")
+    def compile(self, *, allow_animation_source=False):
+        return compiler.compile_route(self.capture, self.root / "timeline.lua", self.root / "receipt.json",
+                                      allow_animation_source=allow_animation_source)
 
     def native_route(self, route_name="existing"):
         cohort = dict(compiler.NATIVE_MOVEMENT_COHORT)
@@ -107,6 +108,15 @@ class CompilerChecks(unittest.TestCase):
             for key in ("pose", "checkpoint_pose"):
                 if key in row:
                     yield row[key]["cell"]
+
+    def animation_route(self):
+        self.native_route()
+        for boundary in (self.rows[0], self.rows[1], self.rows[-1]):
+            boundary["movement_cohort"] = dict(compiler.ANIMATION_MOVEMENT_COHORT)
+        path = self.capture / "SESSION.json"
+        manifest = json.loads(path.read_text())
+        manifest["movement_cohort"] = dict(compiler.ANIMATION_MOVEMENT_COHORT)
+        path.write_text(json.dumps(manifest))
 
     def movement_trigger(self, name="AutoMove", timestamp=0.1, frame=1):
         return {"event": "trigger", "name": name, "simulation": timestamp, "f": frame,
@@ -289,6 +299,93 @@ class CompilerChecks(unittest.TestCase):
         self.write_fixture()
         with self.assertRaisesRegex(compiler.CompileError, "matching native movement cohort"):
             self.compile()
+
+    def test_animation_source_remains_refused_without_explicit_optin(self):
+        self.animation_route()
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "matching native movement cohort"):
+            self.compile()
+        self.assertFalse((self.root / "timeline.lua").exists())
+
+    def test_explicit_animation_preview_retains_true_source_identity(self):
+        self.animation_route()
+        self.write_fixture()
+        before = [compiler.identity(path) for path in self.capture.iterdir()]
+        result = self.compile(allow_animation_source=True)
+        self.assertEqual(result["movement_cohort"], compiler.ANIMATION_MOVEMENT_COHORT)
+        self.assertEqual(result["movement_cohort_status"], "recorded_animation")
+        self.assertTrue(result["allow_animation_source"])
+        self.assertEqual(result["qualification"], "COMPILED_NOT_REPLAY_VALIDATED")
+        self.assertEqual(before, [compiler.identity(path) for path in self.capture.iterdir()])
+        self.assertEqual(result["inputs_before"], result["inputs_after"])
+        output = (self.root / "timeline.lua").read_text()
+        self.assertIn('movement_cohort={model="animation_displacement",private_override=false}', output)
+        self.assertIn('movement_cohort_status="recorded_animation"', output)
+
+    def test_animation_preview_requires_exact_ready_start_finish_cohorts(self):
+        invalid = [None, compiler.NATIVE_MOVEMENT_COHORT,
+                   {"model": "animation_displacement", "private_override": 0},
+                   {"model": "animation_displacement", "private_override": True},
+                   {"model": "animation_displacement", "private_override": "false"},
+                   {**compiler.ANIMATION_MOVEMENT_COHORT, "unknown": True}]
+        for index in (0, 1, -1):
+            for value in invalid:
+                with self.subTest(boundary=index, cohort=value):
+                    self.animation_route()
+                    self.rows[index]["movement_cohort"] = copy.deepcopy(value)
+                    self.write_fixture()
+                    with self.assertRaises(compiler.CompileError):
+                        self.compile(allow_animation_source=True)
+
+    def test_animation_preview_requires_exact_explicit_session_cohort(self):
+        invalid = [None, compiler.NATIVE_MOVEMENT_COHORT,
+                   {"model": "animation_displacement", "private_override": 0},
+                   {**compiler.ANIMATION_MOVEMENT_COHORT, "unknown": True}]
+        for value in invalid:
+            with self.subTest(cohort=value):
+                self.animation_route()
+                path = self.capture / "SESSION.json"
+                manifest = json.loads(path.read_text())
+                if value is None:
+                    del manifest["movement_cohort"]
+                else:
+                    manifest["movement_cohort"] = copy.deepcopy(value)
+                path.write_text(json.dumps(manifest))
+                self.write_fixture()
+                with self.assertRaisesRegex(compiler.CompileError, "Session/acquisition animation movement cohort mismatch"):
+                    self.compile(allow_animation_source=True)
+
+    def test_animation_optin_does_not_relax_unsupported_action_or_footer_rules(self):
+        self.animation_route()
+        original = copy.deepcopy(self.rows)
+        for defect in ("pause", "jump", "combat_flag", "bad_camera"):
+            with self.subTest(defect=defect):
+                self.rows = copy.deepcopy(original)
+                if defect == "pause":
+                    self.rows[2]["paused"] = True
+                elif defect == "jump":
+                    self.rows[4]["controls"]["jump"] = True
+                elif defect == "combat_flag":
+                    self.rows[-1]["flags"]["combat_invalid"] = True
+                else:
+                    self.rows[5]["camera"]["mode"] = 2
+                self.write_fixture()
+                with self.assertRaises(compiler.CompileError):
+                    self.compile(allow_animation_source=True)
+
+    def test_animation_optin_does_not_relax_incomplete_source_admission(self):
+        self.animation_route()
+        self.write_fixture()
+        path = self.capture / "SUMMARY.json"
+        summary = json.loads(path.read_text())
+        summary["complete"] = False
+        path.write_text(json.dumps(summary))
+        with self.assertRaisesRegex(compiler.CompileError, "intact qualified acquisition"):
+            self.compile(allow_animation_source=True)
+
+    def test_animation_optin_must_be_boolean(self):
+        with self.assertRaisesRegex(compiler.CompileError, "opt-in must be boolean"):
+            self.compile(allow_animation_source=1)
 
     def test_existing_with_mixed_start_finish_cohort_refused(self):
         self.native_route()

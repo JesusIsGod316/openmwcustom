@@ -81,8 +81,28 @@ try{
     Check-Playback ($playbackInvocation.Animation -eq $true) 'Dot-sourced recorder replaced explicit animation movement control'
     . $hostPath -GameDir $fixture -AnimationMovement -PrepareOnly -LibraryOnly
     Check-Playback ($playbackInvocation.Animation -eq $true -and $playbackInvocation.Raw -eq $false) 'Animation-only control flag did not survive dot sourcing'
+    . $hostPath -GameDir $fixture -NativeGuidance -SerialRenderer -PrepareOnly -LibraryOnly
+    Check-Playback ($playbackInvocation.NativeGuidance -and -not $playbackInvocation.Animation -and -not $playbackInvocation.Raw) 'Native guidance opt-in did not survive dot sourcing'
+    Check-Playback ($playbackInvocation.Serial) 'Explicit serial renderer probe did not survive dot sourcing'
+    $plan=Get-OptimizedMWPlaybackPlan -SourceNative:$false -SourceAnimation:$true -NativeGuidance
+    Check-Playback ($plan.allow_animation_source -and $plan.native_movement -and $plan.guided -and $plan.native_guidance_translation -and $plan.protocol -ceq 'physical_xy_follower_v1') 'Explicit animation-source preview did not retain native guided semantics and mismatch provenance'
+    Check-Playback ($plan.stationary_recovery) 'Explicit native guidance omitted bounded post-movement settling'
+    $plan=Get-OptimizedMWPlaybackPlan -SourceNative:$true -NativeGuidance
+    Check-Playback ($plan.native_movement -and -not $plan.native_guidance_translation) 'Native source was incorrectly marked as translated animation movement'
+    $plan=Get-OptimizedMWPlaybackPlan -SourceNative:$false -NativeGuidance
+    Check-Playback ($plan.native_movement -and -not $plan.native_guidance_translation) 'Legacy unrecorded source was falsely marked as a recorded animation translation'
+    Reject-Playback {Get-OptimizedMWPlaybackPlan -SourceNative:$false -NativeGuidance -Raw} 'Native guided translation accepted conflicting raw replay'
+    Reject-Playback {Get-OptimizedMWPlaybackPlan -SourceNative:$false -NativeGuidance -Animation} 'Native guided translation accepted conflicting animation displacement'
+    $plan=Get-OptimizedMWPlaybackPlan -SourceNative:$false -Raw -Animation
+    Check-Playback ($plan.allow_animation_source -and -not $plan.native_movement -and -not $plan.guided -and -not $plan.native_guidance_translation) 'Animation raw diagnostic lost its control path'
+    Check-Playback (-not $plan.stationary_recovery) 'Raw diagnostic unexpectedly enabled guided settling'
+    Check-Playback ($plan.initial_tolerance -eq 32 -and $plan.abort_tolerance -eq 96 -and $plan.abort_tolerance -gt $plan.initial_tolerance) 'Raw replay retains unsafe late divergence cutoff or invalid bounds'
+    $plan=Get-OptimizedMWPlaybackPlan -SourceNative:$false
+    Check-Playback ($plan.native_movement -and $plan.guided -and -not $plan.allow_animation_source -and -not $plan.native_guidance_translation) 'Default guided source admission was weakened'
+    Check-Playback (-not $plan.stationary_recovery) 'Legacy guided protocol inherited the opt-in settling change'
+    Check-Playback ($plan.initial_tolerance -eq 128 -and $plan.abort_tolerance -eq 2048) 'Legacy guided setup bounds unexpectedly changed'
     . $hostPath -GameDir $fixture -PrepareOnly -LibraryOnly
-    Check-Playback ($playbackInvocation.Animation -eq $false -and $playbackInvocation.Raw -eq $false) 'Default guided movement inherited stale control flags'
+    Check-Playback ($playbackInvocation.Animation -eq $false -and $playbackInvocation.Raw -eq $false -and -not $playbackInvocation.NativeGuidance -and -not $playbackInvocation.Serial) 'Default guided movement inherited stale control flags'
     $tokens=$null;$parseErrors=$null;$null=[Management.Automation.Language.Parser]::ParseFile($hostPath,[ref]$tokens,[ref]$parseErrors)
     Check-Playback ($parseErrors.Count -eq 0) 'Playback host source does not parse'
 
@@ -127,6 +147,18 @@ try{
     Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture} 'Native model with disabled native override accepted'
     $sourceManifest.movement_cohort=[ordered]@{model='animation_displacement';private_override=$false};Write-OptimizedMWRouteJson $manifestPath $sourceManifest
     Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture} 'Seyda animation-dependent diagnostic control admitted to default replay'
+    $animationAdmitted=Read-OptimizedMWPlaybackCapture -Directory $captureFixture -AllowAnimationSource
+    Check-Playback ($animationAdmitted.movement_cohort.model -ceq 'animation_displacement' -and $animationAdmitted.movement_cohort.private_override -eq $false) 'Explicit recorded animation preview rejected'
+    $sourceManifest.movement_cohort.extra=$true;Write-OptimizedMWRouteJson $manifestPath $sourceManifest
+    Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture -AllowAnimationSource} 'Expanded animation cohort accepted'
+    $sourceManifest.movement_cohort.Remove('extra');$sourceManifest.movement_cohort.private_override=0;Write-OptimizedMWRouteJson $manifestPath $sourceManifest
+    Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture -AllowAnimationSource} 'Numeric animation override accepted'
+    $sourceManifest.movement_cohort.private_override=$false;Write-OptimizedMWRouteJson $manifestPath $sourceManifest
+    $sourceSummary.complete=$false;Write-OptimizedMWRouteJson $summaryPath $sourceSummary
+    Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture -AllowAnimationSource} 'Animation opt-in bypassed incomplete capture rejection'
+    $sourceSummary.complete=$true;Write-OptimizedMWRouteJson $summaryPath $sourceSummary
+    $sourceManifest.Remove('movement_cohort');Write-OptimizedMWRouteJson $manifestPath $sourceManifest
+    Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture -AllowAnimationSource} 'Animation opt-in admitted an unrecorded Seyda movement cohort'
     $sourceManifest.movement_cohort=[ordered]@{model='native_input_displacement_with_visual_animations';private_override=$true};Write-OptimizedMWRouteJson $manifestPath $sourceManifest
     foreach($badComplete in @($false,'true',$null)){
         $sourceSummary.complete=$badComplete;Write-OptimizedMWRouteJson $summaryPath $sourceSummary

@@ -59,7 +59,28 @@ Optional -Route existing|balmora selects a route without the numeric prompt.
 Optional -RawInputs preserves uncorrected timed-input controls and the recorded
 native movement cohort when present. Legacy sources keep the frozen setting.
 Optional -AnimationMovement explicitly uses private animation displacement
-for a guided diagnostic control; it can reproduce the observed steering failure.
+and admits a complete source with an explicitly recorded animation-displacement
+cohort. The default native-source admission remains unchanged. Combine it with
+-RawInputs to preview the old-movement recording using its recorded controls;
+guided animation movement can reproduce the observed steering failure.
+Optional -NativeGuidance admits an explicitly recorded animation-displacement
+source and previews its path with the native physical XY follower used by the
+Balmora preview. It cannot be combined with -RawInputs or -AnimationMovement.
+The manifest preserves the acquisition cohort and records that this private
+preview uses different movement semantics. It is not a benchmark qualification.
+This explicit preview also allows bounded position settling after movement has
+started and recorded inputs return to zero. The initial fixed view is unchanged;
+collision, divergence, clock-lag and final-position checks still apply. Legacy
+guided previews keep their original stationary behavior unless this is selected.
+Guided completion also rechecks the final position after the observer drain;
+residual movement beyond the final corridor rejects the successful footer.
+Raw input previews now stop at 96 units of divergence instead of 2048 units;
+their initial-position allowance is 32 units. A complete recording is not proof
+that open-loop input replay can reproduce collision/animation-dependent motion.
+Optional -SerialRenderer selects OSG SingleThreaded only in the private session
+for crash isolation. It leaves the frozen/gameplay profile intact and does not
+disable driver-internal workers. Completion with this option does not validate
+the ordinary renderer or the original acquisition movement semantics.
 SUMMARY.json distinguishes playback_complete from input_replay_complete; guided
 completion never claims exact raw-input completion. Both protocols remain
 PREVIEW_NOT_BENCHMARK_VALIDATED.

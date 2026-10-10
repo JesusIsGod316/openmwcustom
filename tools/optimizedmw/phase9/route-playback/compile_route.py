@@ -21,6 +21,7 @@ MAX_DURATION = 180.0
 MAX_WALL_DURATION = 300.0
 ALLOWED_ROUTES = {"balmora", "existing"}
 NATIVE_MOVEMENT_COHORT = {"model": "native_input_displacement_with_visual_animations", "private_override": True}
+ANIMATION_MOVEMENT_COHORT = {"model": "animation_displacement", "private_override": False}
 ADDITIVE_CAMERA_COHORT = {"model": "recorded_additive_first_person_v1"}
 CAMERA_LAYER_ANGLES = ("extra_yaw", "extra_pitch", "roll", "extra_roll")
 SUPPORTED_MOVEMENT_TRIGGERS = {"AutoMove", "AlwaysRun", "ToggleSneak"}
@@ -147,12 +148,23 @@ def cell(value):
     return {"cell_id": cell_id, "cell_name": cell_name, "exterior": True, "grid_x": grid_x, "grid_y": grid_y}
 
 
-def movement_cohort(route_name, start, finish, ready):
+def exact_movement_cohort(value, expected):
+    return (type(value) is dict and set(value) == set(expected)
+            and value.get("model") == expected["model"]
+            and value.get("private_override") is expected["private_override"])
+
+
+def movement_cohort(route_name, start, finish, ready, *, allow_animation_source=False):
     """Do not infer acquisition movement semantics from a save or later settings."""
     start_cohort, finish_cohort = start.get("movement_cohort"), finish.get("movement_cohort")
     if start_cohort is None and finish_cohort is None and route_name == "balmora":
         require(ready.get("movement_cohort") is None, "Mixed acquisition movement cohort")
         return None, "legacy_unrecorded"
+    if allow_animation_source and exact_movement_cohort(start_cohort, ANIMATION_MOVEMENT_COHORT):
+        require(exact_movement_cohort(finish_cohort, ANIMATION_MOVEMENT_COHORT)
+                and exact_movement_cohort(ready.get("movement_cohort"), ANIMATION_MOVEMENT_COHORT),
+                "Animation preview requires matching animation movement cohort at READY/START/FINISH")
+        return dict(ANIMATION_MOVEMENT_COHORT), "recorded_animation"
     require(isinstance(start_cohort, dict) and isinstance(finish_cohort, dict)
             and set(start_cohort) == set(finish_cohort) == set(NATIVE_MOVEMENT_COHORT)
             and start_cohort.get("model") == finish_cohort.get("model") == NATIVE_MOVEMENT_COHORT["model"]
@@ -249,7 +261,8 @@ def lua(value):
     return "{" + ",".join(key + "=" + lua(item) for key, item in value.items()) + "}"
 
 
-def compile_route(capture, output, receipt):
+def compile_route(capture, output, receipt, *, allow_animation_source=False):
+    require(type(allow_animation_source) is bool, "Animation source opt-in must be boolean")
     capture, output, receipt = Path(capture).resolve(), Path(output).resolve(), Path(receipt).resolve()
     require(capture.is_dir(), "Capture directory is missing")
     require(output != receipt and not output.is_relative_to(capture) and not receipt.is_relative_to(capture),
@@ -300,12 +313,16 @@ def compile_route(capture, output, receipt):
             "Footer reports incomplete or unsupported route state")
     policy_qualified(start.get("policy"), "start")
     policy_qualified(finish.get("policy"), "finish")
-    source_cohort, cohort_status = movement_cohort(route_name, start, finish, rows[0])
+    source_cohort, cohort_status = movement_cohort(route_name, start, finish, rows[0],
+                                                  allow_animation_source=allow_animation_source)
     camera_cohort, camera_cohort_status = camera_layer_cohort(session_manifest, summary, rows[0], start, finish)
     if camera_cohort is not None:
         pose(rows[0].get("pose"), camera_cohort)
         pose(finish.get("pose"), camera_cohort)
-    if session_manifest.get("movement_cohort") is not None:
+    if cohort_status == "recorded_animation":
+        require(exact_movement_cohort(session_manifest.get("movement_cohort"), ANIMATION_MOVEMENT_COHORT),
+                "Session/acquisition animation movement cohort mismatch")
+    elif session_manifest.get("movement_cohort") is not None:
         manifest_cohort = session_manifest["movement_cohort"]
         require(source_cohort is not None and isinstance(manifest_cohort, dict)
                 and set(manifest_cohort) == set(NATIVE_MOVEMENT_COHORT)
@@ -418,6 +435,7 @@ def compile_route(capture, output, receipt):
     result = {"schema": 1, "qualification": "COMPILED_NOT_REPLAY_VALIDATED", "source_session": session_id,
               "route_name": route_name, "duration_simulation": duration, "inputs_before": before, "inputs_after": after,
               "movement_cohort": source_cohort, "movement_cohort_status": cohort_status,
+              "allow_animation_source": allow_animation_source,
               "camera_layer_cohort": camera_cohort, "camera_layer_cohort_status": camera_cohort_status,
               "checkpoint_save": checkpoint_save,
               "movement_trigger_audit": trigger_audit, "resolved_control_boundaries": resolved_boundaries,
@@ -437,9 +455,12 @@ def main():
     parser.add_argument("--capture", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--receipt", required=True)
+    parser.add_argument("--allow-animation-source", action="store_true",
+                        help="Admit an explicitly recorded animation-displacement source for a private control preview")
     args = parser.parse_args()
     try:
-        result = compile_route(args.capture, args.output, args.receipt)
+        result = compile_route(args.capture, args.output, args.receipt,
+                               allow_animation_source=args.allow_animation_source)
     except (CompileError, OSError) as exc:
         print("Route compile refused: " + str(exc), file=sys.stderr)
         return 1

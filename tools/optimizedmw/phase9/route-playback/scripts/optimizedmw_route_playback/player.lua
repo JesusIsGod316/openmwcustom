@@ -43,7 +43,10 @@ local abortTolerance = bounded('abort_position_error', 2048, initialTolerance, 8
 local maximumDuration = bounded('max_duration_seconds', 180, 1, 180)
 assert(timeline.duration <= maximumDuration, 'Route exceeds playback limit')
 assert(options.guidance_enabled == nil or type(options.guidance_enabled) == 'boolean', 'Invalid guidance option')
+assert(options.stationary_recovery_enabled == nil or type(options.stationary_recovery_enabled) == 'boolean',
+    'Invalid stationary recovery option')
 local guided = options.guidance_enabled == true
+local stationaryRecoveryEnabled = options.stationary_recovery_enabled == true
 local protocol = guided and guidance.PROTOCOL or 'raw_physics_input'
 local guideClock = guided and guidance.newClock(timeline.duration) or nil
 local stallGuard = guided and guidance.newStallGuard() or nil
@@ -67,6 +70,7 @@ local function emit(event, payload)
     payload.playback_protocol = protocol
     payload.camera_layer_cohort = timeline.camera_layer_cohort
     payload.camera_layer_cohort_status = cameraLayerStatus
+    payload.stationary_recovery_enabled = stationaryRecoveryEnabled
     payload.t_simulation = simOrigin and math.max(0, core.getSimulationTime() - simOrigin) or 0
     payload.t_wall = wallOrigin and math.max(0, core.getRealTime() - wallOrigin) or 0
     print('OMWPLAY|' .. common.json(payload))
@@ -248,13 +252,19 @@ local function drainClosing(now)
         local timedOut = now - closeWall >= 5
         if (drained and closeFrames >= 4 and now - closeWall >= 1) or timedOut then
             local finalPhysics = physicalState()
+            local finalPosition = currentPosition()
             if finalReason == 'route_finished' then
                 if not stopAcknowledged then finalReason = 'observer_drain_timeout'
                 elseif (policy.pending_disable or 0) > 0 then finalReason = 'hostile_policy_pending_at_exit'
                 elseif policy.failed or (policy.failure_count or 0) > 0 then finalReason = 'hostile_policy_failed'
                 elseif policy.qualified ~= true then finalReason = 'hostile_policy_unqualified_at_exit'
                 elseif guided and finalPhysics.collision_enabled ~= true then
-                    finalReason = finalPhysics.collision_enabled == false and 'collision_disabled' or 'collision_state_unavailable' end
+                    finalReason = finalPhysics.collision_enabled == false and 'collision_disabled' or 'collision_state_unavailable'
+                elseif guided and not guidance.finalPoseAccepted(finalPosition, timeline.samples[#timeline.samples].position) then
+                    -- Zero inputs during observer drain do not prove that
+                    -- residual physics motion stayed inside the final corridor.
+                    finalReason = 'final_pose_mismatch'
+                end
             end
             release()
             if cameraLayer.restored_failed and finalReason == 'route_finished' then finalReason = 'camera_restore_failed' end
@@ -278,7 +288,8 @@ local function drainClosing(now)
                     reference_hold_count = guideClock and guideClock.hold_count or 0,
                     reference_hold_seconds = guideClock and guideClock.hold_seconds or 0,
                     reference_clock_lag = guideClock and guideClock.source - guideClock.reference or 0,
-                    final_actual_position = currentPosition(), physical_state = finalPhysics,
+                    source_movement_started = guideClock and guideClock.movement_started or false,
+                    final_actual_position = finalPosition, physical_state = finalPhysics,
                     last_guidance_command = lastGuidanceCommand,
                     check_count = checkCount, policy = policy, policy_stop_acknowledged = stopAcknowledged,
                     policy_observer_drained = drained, policy_drain_timed_out = timedOut and not drained })
@@ -385,13 +396,18 @@ local function frame(dt)
     end
     local controls, expected = lookup(reference)
     local held, holdChanged = false, false
+    local stationaryRecovery = false
     if guided then
+        guideClock:observeMovement(controls)
         local xy, z = guidance.errors(currentPosition(), expected.position)
         if xy > guidance.limits.hard_xy or z > guidance.limits.hard_z then
             inspect(expected, reference); return
         end
         held, holdChanged = guideClock:updateHold(xy)
-        if held and controls.movement == 0 and controls.side_movement == 0 then close('stationary_pose_divergence'); return end
+        stationaryRecovery = stationaryRecoveryEnabled and guideClock.movement_started
+        if held and controls.movement == 0 and controls.side_movement == 0 and not stationaryRecovery then
+            close('stationary_pose_divergence'); return
+        end
         if holdChanged then emit(held and 'reference_hold' or 'reference_resume',
             { reference_time = reference, source_elapsed = elapsed, reference_clock_lag = lag,
                 horizontal_error = xy, vertical_error = z }) end
@@ -414,7 +430,8 @@ local function frame(dt)
     cameraPose(command)
     local applied
     if guided then
-        applied = guidance.command(currentPosition(), command.position, controls, command.camera.yaw, gaitSpeed(controls.run), held)
+        applied = guidance.command(currentPosition(), command.position, controls, command.camera.yaw,
+            gaitSpeed(controls.run), held, stationaryRecovery)
         self.controls.movement, self.controls.sideMovement = applied.movement, applied.side_movement
         lastGuidanceCommand = applied
         if stallGuard:observe(elapsed, currentPosition(), applied.input_norm) then close('physical_movement_stalled') end

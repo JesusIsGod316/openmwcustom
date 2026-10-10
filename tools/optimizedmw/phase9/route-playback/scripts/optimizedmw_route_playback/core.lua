@@ -21,10 +21,19 @@ local function exteriorCell(s)
     assert(type(s.cell_name) == 'string' and #s.cell_name <= 512 and not s.cell_name:find('%c'),
         'Invalid exterior cell display name')
 end
-local function nativeCohort(cohort)
-    assert(type(cohort) == 'table' and cohort.model == 'native_input_displacement_with_visual_animations'
-        and cohort.private_override == true, 'Invalid native movement cohort')
+local function movementCohort(cohort, status)
+    assert(type(cohort) == 'table' and type(cohort.private_override) == 'boolean', 'Invalid recorded movement cohort')
     for key in pairs(cohort) do assert(key == 'model' or key == 'private_override', 'Unknown movement cohort field') end
+    if cohort.model == 'native_input_displacement_with_visual_animations' then
+        assert(cohort.private_override == true, 'Invalid native movement cohort')
+        return 'recorded_native'
+    end
+    -- Animation-displacement Seyda previews need explicit host/compiler consent.
+    -- The compiler publishes this status only for its reviewed animation-source
+    -- path; runtime samplers cannot infer that consent from a model name alone.
+    assert(cohort.model == 'animation_displacement' and cohort.private_override == false
+        and status == 'recorded_animation', 'Invalid animation movement cohort or missing explicit preview status')
+    return 'recorded_animation'
 end
 function M.cameraLayers(cohort)
     if cohort == nil then return false end
@@ -67,9 +76,12 @@ end
 function M.validate(timeline)
     assert(type(timeline) == 'table' and timeline.schema == 1, 'Invalid playback timeline schema')
     assert(timeline.route_name == 'balmora' or timeline.route_name == 'existing', 'Unsupported recorded route identity')
-    if timeline.route_name == 'existing' or timeline.movement_cohort ~= nil then nativeCohort(timeline.movement_cohort) end
+    local movementStatus = 'legacy_unrecorded'
+    if timeline.route_name == 'existing' or timeline.movement_cohort ~= nil then
+        movementStatus = movementCohort(timeline.movement_cohort, timeline.movement_cohort_status)
+    end
     if timeline.movement_cohort_status ~= nil then
-        assert(timeline.movement_cohort_status == (timeline.movement_cohort and 'recorded_native' or 'legacy_unrecorded'),
+        assert(timeline.movement_cohort_status == movementStatus,
             'Movement cohort status disagrees with metadata')
     end
     local layered = M.cameraLayers(timeline.camera_layer_cohort)

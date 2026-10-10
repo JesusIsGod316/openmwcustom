@@ -37,14 +37,16 @@ function M.setupCommand(actual, expected, yaw, speed)
     return { movement = forward, side_movement = side, input_norm = norm(forward, side),
         horizontal_error = xy, vertical_error = z, speed = speed }
 end
-function M.command(actual, target, raw, yaw, speed, held)
+function M.command(actual, target, raw, yaw, speed, held, stationaryRecovery)
     speedChecked(speed)
     local xy, z, delta = M.errors(actual, target)
     local stationary = raw.movement == 0 and raw.side_movement == 0
+    local recoverStationary = stationary and stationaryRecovery == true
     local correctionForward, correctionSide = 0, 0
-    -- Source stops and the fixed camera view remain stationary. Initial physical
-    -- alignment is its own bounded setup phase, before the route clock starts.
-    if not stationary then
+    -- Stops remain stationary unless the private post-movement recovery option
+    -- explicitly permits bounded correction after recorded movement has begun.
+    -- Initial alignment remains a separate setup phase before the route starts.
+    if not stationary or recoverStationary then
         correctionForward, correctionSide = M.worldToLocal(delta.x * M.limits.gain / speed,
             delta.y * M.limits.gain / speed, yaw)
         correctionForward, correctionSide = cap(correctionForward, correctionSide, M.limits.correction_norm)
@@ -57,11 +59,16 @@ function M.command(actual, target, raw, yaw, speed, held)
         correction_norm = norm(correctionForward, correctionSide),
         nominal_movement = nominalForward, nominal_side_movement = nominalSide,
         target_horizontal_error = xy, target_vertical_error = z, speed = speed,
-        stationary_source = stationary }
+        stationary_source = stationary, stationary_recovery_active = recoverStationary }
 end
 function M.newClock(duration)
     assert(finite(duration) and duration > 0 and duration <= 180, 'Invalid guided route duration')
-    local clock = { reference = 0, source = 0, held = false, hold_count = 0, hold_seconds = 0 }
+    local clock = { reference = 0, source = 0, held = false, hold_count = 0, hold_seconds = 0, movement_started = false }
+    function clock:observeMovement(raw)
+        assert(type(raw) == 'table' and finite(raw.movement) and finite(raw.side_movement), 'Invalid guided source movement')
+        if raw.movement ~= 0 or raw.side_movement ~= 0 then self.movement_started = true end
+        return self.movement_started
+    end
     function clock:advance(source)
         assert(finite(source) and source >= self.source, 'Guided source clock cannot reverse')
         local delta = source - self.source

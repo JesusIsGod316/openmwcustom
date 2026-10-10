@@ -6,12 +6,14 @@ param(
     [string]$PythonExecutable='',
     [switch]$RawInputs,
     [switch]$AnimationMovement,
+    [switch]$NativeGuidance,
+    [switch]$SerialRenderer,
     [switch]$PrepareOnly,
     [switch]$LibraryOnly
 )
 $ErrorActionPreference='Stop'
 # Dot-sourced recorder parameters must not replace this invocation's switches.
-$playbackInvocation=@{Game=$GameDir;Capture=$CaptureDirectory;Route=$Route;Frozen=$FrozenConfigDirectory;Python=$PythonExecutable;Raw=[bool]$RawInputs;Animation=[bool]$AnimationMovement;Prepare=[bool]$PrepareOnly;Library=[bool]$LibraryOnly}
+$playbackInvocation=@{Game=$GameDir;Capture=$CaptureDirectory;Route=$Route;Frozen=$FrozenConfigDirectory;Python=$PythonExecutable;Raw=[bool]$RawInputs;Animation=[bool]$AnimationMovement;NativeGuidance=[bool]$NativeGuidance;Serial=[bool]$SerialRenderer;Prepare=[bool]$PrepareOnly;Library=[bool]$LibraryOnly}
 . (Join-Path $PSScriptRoot 'OptimizedMW_FrozenConfig.ps1')
 . (Join-Path $PSScriptRoot 'OptimizedMW_RouteRecorder.ps1') -GameDir $playbackInvocation.Game -LibraryOnly
 
@@ -24,7 +26,7 @@ function Assert-OptimizedMWPlaybackIdentities {
 }
 
 function Read-OptimizedMWPlaybackCapture {
-    param([string]$Directory,[ValidateSet('','existing','balmora')][string]$ExpectedRoute='')
+    param([string]$Directory,[ValidateSet('','existing','balmora')][string]$ExpectedRoute='', [switch]$AllowAnimationSource)
     $capture=Assert-OptimizedMWPlainPath $Directory
     $sessionIdentity=Get-OptimizedMWFrozenFile (Join-Path $capture 'SESSION.json')
     $summaryIdentity=Get-OptimizedMWFrozenFile (Join-Path $capture 'SUMMARY.json')
@@ -36,8 +38,10 @@ function Read-OptimizedMWPlaybackCapture {
     if($status.complete -isnot [bool] -or -not $status.complete -or [string]$status.qualification -cne 'RECORDED_NOT_REPLAY_VALIDATED' -or [string]$status.session -cne [string]$source.session){throw 'Capture is incomplete or does not have a qualified recording footer; record a fresh outdoor route'}
     $cohort=$null
     if($source.PSObject.Properties['movement_cohort']){$cohort=$source.movement_cohort}
-    if($null -ne $cohort -and ($cohort.private_override -isnot [bool] -or [string]$cohort.model -cnotin @('native_input_displacement_with_visual_animations','animation_displacement') -or ($cohort.private_override -ne ([string]$cohort.model -ceq 'native_input_displacement_with_visual_animations')))){throw 'Capture movement cohort metadata is invalid'}
-    if([string]$source.route -ceq 'existing' -and ($null -eq $cohort -or [string]$cohort.model -cne 'native_input_displacement_with_visual_animations' -or -not $cohort.private_override)){throw 'Seyda Neen requires a fresh outdoor recording made with the matching native movement profile'}
+    if($null -ne $cohort -and ($cohort -isnot [pscustomobject] -or @($cohort.PSObject.Properties).Count -ne 2 -or $cohort.private_override -isnot [bool] -or [string]$cohort.model -cnotin @('native_input_displacement_with_visual_animations','animation_displacement') -or ($cohort.private_override -ne ([string]$cohort.model -ceq 'native_input_displacement_with_visual_animations')))){throw 'Capture movement cohort metadata is invalid'}
+    $recordedNative=$null -ne $cohort -and [string]$cohort.model -ceq 'native_input_displacement_with_visual_animations' -and $cohort.private_override
+    $recordedAnimation=$null -ne $cohort -and [string]$cohort.model -ceq 'animation_displacement' -and -not $cohort.private_override
+    if([string]$source.route -ceq 'existing' -and -not $recordedNative -and -not ($AllowAnimationSource -and $recordedAnimation)){throw 'Seyda Neen requires matching native movement, or an explicit AnimationMovement preview of a recorded animation cohort'}
     $cameraCohort=$source.camera_layer_cohort;$summaryCamera=$status.camera_layer_cohort
     if(-not (Test-OptimizedMWRouteCameraCohort $cameraCohort) -or -not (Test-OptimizedMWRouteCameraCohort $summaryCamera) -or
         ($null -eq $cameraCohort) -ne ($null -eq $summaryCamera)){throw 'Capture camera layer cohort is invalid or differs between session and summary'}
@@ -55,11 +59,27 @@ function Assert-OptimizedMWPlaybackCameraReceipt {
     }
 }
 
+function Get-OptimizedMWPlaybackPlan {
+    param([bool]$SourceNative,[bool]$SourceAnimation=$false,[switch]$Raw,[switch]$Animation,[switch]$NativeGuidance)
+    if($NativeGuidance -and ($Raw -or $Animation)){throw 'NativeGuidance cannot be combined with RawInputs or AnimationMovement'}
+    return [pscustomobject]@{
+        allow_animation_source=[bool]($Animation -or $NativeGuidance)
+        native_movement=[bool](-not $Animation -and (-not $Raw -or $SourceNative))
+        guided=[bool](-not $Raw)
+        initial_tolerance=$(if($Raw){32}else{128})
+        abort_tolerance=$(if($Raw){96}else{2048})
+        protocol=$(if($Raw){'raw_physics_input'}else{'physical_xy_follower_v1'})
+        native_guidance_translation=[bool]($NativeGuidance -and $SourceAnimation)
+        stationary_recovery=[bool]$NativeGuidance
+    }
+}
+
 function New-OptimizedMWPlaybackSession {
-    param([string]$GameDirectory,[string]$Capture,[string]$Frozen,[string]$Python,[switch]$Raw,[switch]$Animation,[ValidateSet('','existing','balmora')][string]$RouteName='')
+    param([string]$GameDirectory,[string]$Capture,[string]$Frozen,[string]$Python,[switch]$Raw,[switch]$Animation,[switch]$NativeGuidance,[switch]$SerialRenderer,[ValidateSet('','existing','balmora')][string]$RouteName='')
     $game=Assert-OptimizedMWPlainPath $GameDirectory
     # Refuse old/incomplete sources before creating a private session.
-    $source=Read-OptimizedMWPlaybackCapture -Directory $Capture -ExpectedRoute $RouteName
+    $admissionPlan=Get-OptimizedMWPlaybackPlan -SourceNative:$false -Raw:$Raw -Animation:$Animation -NativeGuidance:$NativeGuidance
+    $source=Read-OptimizedMWPlaybackCapture -Directory $Capture -ExpectedRoute $RouteName -AllowAnimationSource:$admissionPlan.allow_animation_source
     $capture=$source.directory;$RouteName=$source.route
     if(-not $Frozen){$Frozen=Join-Path $game $(if($RouteName -ceq 'balmora'){'Configuration\Benchmark-SaintJs-Balmora'}else{'Configuration\Benchmark-SaintJs'})}
     if(-not $Python){$Python=(Get-Command python.exe -ErrorAction Stop).Source}
@@ -69,8 +89,11 @@ function New-OptimizedMWPlaybackSession {
     # Guided feedback needs the native input vector to determine displacement.
     # Keep authored animation displacement for the raw control/explicit experiment.
     $sourceNative=($null -ne $source.movement_cohort -and $source.movement_cohort.private_override)
-    $nativeMovement=(-not $Animation -and (-not $Raw -or $sourceNative))
+    $sourceAnimation=($null -ne $source.movement_cohort -and $source.movement_cohort.model -ceq 'animation_displacement' -and -not $source.movement_cohort.private_override)
+    $plan=Get-OptimizedMWPlaybackPlan -SourceNative:$sourceNative -SourceAnimation:$sourceAnimation -Raw:$Raw -Animation:$Animation -NativeGuidance:$NativeGuidance
+    $nativeMovement=$plan.native_movement
     if($nativeMovement -or $Animation){Set-OptimizedMWRouteIniValue -Path $session.runtime.settings_path -Section 'Game' -Key 'player movement ignores animation' -Value $(if($nativeMovement){'true'}else{'false'})}
+    if($SerialRenderer){Set-OptimizedMWRouteIniValue -Path $session.runtime.settings_path -Section 'Optimizations' -Key 'render threading mode' -Value '3'}
     $data=Join-Path $session.runtime.user_data_directory 'data'
     $relativeFiles=@('optimizedmw_route_playback.omwscripts','scripts\optimizedmw_route_playback\core.lua','scripts\optimizedmw_route_playback\player.lua','scripts\optimizedmw_route_playback\guidance.lua')
     $playbackInputs=[Collections.Generic.List[object]]::new()
@@ -86,7 +109,9 @@ function New-OptimizedMWPlaybackSession {
     $compiler=Get-OptimizedMWFrozenFile (Join-Path $package 'compile_route.py')
     $timeline=Join-Path $data 'scripts\optimizedmw_route_playback\timeline.lua'
     $receiptPath=Join-Path $session.directory 'COMPILED.json'
-    $compilerOutput=@(& $Python $compiler.path --capture $capture --output $timeline --receipt $receiptPath)
+    $compilerArguments=@($compiler.path,'--capture',$capture,'--output',$timeline,'--receipt',$receiptPath)
+    if($plan.allow_animation_source){$compilerArguments+=@('--allow-animation-source')}
+    $compilerOutput=@(& $Python @compilerArguments)
     if($LASTEXITCODE -ne 0){throw 'Playback compiler refused the capture'}
     Write-Host ($compilerOutput -join "`n")
     $receipt=[IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json
@@ -109,8 +134,9 @@ function New-OptimizedMWPlaybackSession {
     [IO.File]::WriteAllText($recorderOptions,$text,[Text.UTF8Encoding]::new($false))
     $options=Join-Path $data 'scripts\optimizedmw_route_playback\options.lua'
     $guided=$(if($Raw){'false'}else{'true'})
+    $stationaryRecovery=$(if($plan.stationary_recovery){'true'}else{'false'})
     $cameraOptions=$(if($null -ne $source.camera_layer_cohort){", camera_layer_cohort={model='recorded_additive_first_person_v1'}"}else{''})
-    [IO.File]::WriteAllText($options,("return { enabled=true, session='"+$session.id+"', guidance_enabled="+$guided+$cameraOptions+", autostart_seconds=3, quit_on_finish=true, setup_timeout_seconds=90, position_tolerance=128, abort_position_error=2048, max_duration_seconds=195 }"),[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($options,("return { enabled=true, session='"+$session.id+"', guidance_enabled="+$guided+", stationary_recovery_enabled="+$stationaryRecovery+$cameraOptions+", autostart_seconds=3, quit_on_finish=true, setup_timeout_seconds=90, position_tolerance="+$plan.initial_tolerance+", abort_position_error="+$plan.abort_tolerance+", max_duration_seconds=180 }"),[Text.UTF8Encoding]::new($false))
     [IO.File]::AppendAllText($session.runtime.config_path,"`ncontent=optimizedmw_route_playback.omwscripts`n",[Text.UTF8Encoding]::new($false))
     $session.arguments=@(Get-OptimizedMWFrozenArguments $session.runtime)+@('--load-savegame',('"'+$privateStart+'"'),'--skip-menu')
     $session.manifest.arguments=$session.arguments
@@ -122,6 +148,9 @@ function New-OptimizedMWPlaybackSession {
     $session.manifest | Add-Member -NotePropertyName movement_model -NotePropertyValue $(if($nativeMovement){'native_input_displacement_with_visual_animations'}elseif($Animation){'animation_displacement'}else{'frozen_animation_movement_setting'})
     $session.manifest | Add-Member -NotePropertyName private_movement_override -NotePropertyValue $(if($nativeMovement -or $Animation){[pscustomobject]@{section='Game';key='player movement ignores animation';value=$(if($nativeMovement){'true'}else{'false'});scope='private preview only; source cohort recorded separately'}}else{$null})
     $session.manifest | Add-Member -NotePropertyName source_movement_cohort -NotePropertyValue $source.movement_cohort
+    $session.manifest | Add-Member -NotePropertyName native_guidance_source_translation -NotePropertyValue $plan.native_guidance_translation
+    $session.manifest | Add-Member -NotePropertyName stationary_recovery_enabled -NotePropertyValue $plan.stationary_recovery
+    $session.manifest | Add-Member -NotePropertyName private_renderer_override -NotePropertyValue $(if($SerialRenderer){[pscustomobject]@{section='Optimizations';key='render threading mode';value='3';scope='Explicit private OSG SingleThreaded isolation; driver-internal workers may still run'}}else{$null})
     $session.manifest.camera_layer_cohort=$source.camera_layer_cohort
     $session.manifest | Add-Member -NotePropertyName camera_layer_cohort_status -NotePropertyValue $receipt.camera_layer_cohort_status
     $session.manifest | Add-Member -NotePropertyName source_movement_cohort_matches -NotePropertyValue $(if($null -ne $source.movement_cohort){[bool]($nativeMovement -eq $sourceNative)}else{$null})
@@ -235,6 +264,7 @@ function Export-OptimizedMWPlaybackLog {
 
 function Invoke-OptimizedMWRoutePlayback {
     $game=Assert-OptimizedMWPlainPath $playbackInvocation.Game
+    $admissionPlan=Get-OptimizedMWPlaybackPlan -SourceNative:$false -Raw:$playbackInvocation.Raw -Animation:$playbackInvocation.Animation -NativeGuidance:$playbackInvocation.NativeGuidance
     if(@(Get-Process -Name openmw -ErrorAction SilentlyContinue).Count){throw 'Close the existing OpenMW instance before playback'}
     $capture=$playbackInvocation.Capture
     $route=$playbackInvocation.Route
@@ -247,15 +277,16 @@ function Invoke-OptimizedMWRoutePlayback {
         }
         $candidates=@(Get-ChildItem -LiteralPath (Join-Path $game 'Benchmarks\Routes') -Directory | Where-Object {$_.Name -like ($route+'_*')} | Sort-Object LastWriteTimeUtc -Descending)
         foreach($candidate in $candidates){
-            try{$null=Read-OptimizedMWPlaybackCapture -Directory $candidate.FullName -ExpectedRoute $route;$capture=$candidate.FullName;break}catch{continue}
+            try{$null=Read-OptimizedMWPlaybackCapture -Directory $candidate.FullName -ExpectedRoute $route -AllowAnimationSource:$admissionPlan.allow_animation_source;$capture=$candidate.FullName;break}catch{continue}
         }
         if(-not $capture){throw 'No compatible complete recording found for this route. Use START-OptimizedMW-RecordRoute.bat to record it outdoors first.'}
     }
-    $session=New-OptimizedMWPlaybackSession -GameDirectory $game -Capture $capture -Frozen $playbackInvocation.Frozen -Python $playbackInvocation.Python -Raw:$playbackInvocation.Raw -Animation:$playbackInvocation.Animation -RouteName $route
+    $session=New-OptimizedMWPlaybackSession -GameDirectory $game -Capture $capture -Frozen $playbackInvocation.Frozen -Python $playbackInvocation.Python -Raw:$playbackInvocation.Raw -Animation:$playbackInvocation.Animation -NativeGuidance:$playbackInvocation.NativeGuidance -SerialRenderer:$playbackInvocation.Serial -RouteName $route
     Write-Host ('Source recording: '+$capture)
     Write-Host ('Playback evidence: '+$session.directory)
     Write-Host ('Playback protocol: '+$session.manifest.playback_protocol+'; preview only.')
     Write-Host ('Movement model: '+$session.manifest.movement_model+'; private settings identity recorded.')
+    if($playbackInvocation.Serial){Write-Host 'Renderer isolation: private OSG SingleThreaded; preview diagnostic only.'}
     Write-Host 'Visible 1280x720 private preview. Playback starts automatically after loading. F11 aborts.'
     if($playbackInvocation.Prepare){Write-Host 'Prepared only; no game launched.';return $session}
     Assert-OptimizedMWRouteSessionInputs $session
