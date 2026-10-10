@@ -15,6 +15,10 @@ The default preview follows the captured path through normal movement controls,
 with bounded horizontal steering corrections and interpolated first-person
 camera direction. Normal physics and collisions move the character. Playback
 never writes position, disables collision, or changes the character's stats.
+The private guided profile uses [Game] player movement ignores animation = true.
+Visual animations still play; native movement inputs determine displacement.
+This differs from the recorded animation-dependent movement cohort and is
+recorded explicitly in SESSION.json with the private settings identity.
 If the character falls behind, the reference clock can briefly hold while
 ordinary movement catches up. Steering, holds, reference lag, position/camera
 errors and live collision state are recorded at 5 Hz using OMWPLAY JSON records.
@@ -34,6 +38,8 @@ Developer use:
 powershell -NoProfile -File OptimizedMW_RoutePlayback.ps1 -GameDir C:\OptimizedMW_Test -PrepareOnly
 Optional -CaptureDirectory selects a specific complete recording.
 Optional -RawInputs preserves the original uncorrected timed-input control path.
+Optional -AnimationMovement keeps the frozen animation-dependent movement setting
+for a guided diagnostic control; it can reproduce the observed steering failure.
 SUMMARY.json distinguishes playback_complete from input_replay_complete; guided
 completion never claims exact raw-input completion. Both protocols remain
 PREVIEW_NOT_BENCHMARK_VALIDATED.

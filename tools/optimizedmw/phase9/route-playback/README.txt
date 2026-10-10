@@ -1,5 +1,14 @@
 PRIVATE BALMORA PHYSICAL ROUTE PREVIEW
 
+The guided host profile selects [Game] player movement ignores animation = true
+only in its private settings copy. Visual animation evaluation remains enabled;
+native controls determine player displacement. This isolates the observed
+reversal during side-dominant correction from animation-dependent locomotion.
+It is a separate movement cohort, not proof of a defect in a particular mod.
+The host records movement_model, private_movement_override and settings hash.
+-AnimationMovement preserves the frozen setting for a guided diagnostic control;
+-RawInputs also preserves it. Normal gameplay and the source capture are unchanged.
+
 The host generates options.lua and timeline.lua under scripts/optimizedmw_route_playback.
 Append this PLAYER script last in the private content order. The existing private
 encounter policy must use the same fresh session identifier and remain enabled;

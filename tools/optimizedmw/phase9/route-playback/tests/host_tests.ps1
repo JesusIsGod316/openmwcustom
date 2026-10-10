@@ -61,12 +61,61 @@ function Check-IncompletePlayback {
 }
 try{
     # Actual dot-source parameter binding must retain playback invocation values.
-    . $hostPath -GameDir $fixture -CaptureDirectory (Join-Path $fixture 'capture') -FrozenConfigDirectory (Join-Path $fixture 'frozen') -PythonExecutable (Join-Path $fixture 'python.exe') -RawInputs -PrepareOnly -LibraryOnly
+    . $hostPath -GameDir $fixture -CaptureDirectory (Join-Path $fixture 'capture') -FrozenConfigDirectory (Join-Path $fixture 'frozen') -PythonExecutable (Join-Path $fixture 'python.exe') -RawInputs -AnimationMovement -PrepareOnly -LibraryOnly
     Check-Playback ($playbackInvocation.Prepare -eq $true -and $playbackInvocation.Library -eq $true) 'Dot-sourced recorder replaced playback switches'
     Check-Playback ($playbackInvocation.Game -ceq $fixture -and $playbackInvocation.Capture -ceq (Join-Path $fixture 'capture') -and $playbackInvocation.Frozen -ceq (Join-Path $fixture 'frozen') -and $playbackInvocation.Python -ceq (Join-Path $fixture 'python.exe')) 'Dot-source replaced selected playback inputs'
     Check-Playback ($playbackInvocation.Raw -eq $true) 'Dot-sourced recorder replaced explicit raw-input protocol selection'
+    Check-Playback ($playbackInvocation.Animation -eq $true) 'Dot-sourced recorder replaced explicit animation movement control'
+    . $hostPath -GameDir $fixture -AnimationMovement -PrepareOnly -LibraryOnly
+    Check-Playback ($playbackInvocation.Animation -eq $true -and $playbackInvocation.Raw -eq $false) 'Animation-only control flag did not survive dot sourcing'
+    . $hostPath -GameDir $fixture -PrepareOnly -LibraryOnly
+    Check-Playback ($playbackInvocation.Animation -eq $false -and $playbackInvocation.Raw -eq $false) 'Default guided movement inherited stale control flags'
     $tokens=$null;$parseErrors=$null;$null=[Management.Automation.Language.Parser]::ParseFile($hostPath,[ref]$tokens,[ref]$parseErrors)
     Check-Playback ($parseErrors.Count -eq 0) 'Playback host source does not parse'
+
+    # Derive the movement setting in a private copy and retain the original cohort.
+    $baselineSettings=Join-Path $fixture 'frozen-baseline-settings.cfg'
+    $privateSettings=Join-Path $fixture 'derived-private-settings.cfg'
+    $settingsText=@'
+[Video]
+fullscreen = false
+[Game]
+# keep this comment
+player movement ignores animation = false
+PLAYER MOVEMENT IGNORES ANIMATION = false
+smooth movement = true
+[Camera]
+player movement ignores animation = false
+[game]
+player movement ignores animation = false
+turn to movement direction = true
+'@
+    [IO.File]::WriteAllText($baselineSettings,$settingsText,[Text.UTF8Encoding]::new($false))
+    $baselineIdentity=Get-OptimizedMWFrozenFile $baselineSettings
+    [IO.File]::Copy($baselineSettings,$privateSettings,$false)
+    Set-OptimizedMWRouteIniValue -Path $privateSettings -Section 'Game' -Key 'player movement ignores animation' -Value 'true'
+    $settingSection='';$gameMovementValues=[Collections.Generic.List[string]]::new();$cameraMovementValues=[Collections.Generic.List[string]]::new()
+    foreach($line in [IO.File]::ReadAllLines($privateSettings)){
+        if($line -match '^\s*\[([^\]]+)\]\s*$'){$settingSection=$matches[1]}
+        if($line -match '^\s*player movement ignores animation\s*=\s*(.*)$'){
+            if($settingSection -ieq 'Game'){$gameMovementValues.Add($matches[1])}
+            if($settingSection -ieq 'Camera'){$cameraMovementValues.Add($matches[1])}
+        }
+    }
+    Check-Playback ($gameMovementValues.Count -eq 1 -and $gameMovementValues[0] -ceq 'true') 'Private movement override retained duplicate/conflicting Game settings'
+    Check-Playback ($cameraMovementValues.Count -eq 1 -and $cameraMovementValues[0] -ceq 'false') 'Private Game override modified another section'
+    $derivedText=[IO.File]::ReadAllText($privateSettings)
+    Check-Playback ($derivedText.Contains('# keep this comment') -and $derivedText.Contains('smooth movement = true') -and $derivedText.Contains('turn to movement direction = true') -and $derivedText.Contains('fullscreen = false')) 'Private movement override modified unrelated configuration'
+    $baselineAfter=Get-OptimizedMWFrozenFile $baselineSettings
+    Check-Playback ($baselineAfter.sha256 -ceq $baselineIdentity.sha256 -and $baselineAfter.bytes -eq $baselineIdentity.bytes -and [IO.File]::ReadAllText($baselineSettings) -ceq $settingsText) 'Private override modified original frozen configuration'
+    $derivedIdentity=Get-OptimizedMWFrozenFile $privateSettings
+    Set-OptimizedMWRouteIniValue -Path $privateSettings -Section 'Game' -Key 'player movement ignores animation' -Value 'true'
+    $derivedAfter=Get-OptimizedMWFrozenFile $privateSettings
+    Check-Playback ($derivedAfter.sha256 -ceq $derivedIdentity.sha256 -and $derivedAfter.bytes -eq $derivedIdentity.bytes) 'Repeated private movement override is not idempotent'
+    $missingSection=Join-Path $fixture 'private-settings-no-game.cfg'
+    [IO.File]::WriteAllText($missingSection,"[Video]`nfullscreen = false`n",[Text.UTF8Encoding]::new($false))
+    Set-OptimizedMWRouteIniValue -Path $missingSection -Section 'Game' -Key 'player movement ignores animation' -Value 'true'
+    Check-Playback ([IO.File]::ReadAllText($missingSection).Contains('[Game]') -and [IO.File]::ReadAllText($missingSection).Contains('player movement ignores animation = true')) 'Private movement override failed to append an absent Game section'
 
     $valid=Export-PlaybackFixture (New-PlaybackFixtureRows)
     Check-Playback ($valid.playback_complete -and $valid.input_replay_complete -and $valid.playback_protocol -ceq 'raw_physics_input' -and $valid.errors.Count -eq 0 -and $valid.record_count -eq 5) 'Valid legacy physical input preview was rejected'

@@ -4,12 +4,13 @@ param(
     [string]$FrozenConfigDirectory='',
     [string]$PythonExecutable='',
     [switch]$RawInputs,
+    [switch]$AnimationMovement,
     [switch]$PrepareOnly,
     [switch]$LibraryOnly
 )
 $ErrorActionPreference='Stop'
 # Dot-sourced recorder parameters must not replace this invocation's switches.
-$playbackInvocation=@{Game=$GameDir;Capture=$CaptureDirectory;Frozen=$FrozenConfigDirectory;Python=$PythonExecutable;Raw=[bool]$RawInputs;Prepare=[bool]$PrepareOnly;Library=[bool]$LibraryOnly}
+$playbackInvocation=@{Game=$GameDir;Capture=$CaptureDirectory;Frozen=$FrozenConfigDirectory;Python=$PythonExecutable;Raw=[bool]$RawInputs;Animation=[bool]$AnimationMovement;Prepare=[bool]$PrepareOnly;Library=[bool]$LibraryOnly}
 . (Join-Path $PSScriptRoot 'OptimizedMW_FrozenConfig.ps1')
 . (Join-Path $PSScriptRoot 'OptimizedMW_RouteRecorder.ps1') -GameDir $playbackInvocation.Game -LibraryOnly
 
@@ -22,7 +23,7 @@ function Assert-OptimizedMWPlaybackIdentities {
 }
 
 function New-OptimizedMWPlaybackSession {
-    param([string]$GameDirectory,[string]$Capture,[string]$Frozen,[string]$Python,[switch]$Raw)
+    param([string]$GameDirectory,[string]$Capture,[string]$Frozen,[string]$Python,[switch]$Raw,[switch]$Animation)
     $game=Assert-OptimizedMWPlainPath $GameDirectory
     $capture=Assert-OptimizedMWPlainPath $Capture
     if(-not $Frozen){$Frozen=Join-Path $game 'Configuration\Benchmark-SaintJs-Balmora'}
@@ -30,6 +31,10 @@ function New-OptimizedMWPlaybackSession {
     $pythonIdentity=Get-OptimizedMWFrozenFile $Python
     $package=Assert-OptimizedMWPlainPath (Join-Path $game 'RoutePlayback')
     $session=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $Frozen -PackageDirectory (Join-Path $game 'RouteRecorder') -RouteName balmora -SmallValidationWindow -OutputCategory Playback
+    # Guided feedback needs the native input vector to determine displacement.
+    # Keep authored animation displacement for the raw control/explicit experiment.
+    $nativeMovement=(-not $Raw -and -not $Animation)
+    if($nativeMovement){Set-OptimizedMWRouteIniValue -Path $session.runtime.settings_path -Section 'Game' -Key 'player movement ignores animation' -Value 'true'}
     $data=Join-Path $session.runtime.user_data_directory 'data'
     $relativeFiles=@('optimizedmw_route_playback.omwscripts','scripts\optimizedmw_route_playback\core.lua','scripts\optimizedmw_route_playback\player.lua','scripts\optimizedmw_route_playback\guidance.lua')
     $playbackInputs=[Collections.Generic.List[object]]::new()
@@ -74,6 +79,8 @@ function New-OptimizedMWPlaybackSession {
     $session.manifest.mode=$(if($Raw){'private_physics_input_replay_preview'}else{'private_guided_physics_route_preview'})
     $session.manifest.scope='Visible private route preview. Guided controls and any source-clock holds are recorded; no exact timed-input equivalence or performance acceptance.'
     $session.manifest | Add-Member -NotePropertyName playback_protocol -NotePropertyValue $(if($Raw){'raw_physics_input'}else{'physical_xy_follower_v1'})
+    $session.manifest | Add-Member -NotePropertyName movement_model -NotePropertyValue $(if($nativeMovement){'native_input_displacement_with_visual_animations'}else{'frozen_animation_movement_setting'})
+    $session.manifest | Add-Member -NotePropertyName private_movement_override -NotePropertyValue $(if($nativeMovement){[pscustomobject]@{section='Game';key='player movement ignores animation';value='true';scope='private preview only; different from recorded movement cohort'}}else{$null})
     $session.manifest.starting_location_mode='load_copied_captured_start_no_teleport'
     $session.manifest.frozen_configuration.mode='verified_baseline_inputs_before_playback_derivation'
     $session.manifest.frozen_configuration.save_load_status='Baseline seed retained privately; separate playback_start copy is loaded by top-level arguments'
@@ -167,10 +174,11 @@ function Invoke-OptimizedMWRoutePlayback {
         }
         if(-not $capture){throw 'No complete Balmora recording found'}
     }
-    $session=New-OptimizedMWPlaybackSession -GameDirectory $game -Capture $capture -Frozen $playbackInvocation.Frozen -Python $playbackInvocation.Python -Raw:$playbackInvocation.Raw
+    $session=New-OptimizedMWPlaybackSession -GameDirectory $game -Capture $capture -Frozen $playbackInvocation.Frozen -Python $playbackInvocation.Python -Raw:$playbackInvocation.Raw -Animation:$playbackInvocation.Animation
     Write-Host ('Source recording: '+$capture)
     Write-Host ('Playback evidence: '+$session.directory)
     Write-Host ('Playback protocol: '+$session.manifest.playback_protocol+'; preview only.')
+    Write-Host ('Movement model: '+$session.manifest.movement_model+'; private settings identity recorded.')
     Write-Host 'Visible 1280x720 private preview. Playback starts automatically after loading. F11 aborts.'
     if($playbackInvocation.Prepare){Write-Host 'Prepared only; no game launched.';return $session}
     Assert-OptimizedMWRouteSessionInputs $session
