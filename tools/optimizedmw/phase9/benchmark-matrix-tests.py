@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT=Path(__file__).parent
 spec=importlib.util.spec_from_file_location('matrix',ROOT/'benchmark_matrix.py')
@@ -11,6 +12,74 @@ matrix=importlib.util.module_from_spec(spec);spec.loader.exec_module(matrix)
 
 
 class Benchmarks(unittest.TestCase):
+    def test_private_timeout_without_run_receipt_keeps_actual_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            (path/'Desktop').mkdir()
+            (path/'Desktop'/'DESKTOP-RECEIPT.json').write_text(json.dumps({
+                'timed_out':True, 'exit_code':124, 'elapsed_seconds':600.6375}))
+            with self.assertRaisesRegex(ValueError, 'timed out after 600.6375 seconds'):
+                matrix.completed_run_receipts(path, 124)
+            # A partial receipt must never override a timeout or become timing evidence.
+            (path/'RUN.json').write_text(json.dumps({'exit_code':0, 'launch_failure':None}))
+            with self.assertRaisesRegex(ValueError, 'exists but is not qualified'):
+                matrix.completed_run_receipts(path, 124)
+
+    def test_private_failure_and_missing_success_receipts_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            (path/'Desktop').mkdir()
+            desktop = path/'Desktop'/'DESKTOP-RECEIPT.json'
+            desktop.write_text(json.dumps({'timed_out':False, 'exit_code':2}))
+            with self.assertRaisesRegex(ValueError, 'Private launcher failed with exit code 2'):
+                matrix.completed_run_receipts(path, 2)
+            desktop.write_text(json.dumps({'timed_out':False, 'exit_code':0}))
+            with self.assertRaisesRegex(ValueError, 'without an automatic run receipt'):
+                matrix.completed_run_receipts(path, 0)
+            receipt = path/'RUN.json'
+            receipt.write_text(json.dumps({'exit_code':1, 'launch_failure':'route failed'}))
+            with self.assertRaisesRegex(ValueError, 'game exit code 1; launcher error route failed'):
+                matrix.completed_run_receipts(path, 0)
+            receipt.write_text(json.dumps({'exit_code':0, 'launch_failure':None}))
+            returned, _ = matrix.completed_run_receipts(path, 0)
+            self.assertEqual(returned['exit_code'], 0)
+
+    def test_matrix_preserves_timeout_case_without_starting_game(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            game = root/'game'; game.mkdir()
+            for name in ('openmw.exe', 'BUILD-IDENTITY.json', 'symbols.pdb'):
+                (game/name).write_bytes(b'offline test input; never executed')
+            catalog = root/'catalog.json'
+            catalog.write_text(json.dumps({'routes':[{'id':'Balmora', 'inputs':[],
+                'pinned_acquisition':str(root/'unused_route')}]}))
+            plan = root/'plan.json'
+            plan.write_text(json.dumps({'game_directory':str(game), 'route_catalog':str(catalog),
+                'symbols':str(game/'symbols.pdb'), 'powershell':'not-executed',
+                'cases':[{'id':'TimeoutCase', 'route':'Balmora'}]}))
+            output = root/'output'
+
+            def timeout_launcher(executable, arguments, working, desktop_path, deadline):
+                self.assertEqual(executable, 'not-executed')
+                desktop_path.mkdir()
+                matrix.benchmark_desktop.save(desktop_path/'DESKTOP-RECEIPT.json', {
+                    'timed_out':True, 'exit_code':124, 'elapsed_seconds':600.6375})
+                return 124
+
+            with patch.object(matrix.benchmark_desktop, 'launch', side_effect=timeout_launcher) as launch:
+                with self.assertRaisesRegex(ValueError, 'Private launcher timed out'):
+                    matrix.run_matrix(plan, output)
+                launch.assert_called_once()
+            state = matrix.read_json(output/'MATRIX.json')
+            self.assertEqual(state['state'], 'failed')
+            self.assertEqual(state['runs'], [])
+            failure = matrix.read_json(output/'01_TimeoutCase'/'FAILED-RUN.json')
+            self.assertEqual(failure, state['failed_run'])
+            self.assertEqual(failure['state'], 'FAILED_NOT_QUALIFIED')
+            self.assertFalse(failure['receipt_exists'])
+            self.assertTrue(failure['desktop_receipt_exists'])
+            self.assertNotIn('No such file', failure['error'])
+
     def test_low_ms_jitter_and_local_spikes(self):
         stable=matrix.pacing([5.]*100)
         jitter=matrix.pacing([4.,6.]*50)

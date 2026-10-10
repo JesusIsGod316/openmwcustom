@@ -254,6 +254,31 @@ def route_quality(receipt, profile=None):
             'scope':'guided route; input_replay_complete remains distinct'}
 
 
+def completed_run_receipts(directory, launcher_code):
+    directory = Path(directory)
+    desktop_path = directory/'Desktop'/'DESKTOP-RECEIPT.json'
+    desktop = read_json(desktop_path)
+    receipt_path = directory/'RUN.json'
+    if desktop.get('timed_out'):
+        raise ValueError('Private launcher timed out after '
+            + str(desktop.get('elapsed_seconds', 'unknown')) + ' seconds; preserved '
+            + str(desktop_path) + '; automatic run receipt '
+            + ('exists but is not qualified' if receipt_path.exists() else 'was not completed'))
+    if launcher_code or desktop.get('exit_code') != 0:
+        raise ValueError('Private launcher failed with exit code ' + str(launcher_code)
+            + '; desktop exit code ' + str(desktop.get('exit_code'))
+            + '; preserved ' + str(desktop_path))
+    if not receipt_path.exists():
+        raise ValueError('Private launcher exited without an automatic run receipt; preserved '
+            + str(desktop_path))
+    receipt = read_json(receipt_path)
+    if receipt.get('launch_failure') or receipt.get('exit_code') != 0:
+        raise ValueError('Game/launcher failed; preserved ' + str(receipt_path)
+            + '; game exit code ' + str(receipt.get('exit_code'))
+            + '; launcher error ' + str(receipt.get('launch_failure')))
+    return receipt, desktop
+
+
 def run_matrix(plan_path, output):
     plan = read_json(plan_path); output = Path(output).resolve()
     if output.exists():
@@ -273,12 +298,16 @@ def run_matrix(plan_path, output):
     state = {'schema':1,'scope':'OFFSCREEN_MUTED_GUIDED_ROUTE_COMPARISON','pins':pins,'runs':[],
              'performance_status':'CALIBRATION_REQUIRED','state':'running'}
     benchmark_desktop.save(output/'MATRIX.json',state)
+    current_case = None
     try:
         for index,case in enumerate(plan['cases']):
             if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',case['id']):
                 raise ValueError('Invalid case name')
             verify(pins)
             directory = output/f'{index+1:02}_{case["id"]}'; directory.mkdir()
+            current_case = {'id':case['id'], 'route':case['route'], 'directory':str(directory),
+                'stage':'setup', 'receipt':str(directory/'RUN.json'),
+                'desktop_receipt':str(directory/'Desktop'/'DESKTOP-RECEIPT.json')}
             route = routes[case['route']]
             settings = case.get('settings',[])
             settings_path = directory/'requested-settings.json'; benchmark_desktop.save(settings_path,settings)
@@ -292,10 +321,10 @@ def run_matrix(plan_path, output):
                     '-ArchitectureMask',str(case.get('architecture_mask',0)),
                     '-AssetMask',str(case.get('asset_mask',0)),'-TraceLevel',case.get('depth','Normal'),'-Candidate','CONTROL']
             print(json.dumps({'case':case['id'],'route':case['route'],'state':'started'}),flush=True)
+            current_case['stage'] = 'private_launcher'
             code = benchmark_desktop.launch(plan['powershell'],args,game,directory/'Desktop',plan.get('deadline',600))
-            receipt = read_json(receipt_path); desktop = read_json(directory/'Desktop'/'DESKTOP-RECEIPT.json')
-            if code or receipt.get('launch_failure') or receipt['exit_code'] != 0:
-                raise ValueError('Game/launcher failed; preserved '+str(receipt_path))
+            current_case['stage'] = 'run_qualification'
+            receipt, desktop = completed_run_receipts(directory, code)
             if not desktop.get('owned_render_window_observed') or not desktop['input_desktop_unchanged'] or desktop.get('input_desktop_owned_visible_windows'):
                 raise ValueError('Private rendering isolation incomplete')
             if not receipt['settings_restore_verified'] or not receipt['environment_restore_verified']:
@@ -317,12 +346,20 @@ def run_matrix(plan_path, output):
             print(json.dumps({'case':case['id'],'state':'completed','positive':engaged}),flush=True)
             if not engaged['all_requested_positive']:
                 raise ValueError('Candidate was inert; stop broad comparisons and inspect '+str(receipt_path))
+            current_case = None
         state['state']='completed'
         # Calibration must be reviewed across repeats before accepting numerical
         # A/B results. Deep rows are never pooled with ordinary performance.
         state['performance_status']='RAW_COMPARISONS_PENDING_REPEATABILITY_REVIEW'
     except BaseException as error:
         state['state']='failed'; state['error']=str(error)
+        if current_case:
+            failure = dict(current_case, state='FAILED_NOT_QUALIFIED', error=str(error),
+                receipt_exists=Path(current_case['receipt']).exists(),
+                desktop_receipt_exists=Path(current_case['desktop_receipt']).exists(),
+                performance_status='No performance acceptance for this failed case')
+            state['failed_run'] = failure
+            benchmark_desktop.save(Path(current_case['directory'])/'FAILED-RUN.json',failure)
         raise
     finally:
         benchmark_desktop.save(output/'MATRIX.json',state)
