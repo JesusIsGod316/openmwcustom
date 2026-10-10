@@ -135,7 +135,18 @@ def input_desktop(u):
 def save(path, value):
     temporary = path.with_suffix(path.suffix + '.writing')
     temporary.write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
-    temporary.replace(path)
+    # Windows readers/indexers can briefly deny delete sharing on the previous
+    # receipt. Retain atomic publication and the old valid receipt; do not kill
+    # an otherwise healthy owned game for a transient metadata-reader lock.
+    deadline = time.monotonic() + 2
+    while True:
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError as error:
+            if os.name != 'nt' or error.winerror not in (5,32,33) or time.monotonic() >= deadline:
+                raise
+            time.sleep(.05)
 
 
 def launch(executable, arguments, cwd, output, timeout):

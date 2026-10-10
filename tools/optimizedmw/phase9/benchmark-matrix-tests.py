@@ -99,4 +99,24 @@ class Benchmarks(unittest.TestCase):
             self.assertTrue(matrix.engagement(path,{'lod cache hit admission':'true'},1)['all_requested_positive'])
 
 
+    def test_atomic_receipt_survives_a_real_windows_reader_lock(self):
+        if matrix.benchmark_desktop.os.name!='nt':
+            self.skipTest('Windows delete-sharing behavior')
+        import threading, time
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)/'receipt.json'
+            matrix.benchmark_desktop.save(path,{'generation':1})
+            locked=threading.Event()
+            def reader():
+                with path.open('rb') as stream:
+                    self.assertEqual(json.load(stream)['generation'],1)
+                    locked.set(); time.sleep(.15)
+            thread=threading.Thread(target=reader)
+            thread.start(); self.assertTrue(locked.wait(1))
+            matrix.benchmark_desktop.save(path,{'generation':2})
+            thread.join()
+            self.assertEqual(matrix.read_json(path)['generation'],2)
+            self.assertFalse(path.with_suffix('.json.writing').exists())
+
+
 if __name__=='__main__':unittest.main()
