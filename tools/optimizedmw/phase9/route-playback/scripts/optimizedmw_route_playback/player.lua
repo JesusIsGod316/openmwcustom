@@ -25,11 +25,13 @@ local abortTolerance = bounded('abort_position_error', 2048, initialTolerance, 8
 local maximumDuration = bounded('max_duration_seconds', 180, 1, 180)
 assert(timeline.duration <= maximumDuration, 'Route exceeds playback limit')
 local lookup = sample.newSampler(timeline)
+local commandLookup = sample.newCommandSampler(timeline)
 local state, wallOrigin, simOrigin, readyElapsed, setupOrigin = 'waiting', nil, nil, 0, nil
 local policy = { ready = false }
 local stopAcknowledged, closeWall, closeFrames, finalReason, finishPrinted = false, nil, 0, nil, false
 local lastCheck, markerIndex, sequence, checkCount, maximumError, cameraError = -math.huge, 1, 0, 0, 0, 0
 local pitchError, cellMismatchCount, outsideToleranceCount = 0, 0, 0
+local postwriteYawError, postwritePitchError = 0, 0
 local overrides = false
 local function emit(event, payload)
     payload = payload or {}
@@ -72,7 +74,7 @@ local function close(reason)
 end
 local function paused() return core.isWorldPaused() or (I.UI and I.UI.getMode() ~= nil) end
 local function currentPosition() return { x = self.position.x, y = self.position.y, z = self.position.z } end
-local function inspect(expected, t)
+local function inspect(expected, t, deferEmission)
     local position = currentPosition()
     local error = sample.distance(position, expected.position)
     maximumError = math.max(maximumError, error)
@@ -83,13 +85,20 @@ local function inspect(expected, t)
     local cell = self.cell
     if not cell or cell.id ~= expected.cell_id then cellMismatchCount = cellMismatchCount + 1 end
     if error > initialTolerance then outsideToleranceCount = outsideToleranceCount + 1 end
-    emit('check', { expected_time = t, actual_position = position, expected_position = expected.position,
+    local observation = { expected_time = t, actual_position = position, expected_position = expected.position,
         position_error = error, expected_cell = expected.cell_id, actual_cell = cell and cell.id or nil,
         cell_matches = cell ~= nil and cell.id == expected.cell_id, expected_camera_yaw = expected.camera.yaw,
         actual_camera_yaw = camera.getYaw(), camera_yaw_error = angle, expected_camera_pitch = expected.camera.pitch,
-        actual_camera_pitch = camera.getPitch(), camera_pitch_error = pitch, sample_interval = expected.source_interval })
+        actual_camera_pitch = camera.getPitch(), camera_pitch_error = pitch, sample_interval = expected.source_interval,
+        actual_actor_yaw_before = self.rotation:getYaw(), actual_actor_pitch_before = self.rotation:getPitch(),
+        expected_current_actor_yaw_from_camera = expected.camera.yaw,
+        expected_current_actor_pitch_from_camera = expected.camera.pitch,
+        camera_observation_phase = 'before_current_frame_commands',
+        expected_actor_heading_source = 'recorded_first_person_camera; actor_XZ_not_separately_acquired' }
+    if not deferEmission then emit('check', observation) end
     checkCount = checkCount + 1
     if error > abortTolerance then close('position_divergence') end
+    return observation
 end
 local function frame(dt)
     local now = core.getRealTime()
@@ -114,6 +123,8 @@ local function frame(dt)
                     benchmark_qualified = false, qualification = 'PREVIEW_NOT_BENCHMARK_VALIDATED',
                     maximum_position_error = maximumError, maximum_camera_yaw_error = cameraError,
                     maximum_camera_pitch_error = pitchError, cell_mismatch_check_count = cellMismatchCount,
+                    maximum_camera_postwrite_yaw_error = postwriteYawError,
+                    maximum_camera_postwrite_pitch_error = postwritePitchError,
                     outside_position_tolerance_check_count = outsideToleranceCount,
                     check_count = checkCount, policy = policy, policy_stop_acknowledged = stopAcknowledged,
                     policy_observer_drained = drained, policy_drain_timed_out = timedOut and not drained })
@@ -150,7 +161,8 @@ local function frame(dt)
         ui.showMessage('Balmora playback: automatic preview. F11 aborts.')
         emit('start', { duration_simulation = timeline.duration, starting_position = currentPosition(),
             initial_position_tolerance = initialTolerance, divergence_abort = abortTolerance,
-            policy = policy, phase = 'player_onFrame_before_physics; simulation_time', benchmark_qualified = false })
+            policy = policy, phase = 'position_onFrame_before_physics; heading_command_at_simulation_plus_dt',
+            heading_phase_schema = 2, benchmark_qualified = false })
     end
     if paused() then zero(); close('unexpected_pause'); return end
     if policy.failed or (policy.failure_count or 0) > 0 then close('hostile_policy_failed'); return end
@@ -163,16 +175,34 @@ local function frame(dt)
     end
     if elapsed > maximumDuration then close('duration_limit'); return end
     local controls, expected = lookup(elapsed)
+    local command, commandTime = commandLookup(elapsed, dt)
+    local observation
     if elapsed - lastCheck >= 0.2 then
         -- Observation is before this frame's new camera/actor inputs are applied.
-        inspect(expected, elapsed)
+        observation = inspect(expected, elapsed, true)
         lastCheck = elapsed
-        if state ~= 'playing' then return end
+        if state ~= 'playing' then emit('check', observation); return end
     end
     self.controls.movement, self.controls.sideMovement = controls.movement, controls.side_movement
     self.controls.run, self.controls.sneak = controls.run, controls.sneak
     self.controls.jump, self.controls.use = false, self.ATTACK_TYPE.NoAttack
-    cameraPose(expected)
+    -- Acquisition samples are pre-physics headings. Mechanics consumes the
+    -- current rotation command within this frame, so target its end-of-frame
+    -- heading while movement controls remain selected at current elapsed time.
+    cameraPose(command)
+    if observation then
+        observation.command_time, observation.frame_simulation_delta = commandTime, dt
+        observation.command_camera_yaw, observation.command_camera_pitch = command.camera.yaw, command.camera.pitch
+        observation.command_actor_yaw_delta, observation.command_actor_pitch_delta = self.controls.yawChange, self.controls.pitchChange
+        observation.camera_yaw_after_write, observation.camera_pitch_after_write = camera.getYaw(), camera.getPitch()
+        observation.actor_yaw_after_write, observation.actor_pitch_after_write = self.rotation:getYaw(), self.rotation:getPitch()
+        observation.camera_postwrite_yaw_error = math.abs(sample.angleDelta(command.camera.yaw, camera.getYaw()))
+        observation.camera_postwrite_pitch_error = math.abs(command.camera.pitch - camera.getPitch())
+        observation.postwrite_readback_phase = 'camera_setter_readback; actor_delta_not_yet_consumed_by_mechanics'
+        postwriteYawError = math.max(postwriteYawError, observation.camera_postwrite_yaw_error)
+        postwritePitchError = math.max(postwritePitchError, observation.camera_postwrite_pitch_error)
+        emit('check', observation)
+    end
     local markers = timeline.markers or {}
     while markerIndex <= #markers and markers[markerIndex].t <= elapsed do
         emit('marker', { index = markers[markerIndex].index or markerIndex, expected_time = markers[markerIndex].t })

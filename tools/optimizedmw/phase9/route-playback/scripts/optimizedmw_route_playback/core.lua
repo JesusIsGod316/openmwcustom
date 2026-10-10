@@ -48,6 +48,18 @@ function M.validate(timeline)
     end
     return timeline
 end
+local function poseAt(timeline, poseIndex, t)
+    local a, b = timeline.samples[poseIndex], timeline.samples[math.min(poseIndex + 1, #timeline.samples)]
+    local alpha = b.t > a.t and math.max(0, math.min(1, (t - a.t) / (b.t - a.t))) or 0
+    local function mix(x, y) return x + (y - x) * alpha end
+    return {
+        position = { x = mix(a.position.x, b.position.x), y = mix(a.position.y, b.position.y), z = mix(a.position.z, b.position.z) },
+        cell_id = a.cell_id, cell_name = a.cell_name, exterior = a.exterior,
+        camera = { yaw = a.camera.yaw + M.angleDelta(b.camera.yaw, a.camera.yaw) * alpha,
+            pitch = mix(a.camera.pitch, b.camera.pitch), fov = mix(a.camera.fov, b.camera.fov), mode = a.camera.mode },
+        source_index = poseIndex, source_interval = b.t - a.t,
+    }
+end
 function M.newSampler(timeline)
     M.validate(timeline)
     local inputIndex, poseIndex, lastTime = 1, 1, -math.huge
@@ -56,16 +68,22 @@ function M.newSampler(timeline)
         lastTime = t
         while inputIndex < #timeline.controls and timeline.controls[inputIndex + 1].t <= t do inputIndex = inputIndex + 1 end
         while poseIndex < #timeline.samples and timeline.samples[poseIndex + 1].t <= t do poseIndex = poseIndex + 1 end
-        local a, b = timeline.samples[poseIndex], timeline.samples[math.min(poseIndex + 1, #timeline.samples)]
-        local alpha = b.t > a.t and math.max(0, math.min(1, (t - a.t) / (b.t - a.t))) or 0
-        local function mix(x, y) return x + (y - x) * alpha end
-        return timeline.controls[inputIndex], {
-            position = { x = mix(a.position.x, b.position.x), y = mix(a.position.y, b.position.y), z = mix(a.position.z, b.position.z) },
-            cell_id = a.cell_id, cell_name = a.cell_name, exterior = a.exterior,
-            camera = { yaw = a.camera.yaw + M.angleDelta(b.camera.yaw, a.camera.yaw) * alpha,
-                pitch = mix(a.camera.pitch, b.camera.pitch), fov = mix(a.camera.fov, b.camera.fov), mode = a.camera.mode },
-            source_index = poseIndex, source_interval = b.t - a.t,
-        }, inputIndex
+        return timeline.controls[inputIndex], poseAt(timeline, poseIndex, t), inputIndex
+    end
+end
+function M.newCommandSampler(timeline)
+    M.validate(timeline)
+    -- A separate pose-only sampler cannot advance the current movement-input
+    -- cursor. Stateless binary search also tolerates varying future horizons.
+    return function(t, dt)
+        assert(finite(t) and t >= 0 and finite(dt) and dt >= 0, 'Invalid command frame time')
+        local commandTime = math.min(timeline.duration, t + dt)
+        local low, high = 1, #timeline.samples
+        while low < high do
+            local middle = math.floor((low + high + 1) / 2)
+            if timeline.samples[middle].t <= commandTime then low = middle else high = middle - 1 end
+        end
+        return poseAt(timeline, low, commandTime), commandTime
     end
 end
 return M

@@ -51,13 +51,33 @@ for i=0,20 do slow(i/20) end
 for i=0,120 do fast(i/120) end
 local _, a = slow(1); local _, b=fast(1)
 check(near(a.camera.yaw,b.camera.yaw) and near(a.position.x,b.position.x), 'camera result does not accumulate FPS-dependent deltas')
+local current, future = pure.newSampler(route()), pure.newCommandSampler(route())
+local command, commandTime = future(0.4,0.6)
+check(near(commandTime,1) and near(command.camera.yaw,-math.pi+0.1), 'command samples end-of-frame heading across angle wrap')
+c,p = current(0.4)
+check(c.movement==0 and near(p.position.x,4), 'future heading does not advance current movement or position sampling')
+c,p = current(0.8)
+check(c.movement==0 and near(p.position.x,8), 'current input cursor remains before future movement boundary')
+command,commandTime = future(1.9,0.4)
+check(commandTime==2 and near(command.position.x,20), 'command horizon clamps at route duration')
+command,commandTime = future(0.4,0.5)
+command,commandTime = future(0.41,0.01)
+check(near(commandTime,0.42) and near(command.position.x,4.2), 'variable frame duration does not retain a stale future horizon')
+local futureSlow, futureFast = pure.newCommandSampler(route()),pure.newCommandSampler(route())
+for i=0,4 do futureSlow(i*0.2,0.2) end
+for i=0,99 do futureFast(i*0.01,0.01) end
+local endSlow,timeSlow=futureSlow(0.8,0.2); local endFast,timeFast=futureFast(0.99,0.01)
+check(near(timeSlow,timeFast) and near(endSlow.camera.yaw,endFast.camera.yaw), 'different update rates select identical heading for identical endpoint time')
+check(not pcall(future,0,-0.1), 'negative command delta rejected')
+check(not pcall(future,0,0/0), 'nonfinite command delta rejected')
 
 -- Mock the actual PLAYER file for timing, override release, policy drain and errors.
 local function playerFixture(seedX, seedCell)
     local clock, position, yaw, pitch, paused = 0,{x=seedX or 0,y=0,z=0},math.pi-0.1,0.1,false
+    local actorYaw, actorPitch = math.pi-0.1,0.1
     local calls, messages, events, quit, flags = {},{}, {},false,{movement=false,combat=false,ui=false}
     local actor = { controls={}, ATTACK_TYPE={NoAttack=0},position=position,
-        cell={id=seedCell or 'Balmora1',isExterior=true}, rotation={getYaw=function() return yaw end,getPitch=function() return pitch end} }
+        cell={id=seedCell or 'Balmora1',isExterior=true}, rotation={getYaw=function() return actorYaw end,getPitch=function() return actorPitch end} }
     local fakeCamera={MODE={FirstPerson=1},getYaw=function() return yaw end,getPitch=function() return pitch end,
         setYaw=function(v) yaw=v end,setPitch=function(v) pitch=v end,setMode=function() end,setFieldOfView=function() end}
     local fakeCore={getSimulationTime=function() return clock end,getRealTime=function() return clock end,
@@ -152,4 +172,14 @@ f.policy({session=string.rep('a',32),event='policy_stopped',ready=false,qualifie
 for i=1,7 do f.tick(2+i,1) end
 check(lastEvent(f,'finish').reason=='hostile_policy_pending_at_exit' and not lastEvent(f,'finish').policy_observer_drained,
     'pending final disable confirmation cannot claim drained observer')
+f=playerFixture(); ready(f); f.tick(0,1)
+local initialCheck=lastEvent(f,'check')
+check(near(initialCheck.command_time,1) and initialCheck.frame_simulation_delta==1,
+    'PLAYER observation records commanded endpoint and current simulation delta')
+check(f.actor.controls.movement==0 and near(f.actor.controls.yawChange,0.2),
+    'PLAYER leads heading without prematurely taking future movement input')
+check(initialCheck.actual_actor_yaw_before==initialCheck.actor_yaw_after_write,
+    'camera setter readback does not pretend mechanics already rotated actor')
+check(near(initialCheck.camera_postwrite_yaw_error,0) and initialCheck.postwrite_readback_phase,
+    'postwrite camera readback is separated from pre-command observations')
 print('Playback core and PLAYER mock checks passed: '..checks)

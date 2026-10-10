@@ -72,6 +72,8 @@ function New-OptimizedMWPlaybackSession {
     $session.manifest.mode='private_physics_input_replay_preview'
     $session.manifest.scope='Visible private input playback with path/camera observations. No optimization benchmark or performance acceptance.'
     $session.manifest.starting_location_mode='load_copied_captured_start_no_teleport'
+    $session.manifest.frozen_configuration.mode='verified_baseline_inputs_before_playback_derivation'
+    $session.manifest.frozen_configuration.save_load_status='Baseline seed retained privately; separate playback_start copy is loaded by top-level arguments'
     $session.manifest | Add-Member -NotePropertyName playback_start -NotePropertyValue $startIdentity
     $session.manifest | Add-Member -NotePropertyName source_capture -NotePropertyValue $receipt.inputs_before
     $session.manifest | Add-Member -NotePropertyName source_session -NotePropertyValue $receipt.source_session
@@ -186,4 +188,8 @@ function Invoke-OptimizedMWRoutePlayback {
         return $summary
     }finally{foreach($name in $environment.Keys){[Environment]::SetEnvironmentVariable($name,$environment[$name],'Process')}}
 }
-if(-not $playbackInvocation.Library){Invoke-OptimizedMWRoutePlayback}
+if(-not $playbackInvocation.Library){
+    $playbackResult=Invoke-OptimizedMWRoutePlayback
+    $playbackResult
+    if(-not $playbackInvocation.Prepare -and -not $playbackResult.input_replay_complete){exit 1}
+}
