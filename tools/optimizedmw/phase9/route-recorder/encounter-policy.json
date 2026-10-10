@@ -1,0 +1,886 @@
+{
+  "schema": 1,
+  "frozen_config_sha256": "b37fe557f69067667db04225d0478877a5d04b178e68e2911737d7ad6ee9ec62",
+  "hostile_record_ids": [
+    "ab_fau_spiderparasol",
+    "ab_fau_spiderparasolbby",
+    "cliff racer",
+    "cliff racer_blighted",
+    "cliff racer_diseased",
+    "guar_feral",
+    "kagouti",
+    "kagouti_diseased",
+    "kwama forager",
+    "mudcrab",
+    "mudcrab-diseased",
+    "netch_betty",
+    "netch_bull",
+    "nix-hound",
+    "rat",
+    "rat_diseased",
+    "scrib",
+    "scrib diseased",
+    "t_glb_cre_landdreu_01",
+    "t_glb_cre_landdreuds_01",
+    "t_mw_fau_beetlegr_01",
+    "t_mw_fau_beetlegrds_01",
+    "t_mw_fau_guarfrds_01",
+    "t_mw_fau_kwafrgds_01",
+    "t_mw_fau_mucklch_01",
+    "t_mw_fau_mucklchds_01",
+    "t_mw_fau_netblds_01",
+    "t_mw_fau_netbtyds_01",
+    "t_mw_fau_nixhds_01",
+    "t_mw_fau_trllsw_01",
+    "t_mw_fau_trllswds_01",
+    "t_mw_fau_yethbug_01"
+  ],
+  "scope": "Private calibration only. Explicit record suppression covers the checked all-level wild-creature encounter closure, including alternate spawns. Ordinary NPCs remain. This is a bounded content audit, not universal enemy discovery or guaranteed combat preemption.",
+  "evidence_session": "b9a378d8bd244b6fb0afc735f847de34",
+  "evidence_sha256": "d136d2459738445f62b3d99d11d471315218cad7e28269f1ef773e429fcadca4",
+  "limitations": [
+    "No proof dynamic rat parent placement; spawn source is private engine custom data.",
+    "All-level closure ignores selection probability and includes every permitted member.",
+    "Content read live from captured data paths; record hashes and file identities retained.",
+    "Script-created/dynamic/override creatures outside content placements remain unproven.",
+    "Exterior cell union is a bounded route subset; neighboring active grid may contain other encounters.",
+    "Queued enabled=false still cannot guarantee AI preemption."
+  ],
+  "content_files": [
+    {
+      "content": "Morrowind.esm",
+      "path": "C:\\Games\\Steam\\steamapps\\common\\Morrowind\\Data Files\\Morrowind.esm",
+      "bytes": 79837557,
+      "sha256": "5c3c8c2cbd20e25901b59b3ece33d36b7ef0e3d60ad8d11828bcc61a5ead1647"
+    },
+    {
+      "content": "Tribunal.esm",
+      "path": "C:\\Games\\Steam\\steamapps\\common\\Morrowind\\Data Files\\Tribunal.esm",
+      "bytes": 4565686,
+      "sha256": "2ace511f23cc2a9ddd5f3aa59c7919789b9378cf4b17c8ae3375dd6b782f3f2b"
+    },
+    {
+      "content": "distant_seafloor_2.00.esm",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Water\\DistantSeafloorforOpenMW\\00 Core\\distant_seafloor_2.00.esm",
+      "bytes": 14688699,
+      "sha256": "ed38d9cb39249599a870d08080dd930ceec63ec203c1d036f02257ffc09010c8"
+    },
+    {
+      "content": "Bloodmoon.esm",
+      "path": "C:\\Games\\Steam\\steamapps\\common\\Morrowind\\Data Files\\Bloodmoon.esm",
+      "bytes": 9631798,
+      "sha256": "bd27090d0e6ad4c1bf1abc83f1a2dac56fcc82cae7bfe8263c413fb301801357"
+    },
+    {
+      "content": "H3lp Yours3lf.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\ModdingResources\\H3lpYours3lfOpenMWHelperInterfaces\\H3lp Yours3lf.esp",
+      "bytes": 792,
+      "sha256": "fc92eec8eb517e1ad04110e096a8e78e48d3e99cc202355e011e2600f9913689"
+    },
+    {
+      "content": "Static Switching System.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\ModdingResources\\Static Switching System 57282 1.0 2026-09-11T18-53Z DBQdBR1Q\\Static Switching System.esp",
+      "bytes": 621,
+      "sha256": "cdf999e946188bcee4a99d60c871a51f41beba359a31a4918fd7dc68f6e9106c"
+    },
+    {
+      "content": "Patch for Purists.esm",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\PatchesFixesandConsistency\\PatchforPurists\\Patch for Purists.esm",
+      "bytes": 5497108,
+      "sha256": "9b290d342c7714f53e83a47cb0f0b98ce5af00bee17afaecb84dbee16d5a2d42"
+    },
+    {
+      "content": "Tamriel_Data.esm",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\ModdingResources\\Tamriel Data (HD) 59927 26.08 2026-08-23T04-15Z 4vY6vjul\\00 Data Files\\Tamriel_Data.esm",
+      "bytes": 17199325,
+      "sha256": "e94ca3a5c62e0228ac3782e813cae58c4e10da2e9e8b7611e0a8f5ff9a98d06f"
+    },
+    {
+      "content": "OAAB_Data.esm",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\TexturePacks\\OAAB_Data-49042-2-6-2-1780155954\\00 Core\\OAAB_Data.esm",
+      "bytes": 1713532,
+      "sha256": "b7e87201c2683415cafc3a23462acd32dd6c9b276b91da2813a6f17ef0412e5f"
+    },
+    {
+      "content": "TR_Mainland.esm",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Landmasses\\Tamriel Rebuilt\\00 Core\\Data Files\\TR_Mainland.esm",
+      "bytes": 241093900,
+      "sha256": "661c96c6aa5e517d897f8b9de93c814d2aca16fd17b6e4ce7869486e3737064b"
+    },
+    {
+      "content": "TR_Factions.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Landmasses\\Tamriel Rebuilt\\01 Faction Integration\\Data Files\\TR_Factions.esp",
+      "bytes": 116259,
+      "sha256": "5a645aae80d02b9634f5da482f97df87fb1cc77aaf20bf0fdb26c272996b671e"
+    },
+    {
+      "content": "Sky_Main.esm",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Landmasses\\SkyrimHomeOfTheNords\\00 Core\\Sky_Main.esm",
+      "bytes": 31572765,
+      "sha256": "fb57c80859852366c504c221a4cbab22c451c81edc8625a5f7f8fe1cf7026d7f"
+    },
+    {
+      "content": "Cyr_Main.esm",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Landmasses\\ProjectCyrodiil\\00 Core\\Cyr_Main.esm",
+      "bytes": 48901370,
+      "sha256": "cccbfcd590b5e9adfbf204a1c290d7ebe2e197a3e0cd9964c8882de444f49d0b"
+    },
+    {
+      "content": "TR_Dra-Vashai-V3.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Quests\\TamrielRebuiltIntroductionQuestHelpaKhajiitreachtheCityofGoodPeople\\TR_Dra-Vashai-V3.esp",
+      "bytes": 248290,
+      "sha256": "cbbd9ba953a2ffc4bc5140dc8c5239350af0edbaaf6e41553193b49e023dc1c2"
+    },
+    {
+      "content": "AFFresh.esm",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Quests\\AFFresh\\AFFresh.esm",
+      "bytes": 815592,
+      "sha256": "1ef09b8669a9de2fb1e209af0f7886d4fd0c5199dc13144fc3196bc7a0af77d2"
+    },
+    {
+      "content": "DistantEbonTower.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\PatchesFixesandConsistency\\DistantEbonTowerforOpenMW\\DistantEbonTower.ESP",
+      "bytes": 954,
+      "sha256": "48974a8546b93510de5bdebd193612219b5a96c9211d1d2696a46b4a96a55d79"
+    },
+    {
+      "content": "distant seafloor bloodmoon edges fix.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Water\\DistantSeafloorforOpenMW\\01 Patch for vanilla Solstheim location\\distant seafloor bloodmoon edges fix.esp",
+      "bytes": 2089637,
+      "sha256": "e04c18a15a95dc584bbfd5933ff578b38626f3377df6a8a06bbb6196e973ee47"
+    },
+    {
+      "content": "adamantiumarmor.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\PatchesFixesandConsistency\\UnofficialMorrowindOfficialPluginsPatched\\00 adamantium armor\\adamantiumarmor.esp",
+      "bytes": 6036,
+      "sha256": "b2a225a4db3e4ff5650ad67af06de98ecc4fa688b0a0fd3979dd95ca1125f7a6"
+    },
+    {
+      "content": "AreaEffectArrows.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\PatchesFixesandConsistency\\UnofficialMorrowindOfficialPluginsPatched\\01 area effect arrows\\AreaEffectArrows.esp",
+      "bytes": 26493,
+      "sha256": "0b0942714c1ec8b2af2b403049d0e8074e7e0fcd09151ac2d0de1a9c092ed7e3"
+    },
+    {
+      "content": "bcsounds.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\PatchesFixesandConsistency\\UnofficialMorrowindOfficialPluginsPatched\\02 bitter coast sounds\\bcsounds.esp",
+      "bytes": 29711,
+      "sha256": "636b31bdc32c648e2e539c8060952a9ec8b28254e4b60fe2cedd1f9e700eca06"
+    },
+    {
+      "content": "entertainers.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\PatchesFixesandConsistency\\UnofficialMorrowindOfficialPluginsPatched\\03 entertainers\\entertainers.esp",
+      "bytes": 126768,
+      "sha256": "23e838937ac58fb72f2ba000111f2113d9aeea0b3e3c6bc125a5680419fe5727"
+    },
+    {
+      "content": "EBQ_Artifact.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\PatchesFixesandConsistency\\UnofficialMorrowindOfficialPluginsPatched\\04 helm of tohan\\EBQ_Artifact.esp",
+      "bytes": 26444,
+      "sha256": "71b911ba157c36b0c9acfcd6fc3f86d2c0b7d3afef05f0c8187c68f48817aa0b"
+    },
+    {
+      "content": "LeFemmArmor.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\PatchesFixesandConsistency\\UnofficialMorrowindOfficialPluginsPatched\\05 lefemm armor\\LeFemmArmor.esp",
+      "bytes": 9832,
+      "sha256": "42ed719e4397647b3c44df20904b23c82e0137bad41db0812183b2676c00d776"
+    },
+    {
+      "content": "master_index.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\PatchesFixesandConsistency\\UnofficialMorrowindOfficialPluginsPatched\\06 master index\\master_index.esp",
+      "bytes": 44600,
+      "sha256": "b34e0c2ec199d04ebe4132b39390faf6aa9cbff773e6931da5aaa9c501304864"
+    },
+    {
+      "content": "k_weather.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\SkiesandWeather\\KirelsInteriorWeather\\k_weather.esp",
+      "bytes": 16712,
+      "sha256": "6aa40c36ec6f98e6ecb796008b6687c4691fe28335121b02817a0c02b18201ac"
+    },
+    {
+      "content": "correctUV Ore Replacer_fixed.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Gameplay\\GraphicHerbalismMWSEandOpenMWEdition\\00 Correct UV Ore + README\\correctUV Ore Replacer_fixed.esp",
+      "bytes": 56726,
+      "sha256": "8d8f015d169544081ef378a52c4cb2f654fc5ba43878840997a5af3bbbf7291f"
+    },
+    {
+      "content": "AFFA_Wilhelm.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\GuildsFactions\\WilhelmoftheAedra\\AFFA_Wilhelm.esp",
+      "bytes": 93651,
+      "sha256": "c2fae46d535d7e9b9b52bba7ce969d401ccf75df15df86506e77c4fde215a365"
+    },
+    {
+      "content": "AFFA_Wilhelm_TopicFix.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\PatchesFixesandConsistency\\WilhelmoftheAedraTopicFixESP\\AFFA_Wilhelm_TopicFix.esp",
+      "bytes": 938,
+      "sha256": "f4bb530a6afe6d94bd4ac956c17e7eecd3a24e7674508cc3c4f623eca57f1d6d"
+    },
+    {
+      "content": "Containers Animated.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\FurnitureandClutter\\OpenMWContainersAnimated\\Containers Animated\\Containers Animated.esp",
+      "bytes": 3256,
+      "sha256": "239f6b73f7f5461d64c23524427ca350239bd7f96d14bf95e939fc1ca077760f"
+    },
+    {
+      "content": "Lake Fjalding Anti-Suck.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Performance\\MorrowindOptimizationPatch\\01 Lake Fjalding Anti-Suck\\Lake Fjalding Anti-Suck.ESP",
+      "bytes": 30451,
+      "sha256": "3f946f3218e25697e3cb2b073742692a5aea60c8b6e2bc2952271b906547d7e0"
+    },
+    {
+      "content": "MorrowindInteriorsProject_Bloodmoon.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Architecture\\MorrowindInteriorsProject\\Data Files\\MorrowindInteriorsProject_Bloodmoon.ESP",
+      "bytes": 312439,
+      "sha256": "739ee71a7e9e1f1a498fcc8657262eea5a127c5393d933233e5d110ba1416ffd"
+    },
+    {
+      "content": "MorrowindInteriorsProject_TR.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Architecture\\MorrowindInteriorsProject\\Data Files\\MorrowindInteriorsProject_TR.ESP",
+      "bytes": 222856,
+      "sha256": "a15ada80b851d73807d559adb29da395bdbd3773577badf1bb9a7db423900294"
+    },
+    {
+      "content": "Cantons_on_the_Global_Map_v1.1.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\UserInterface\\CantonsontheGlobalMap\\Data Files\\Cantons_on_the_Global_Map_v1.1.esp",
+      "bytes": 455725,
+      "sha256": "b52ba20524a6b6766fcbc7a817de2e4608ec5b1af4024b70cfb08685c00d5c05"
+    },
+    {
+      "content": "S3maphore.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Music\\S3maphoreOpenMWMusicManagementfromtheFuture\\00 Core\\S3maphore.esp",
+      "bytes": 1091,
+      "sha256": "101c064738b942bfec5b4e831545d37b707d47c7b19399fac23e31aedc51db45"
+    },
+    {
+      "content": "Better Bodies.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Bodies and Heads\\Better Bodies underwear only for mod managers\\Better Bodies.esp",
+      "bytes": 19394,
+      "sha256": "e07d05c5ac4d013a6c74b4fdc7590a180d3bbcd3cc61e45f428a9020a2de3408"
+    },
+    {
+      "content": "Hag Hair for MacKom.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Bodies and Heads\\Mackom's Heads and Patches\\Mackom's Head Base\\New Hairs for MacKom Races Redone-47398-1-0-1576700331\\Data Files\\Hag Hair for MacKom.ESP",
+      "bytes": 1579,
+      "sha256": "11ff8446b2d8967306319ac6921e58a51fd94267516ef08f37c76ec3281d9e3e"
+    },
+    {
+      "content": "Basic Chargen.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Story\\Basic Chargen (Complete Edition) 57525 3.02 2026-06-16T08-14Z AbOYbtvU\\Basic Chargen.esp",
+      "bytes": 132696,
+      "sha256": "f21085f18dfce37472101c3ef744184c18833b55505bc3bb1f432d73ee209f9d"
+    },
+    {
+      "content": "StatsWindow.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\UserInterface\\Stats Window Extender-57727-1-3-0-1776436740\\StatsWindow.ESP",
+      "bytes": 674,
+      "sha256": "95d7a3dd480afd1efbceea6c40be5f7ede4b3bb15e8d0226fd71842ca620b4f5"
+    },
+    {
+      "content": "ncg.omwaddon",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Leveling\\Natural Character Growth 57801 2.3.2 2026-07-29T17-01Z muLWu5l0\\01 NCG - Normal\\ncg.omwaddon",
+      "bytes": 11218,
+      "sha256": "abf2923659d1794bf9d36a241881e4d08f092f7b19ce78ca8cccb3b745d65bcc"
+    },
+    {
+      "content": "skill-evolution.omwaddon",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Leveling\\Skill Evolution 57802 2.4.4 2026-07-29T16-54Z DBQdBRzd\\00 Core\\skill-evolution.omwaddon",
+      "bytes": 1008,
+      "sha256": "2e7f392f63b2afe8608f0a9b8b4428269c5055b69d188b837cbb40a526f5ec52"
+    },
+    {
+      "content": "FairCare.omwaddon",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Combat\\FairCare 55293 5.0.5 2026-07-29T16-23Z 5VduVasP\\00 Core\\FairCare.omwaddon",
+      "bytes": 1728,
+      "sha256": "74de1503cc0bb52bac7285f4e9d56dc0609f19489266d3db575cfb1417149c5f"
+    },
+    {
+      "content": "Rideable_Silt_Striders.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\Rideable Silt Striders-58158-1-1-2-1771557832\\BensMods_RideableSiltstriders\\Rideable_Silt_Striders.esp",
+      "bytes": 2880,
+      "sha256": "b6767b28aa0ebd2f14e4a8777efbdbe9245886cf3e67fd7de7cdc5e33504c5dd"
+    },
+    {
+      "content": "TR_Firewatch_wells.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\1 - Cities-57735-1-2-1762291474\\TR_Firewatch_wells.ESP",
+      "bytes": 937,
+      "sha256": "77808a87c8e54b533b8ea080fe019ad7c8297936279a9e757412dbf868f391c9"
+    },
+    {
+      "content": "TR_Narsis_wells.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\1 - Cities-57735-1-2-1762291474\\TR_Narsis_wells.ESP",
+      "bytes": 1779,
+      "sha256": "e02a3afba3bbb5aee96a8d14ca5806e09f3c4ebd1afc81cb09152eda85d55286"
+    },
+    {
+      "content": "TR_Necrom_wells.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\1 - Cities-57735-1-2-1762291474\\TR_Necrom_wells.ESP",
+      "bytes": 962,
+      "sha256": "08f2b5c1042660d2431218fd539bacfa2f14af7291a5adceadefd35a491c7a51"
+    },
+    {
+      "content": "TR_OldEbonheart_wells.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\1 - Cities-57735-1-2-1762291474\\TR_OldEbonheart_wells.ESP",
+      "bytes": 906,
+      "sha256": "b754dd5fbbe2e44b94a7fcd8b15fac05b8f6f930076ba05ad8d5e287b4c662c2"
+    },
+    {
+      "content": "TR_PortTelvannis_wells.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\1 - Cities-57735-1-2-1762291474\\TR_PortTelvannis_wells.ESP",
+      "bytes": 924,
+      "sha256": "19528a46051b1734b6bf6157bd233bc8ba5cef722644aa4cdc4fa819dd87f42f"
+    },
+    {
+      "content": "TR_MinorSettlements_wells.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\2 - Minor Settlements (Merged)-57735-1-2-1762292225\\TR_MinorSettlements_wells.ESP",
+      "bytes": 9265,
+      "sha256": "f84792f8e72b03b20651fbac58a91e7539730a280bd1bf579a9f2690ca4a3105"
+    },
+    {
+      "content": "go-home.omwaddon",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\Lua NPC Schedule 58635 1.6.7 2026-08-16T02-15Z X1vG1lJ4\\go-home.omwaddon",
+      "bytes": 608,
+      "sha256": "be63468734b3c219ba2534ae9e8932b87a5409399a81819d6d9a500d859f86d8"
+    },
+    {
+      "content": "Sun's Dusk Cooking.omwaddon",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\Sun's Dusk Survival and Needs-57526-1-9-8-1781145114\\Sun's Dusk\\Sun's Dusk Cooking.omwaddon",
+      "bytes": 192122,
+      "sha256": "85b65e53ce9f02f64fa3da652fc9dba404772048570859c9514074a3155508a3"
+    },
+    {
+      "content": "Sun's Dusk.omwaddon",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\Sun's Dusk Survival and Needs-57526-1-9-8-1781145114\\Sun's Dusk\\Sun's Dusk.omwaddon",
+      "bytes": 135991,
+      "sha256": "18d5116d613d709c4cdd36b22862c44c227ab0ef66061a519ed59b5f2c04adc7"
+    },
+    {
+      "content": "GlobalMapMarkers.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\Global Map Markers-43248-1-34-1746642489\\GlobalMapMarkers.ESP",
+      "bytes": 237013,
+      "sha256": "0794c4b1998f822d66448e94647996600af7ee1c045bfb13c46d0d55e923a9c6"
+    },
+    {
+      "content": "IncreaseServicePrices.omwaddon",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Skills\\Make A Profit 58836 1.1 2026-06-27T00-26Z URWDR1vh\\Make A Profit\\IncreaseServicePrices.omwaddon",
+      "bytes": 798,
+      "sha256": "572c31e9d02f0eefa2da1c1084a6becb008bc7749630693eeac77ed54e77ece1"
+    },
+    {
+      "content": "Make A Profit.omwaddon",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Skills\\Make A Profit 58836 1.1 2026-06-27T00-26Z URWDR1vh\\Make A Profit\\Make A Profit.omwaddon",
+      "bytes": 702,
+      "sha256": "67633301a6222357848480e51988e53e7d7da7e1896689b9c742f5967515fdd9"
+    },
+    {
+      "content": "Expansion Delay.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Story\\Expansion Delay-47588-1-3-1612481103\\Expansion Delay.ESP",
+      "bytes": 10547,
+      "sha256": "b9a72e1c5413815ad658240969a7819335630cb5f2e05de544817a545b0ef5f5"
+    },
+    {
+      "content": "OpenMW_luahelper.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Tools\\OpenMW lua helper utility-54629-0-56-1754247063\\OpenMW_luahelper.esp",
+      "bytes": 2169,
+      "sha256": "767a12688461400c95c6aa0e7c6eb6d2e5f3daec9e2124cc20310979096a4764"
+    },
+    {
+      "content": "OpenMW_luahelper_dialog.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Tools\\OpenMW lua helper utility-54629-0-56-1754247063\\OpenMW_luahelper_dialog.esp",
+      "bytes": 11151097,
+      "sha256": "04beb2217b7873737525caeae8f153caf737e777c7f451d5d1e1f992692c8980"
+    },
+    {
+      "content": "Uncharted Artifacts.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\TexturePacks\\OAAB Shipwrecks 51364 3.2 2026-07-02T10-14Z Fsqls0on\\01 Patch - Uncharted Artifacts\\Uncharted Artifacts.esp",
+      "bytes": 68656,
+      "sha256": "2cf0068a5873940a4e06efaa5525ff5bb9ae9d00fc29f55e50dbf98b55b275ec"
+    },
+    {
+      "content": "OAAB - Shipwrecks.esm",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\TexturePacks\\OAAB Shipwrecks 51364 3.2 2026-07-02T10-14Z Fsqls0on\\00 Core\\OAAB - Shipwrecks.esm",
+      "bytes": 1082464,
+      "sha256": "2d17d025460fee6c019a011c872c6b48e45dd97e9435f7f1d38314abdcf8ac8f"
+    },
+    {
+      "content": "OAAB - Shipwrecks - TR Patch.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\TexturePacks\\OAAB Shipwrecks 51364 3.2 2026-07-02T10-14Z Fsqls0on\\02 Patch - TR Patch\\OAAB - Shipwrecks - TR Patch.ESP",
+      "bytes": 122389,
+      "sha256": "8b6c474612aac6d517eb4b59d98ca814a3c3aae98872ef538b1959fe089388d2"
+    },
+    {
+      "content": "Diverse Khajiit.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Diverse Khajiit-48832-2-3-1746167404\\Diverse Khajiit.ESP",
+      "bytes": 28862,
+      "sha256": "0ef62810968f56d5d665e132818dd92326217472ff4d45c0e7c2d25ad856ade0"
+    },
+    {
+      "content": "Khajiit-ALL.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Khajiit Head Pack 1-4\\Khajiit-ALL.ESP",
+      "bytes": 40550,
+      "sha256": "48132cf66b445b99a3e52b2021437862c18e1c1a48de1d88b7c8ed5e02cdd493"
+    },
+    {
+      "content": "Khajiit-BaseReplace.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Khajiit Head Pack 1-4\\Khajiit-BaseReplace.ESP",
+      "bytes": 1442,
+      "sha256": "e73cbedeaf6a49087edcef79343edc8d7706e0e1176005e5c53a4334bc0189d4"
+    },
+    {
+      "content": "Khajiit-Hair.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Khajiit Head Pack 1-4\\Khajiit-Hair.ESP",
+      "bytes": 4953,
+      "sha256": "dbce06bd49b01ca8ababae892a39d25d582b88ca9ccb6f45c7805d5e7f05b1fa"
+    },
+    {
+      "content": "Khajiit-NPCPlayable.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Khajiit Head Pack 1-4\\Khajiit-NPCPlayable.ESP",
+      "bytes": 33614,
+      "sha256": "6923f40650a0c74e9dfe238c57f310f89ec27a3caed6e41c13f5a10e94e10ee3"
+    },
+    {
+      "content": "Khajiit-NPCReplace.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Khajiit Head Pack 1-4\\Khajiit-NPCReplace.ESP",
+      "bytes": 33614,
+      "sha256": "96e99677d728226d57e1fb7bb1544059be56fefbf572b61603f4a7cc80559d27"
+    },
+    {
+      "content": "Khajiit-VampiresPlayable.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Khajiit Head Pack 1-4\\Khajiit-VampiresPlayable.ESP",
+      "bytes": 1702,
+      "sha256": "f12a2ddd12238db71be9d0f6dcf870c8be293eb8e4b786d576efba4ac374480e"
+    },
+    {
+      "content": "BullseyeGMSTs.omwaddon",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Combat\\Bullseye 58511 1.3.8 2026-08-19T12-26Z 3aD5acvZ\\BullseyeGMSTs.omwaddon",
+      "bytes": 655,
+      "sha256": "1e7eef2c91c795043c0a219d022ecbce23ed01cce151671a39720fe8748f0575"
+    },
+    {
+      "content": "Better Bounties.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Quests\\Better Bounties 59050 1.3.1 2026-07-21T15-40Z 8MahMrKh\\00 Base\\Better Bounties.esp",
+      "bytes": 367628,
+      "sha256": "0d9c950ef84f65865155df42b2523c431d21be4ba9d68db9d630daff8b2de4ac"
+    },
+    {
+      "content": "Fishing.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Survival\\Fishing-47230-2-0-1572276183\\Fishing.ESP",
+      "bytes": 81112,
+      "sha256": "216c948b6db5a1d4ef4b10d3414ee6e2e108a088cb6d76e1e167b1bb10f08058"
+    },
+    {
+      "content": "Fishing-Expansion.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Survival\\Fish With Fishing Poles Expansion-50065-2-1-1629424576\\00 Fish Expansion Core\\Fishing-Expansion.esp",
+      "bytes": 36327,
+      "sha256": "2466b4e673f445839b8da6d84d82089eff109a102e298d43f3e65c04883a796e"
+    },
+    {
+      "content": "betterpersuasionTRPT.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Skills\\Speechcraft\\Better Persuasion (TR PT version) 58903 1.5.1 2026-08-23T23-13Z VTIFToSj\\betterpersuasionTRPT.esp",
+      "bytes": 278258,
+      "sha256": "f3771de42e6ba8d805d6935c4b5e936d3f57accdb85896222263023017f52cc0"
+    },
+    {
+      "content": "Dandion's MacKom-Like Heads.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Bodies and Heads\\Mackom's Heads and Patches\\Dandions heads fixed normals 1.1-55668-1-1-1737834696\\Dandion's MacKom-Like Heads.ESP",
+      "bytes": 5113,
+      "sha256": "078244b233f5764e382ed72c0d2b5702c4477e6b3ffa6e2ae788124477178bd3"
+    },
+    {
+      "content": "Better Clothes Definitive Edition.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Clothing\\Better Clothes Definitive Edition 59678 1.0.2 2026-07-27T12-24Z p6TN6dpc\\Better Clothes Definitive Edition\\Better Clothes Definitive Edition.ESP",
+      "bytes": 111122,
+      "sha256": "744b44e33a7c97af536e1024d4273ad24a776c7afe5196fad3a52fe6391f1366"
+    },
+    {
+      "content": "BetterSwimmingSounds.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Skills\\Morroswim - Aquatics skill mod 57804 1.2 2026-06-30T16-04Z kg1zg4DD\\Swimming\\BetterSwimmingSounds.esp",
+      "bytes": 509,
+      "sha256": "818419118435c1559743d20bc54487d92ddbcbbdaefe8c3a5f7f3b85bf42d7b9"
+    },
+    {
+      "content": "Swimming.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Skills\\Morroswim - Aquatics skill mod 57804 1.2 2026-06-30T16-04Z kg1zg4DD\\Swimming\\Swimming.esp",
+      "bytes": 534,
+      "sha256": "a3afba111c99e21e4c8807a1140163d1e7ac436952816d72e947b94e46154139"
+    },
+    {
+      "content": "SimplyMining.omwaddon",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Skills\\SimplyMining-57177-2-9-1774707267\\SimplyMining\\SimplyMining.omwaddon",
+      "bytes": 5453,
+      "sha256": "3abf26ec2c81cb0b969af45f7b65aab931ca89edca2e2ba0157dcdcffe29ccd2"
+    },
+    {
+      "content": "SneakIsGoodNow.omwaddon",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Skills\\SneakIsGoodNow-58441-1-0-7-1776077857\\SneakIsGoodNow.omwaddon",
+      "bytes": 600,
+      "sha256": "10df95031deba12ab5b0ee42c96458441b7425c20e4462999947c8a70c6a1d9f"
+    },
+    {
+      "content": "Devilish Sheathe Your Weapon.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\Devilish mods\\Devilish Sheathe Your Weapon Gothic Style (OpenMW) 57892 2.1 2026-09-01T14-30Z ih57h8V3\\Devilish Sheathe Your Weapon.esp",
+      "bytes": 25550,
+      "sha256": "884c950ac48e74ff0b7a53cc6aac3f74c2396d1c98bfd6d7e83fc16f210e3a2c"
+    },
+    {
+      "content": "WakeUp.omwaddon",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\Wake Up 58378 1.6.1 2026-08-14T07-56Z aoBVo9Py\\WakeUp.omwaddon",
+      "bytes": 859,
+      "sha256": "fa72bc69bc4780d7e89c4fdf987e19eb8fb8c7a8e16e30d1dce113bf65c31a94"
+    },
+    {
+      "content": "hunterwind.omwaddon",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Survival\\Hunterwind-54808-4-02-1775218492\\hunterwind.omwaddon",
+      "bytes": 386809,
+      "sha256": "46e6ff62483b00d812b71ff7f1240b28a6ef30a08908b3d27371aec11c28afb8"
+    },
+    {
+      "content": "Tamrielic Integrations - Merged.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Overhauls\\Tamrielic Integrations - Merged 57488 1.4 2026-08-31T15-43Z URWDR7aP\\Tamrielic Integrations - Merged.ESP",
+      "bytes": 333238,
+      "sha256": "a9096fed8d0c97d29e3319e73d3f10ac0a6fc073c9c7c4d9591906ef4a37cd2e"
+    },
+    {
+      "content": "Beautiful cities of Morrowind.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\BCOM\\BCOM_City_Stack_Handoff_v4\\Beautiful cities of Morrowind.ESP",
+      "bytes": 9453756,
+      "sha256": "9ae204770cfa6ca675335bc81485166b5a0a0f3c703370e655eb1e57f47236a1"
+    },
+    {
+      "content": "TR_BCOM_Patch.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\BCOM\\BCOM_City_Stack_Handoff_v4\\TR_BCOM_Patch.ESP",
+      "bytes": 12925,
+      "sha256": "728d49c5dac23eee473812c58a505d900d000eb6545d245c11c82480085700ff"
+    },
+    {
+      "content": "BCoM_PfP_patch_01.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\BCOM\\BCOM_City_Stack_Handoff_v4\\BCoM_PfP_patch_01.ESP",
+      "bytes": 1688,
+      "sha256": "f782f86cc967693fb9d6374048c181641015d52adaf3a8eb1e1f44c69191b9c7"
+    },
+    {
+      "content": "Province_Cyrodiil_BCOM_patch.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\BCOM\\BCOM_City_Stack_Handoff_v4\\Province_Cyrodiil_BCOM_patch.ESP",
+      "bytes": 4819,
+      "sha256": "d87f051dc0fcfb5860b6ecbcaf1b33372c11b352fc171ea6075b7c7562e26af1"
+    },
+    {
+      "content": "Global_Map_Cantons_BCOM_patch.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\BCOM\\BCOM_City_Stack_Handoff_v4\\Global_Map_Cantons_BCOM_patch.esp",
+      "bytes": 311451,
+      "sha256": "3760d8220c1fa2fbc4169385742e99fe2618c871ce4b56bc65195b66237e3b9c"
+    },
+    {
+      "content": "GITD_Telvanni_Dormers.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\BCOM\\BCOM_City_Stack_Handoff_v4\\GITD_Telvanni_Dormers.ESP",
+      "bytes": 20584,
+      "sha256": "4076dd9fba696dd3a5a6291a827992246c4394d19e0dbf8fd6f6f58d2564263c"
+    },
+    {
+      "content": "BCOM_pathgrid_reset.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\BCOM\\BCOM_City_Stack_Handoff_v4\\BCOM_pathgrid_reset.ESP",
+      "bytes": 230790,
+      "sha256": "be7e2d3159e4b0463b0c3090ef55544cb05462ee1692651d5960185717a6812c"
+    },
+    {
+      "content": "LB_SeydaNeen_BCOM.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Swamp Fever Capital - BCOM Version 59845 1.2 2026-08-22T21-09Z YUgrUbRN\\LB_SeydaNeen_BCOM.esp",
+      "bytes": 195793,
+      "sha256": "cdbbb54dd95e395f16ebf4041efb9a2f6138df4f77f3e665a4c70ec9e3fdc720"
+    },
+    {
+      "content": "Sadrith Mora Seat Of Power Base.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Sadrith Mora BCOM Plus-53465-2-03-1776699831\\01 Sadrith Mora Seat Of Power Closed City\\Sadrith Mora Seat Of Power Base.esp",
+      "bytes": 863013,
+      "sha256": "d30e36c813cee17e9458fcf385cd5cd3de07f40be736b73d8db33f9fbef9f342"
+    },
+    {
+      "content": "OAAB Market.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Sadrith Mora BCOM Plus-53465-2-03-1776699831\\06 OAAB Market\\OAAB Market.ESP",
+      "bytes": 52989,
+      "sha256": "6aa01041655a2d4a89fee0cd1d2169939024a398e401fdd2abf48abd594066b5"
+    },
+    {
+      "content": "SadrithMoraBell.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Sadrith Mora BCOM Plus-53465-2-03-1776699831\\07 Belltower of Sadrith Mora\\SadrithMoraBell.ESP",
+      "bytes": 3462,
+      "sha256": "d9ebf08cc8e468b12f090a631ab44e06c9586592c6d3efdf1b3911634096dcd6"
+    },
+    {
+      "content": "Odai - Lifeblood of Balmora.esm",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Odai - Lifeblood of Balmora 55454 1.2.2 2026-09-08T19-50Z PjA4je09\\Odai - Lifeblood of Balmora.esm",
+      "bytes": 3209235,
+      "sha256": "e1064e48f29ceec20bc9df6e6014d7fceb0732ee47d54e0f7f855cea9151fb85"
+    },
+    {
+      "content": "OLoB - Customs.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Odai - Lifeblood of Balmora 55454 1.2.2 2026-09-08T19-50Z PjA4je09\\OLoB - Customs.ESP",
+      "bytes": 4022,
+      "sha256": "191f0db45ee2dc950b9eed2adfc0bc7b64fbfc6508179fe349fc789e3fceb437"
+    },
+    {
+      "content": "OLoB - Dialogue.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Odai - Lifeblood of Balmora 55454 1.2.2 2026-09-08T19-50Z PjA4je09\\OLoB - Dialogue.ESP",
+      "bytes": 9678,
+      "sha256": "4353025c8646c0a8fb11af44eba67745cb0d22e01ab54b91e8e1962eaaa3ff3c"
+    },
+    {
+      "content": "OLoB - Merchants.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Odai - Lifeblood of Balmora 55454 1.2.2 2026-09-08T19-50Z PjA4je09\\OLoB - Merchants.esp",
+      "bytes": 40868,
+      "sha256": "861108a9b5ab640934db56280c37b409944370346bc8e9bce733cf83d6aeb011"
+    },
+    {
+      "content": "OLoB - More Arches.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Odai - Lifeblood of Balmora 55454 1.2.2 2026-09-08T19-50Z PjA4je09\\OLoB - More Arches.ESP",
+      "bytes": 3997,
+      "sha256": "f281f9dbeafefb9d0f6c5050db048c6cf790eec085bec9e704148a1cab25d2d2"
+    },
+    {
+      "content": "OLoB - Patch for Purists Patch.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Odai - Lifeblood of Balmora 55454 1.2.2 2026-09-08T19-50Z PjA4je09\\OLoB - Patch for Purists Patch.esp",
+      "bytes": 698,
+      "sha256": "ea0d610bfe3e5d988198c9155df2fce87788b03b6240af21fdeb1139f6ed9da8"
+    },
+    {
+      "content": "OLoB - Stav MG.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Odai - Lifeblood of Balmora 55454 1.2.2 2026-09-08T19-50Z PjA4je09\\OLoB - Stav MG.ESP",
+      "bytes": 1030,
+      "sha256": "0b2ca473e29053451d84242e1a1fb74186ea74b6eac4d912d3ba5d0dcb939250"
+    },
+    {
+      "content": "OLoB - Water MiIl.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Odai - Lifeblood of Balmora 55454 1.2.2 2026-09-08T19-50Z PjA4je09\\OLoB - Water MiIl.ESP",
+      "bytes": 9468,
+      "sha256": "1c2003eb607e614e547fcebcf008f48637c5a8bed6fabebcb485ba6f5b491098"
+    },
+    {
+      "content": "RepopulatedMorrowind.ESM",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Repopulated Morrowind-51174-2-6-1703824812\\00 Core\\RepopulatedMorrowind.ESM",
+      "bytes": 2365341,
+      "sha256": "cc53181db317cbfdfc5c21ffdbd4ef9ced8e0b65eca901c902f34c16bcad4143"
+    },
+    {
+      "content": "RepopulatedMorrowind.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Repopulated Morrowind-51174-2-6-1703824812\\02 BCOM Repopulated Morrowind\\RepopulatedMorrowind.esp",
+      "bytes": 17691,
+      "sha256": "04dd2e619e87986789c739e3530a927559e10d5f20648cbd08d65b2740dce28d"
+    },
+    {
+      "content": "RepopulatedMorrowind_OAAB_Data.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Repopulated Morrowind-51174-2-6-1703824812\\02 BCOM Repopulated Morrowind\\RepopulatedMorrowind_OAAB_Data.ESP",
+      "bytes": 35488,
+      "sha256": "bbf3a1bee4f1fe61953af4060d08f99d9613b6a556bafb4eb95e9b9e8f3b6fa5"
+    },
+    {
+      "content": "RepopulatedBloodmoon.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Repopulated Morrowind-51174-2-6-1703824812\\03 Bloodmoon\\RepopulatedBloodmoon.ESP",
+      "bytes": 4084,
+      "sha256": "b7f5611552d490cd9fdca77bd9eefcf8a66766e1afee0ebaefe3bc335ddbd1d5"
+    },
+    {
+      "content": "RepopulatedMainland.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Repopulated_ProjectTamriel_Current_Compatibility\\RepopulatedMainland.ESP",
+      "bytes": 66437,
+      "sha256": "a771e6609a2117fd31e1e4299b859a1f5ea1d15af154d989bed09e13cae91408"
+    },
+    {
+      "content": "RepopulatedSkyrim.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Repopulated_ProjectTamriel_Current_Compatibility\\RepopulatedSkyrim.ESP",
+      "bytes": 5093,
+      "sha256": "8a0de5f1b1756f4c2d735ed414150be1c0bc090e5eaaff9604f6d5484efda36e"
+    },
+    {
+      "content": "RepopulatedStirk.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\NPCs\\Repopulated_ProjectTamriel_Current_Compatibility\\RepopulatedStirk.ESP",
+      "bytes": 1431,
+      "sha256": "d7055bdfb82d1986e2339f2f0d225c41b4356cf218d12bad17901ecf7941a429"
+    },
+    {
+      "content": "Clean_Mines and Caverns.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Dungeons  & Tombs\\Mines and Caverns-44893-6-6-1-1751912354\\Mines and Caverns\\Clean_Mines and Caverns.esp",
+      "bytes": 2112753,
+      "sha256": "5f8cc8155d4c1d883548240dfa153f41c76593541980325855058827c516215a"
+    },
+    {
+      "content": "OAAB - Tombs and Towers.esm",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Dungeons  & Tombs\\OAAB - Tombs and Towers 49131 1.4 2026-06-22T19-06Z PjA4jRqw\\OAAB - Tombs and Towers.esm",
+      "bytes": 944675,
+      "sha256": "f693b2dd7b3d602d12c7d9405dce1954ce62942cbe2c7d2744909bb4870a932d"
+    },
+    {
+      "content": "OAAB - Tombs Extended.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Dungeons  & Tombs\\OAAB Tombs Extended 59110 1.9 2026-08-30T14-18Z ih57h8gn\\00 Core\\OAAB - Tombs Extended.ESP",
+      "bytes": 417989,
+      "sha256": "583b6913c0d49c0308df16666ac791caa709731be6b7eb30d774af68ca45b3da"
+    },
+    {
+      "content": "Kogoruhn - Extinct City of Ash and Sulfur.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Dungeons  & Tombs\\Kogoruhn - Extinct City of Ash and Sulfur-51615-2-9-7-1768339220\\Data Files\\Kogoruhn - Extinct City of Ash and Sulfur.esp",
+      "bytes": 685370,
+      "sha256": "d3db22fe3b524a510c7851bd361b64dbb3bc823a195b742b7d8d99eb4ab874fc"
+    },
+    {
+      "content": "New Ilunibi.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Dungeons  & Tombs\\New Ilunibi-50393-1-4-1704285152\\New Ilunibi.ESP",
+      "bytes": 884398,
+      "sha256": "0f60363cfae67aa0dd05eefb510c846157a0f89a6a45ece3e9d02142fafc0dba"
+    },
+    {
+      "content": "Unholy Trinity Complete.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\towns & places\\Dungeons  & Tombs\\Unholy Trinity-55564-1-4-1749847567\\Data Files\\Unholy Trinity Complete.esp",
+      "bytes": 680301,
+      "sha256": "95354cd96313b4508fb6e611609c6b1e13ffcc0777f0c851a73c68b8ed656a05"
+    },
+    {
+      "content": "Death and Taxes.esm",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Overhauls\\Death And Taxes 58469 1.3 2026-08-29T02-45Z PjA4jeHc\\00 Core\\Death and Taxes.esm",
+      "bytes": 4905359,
+      "sha256": "2245b8b1296fa11d94aa5ecc70ab7ce9677d0e0207f20f59358642a7f203ae58"
+    },
+    {
+      "content": "Morrowind Extended Cut.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Quests\\Main\\Morrowind Extended Cut 55615 1.13 2026-07-25T01-10Z 8MahMrAG\\00 Core (Required)\\Morrowind Extended Cut.esp",
+      "bytes": 3942283,
+      "sha256": "6fa3eeac5f3c45249fbeab559f931aabac8cea94da690b59a40f2b7e95e15ae9"
+    },
+    {
+      "content": "Fighters Guild Improved.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\GuildsFactions\\Fighters Guild Improved 3.0.4-51409-3-0-4-1709642341\\00 Core\\Fighters Guild Improved.esp",
+      "bytes": 291995,
+      "sha256": "991fd47860703c8b4dc109868109b84005a205d30f4f209f6b2a4156a0ef28b5"
+    },
+    {
+      "content": "Bardcraft.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Overhauls\\Bardcraft-56814-1-3-3-1767941418\\Bardcraft.ESP",
+      "bytes": 138719,
+      "sha256": "e8325b7a7896c83a8f154151e48107b65fe892b256591c6622ea385d9b9c4dd6"
+    },
+    {
+      "content": "MEC - TR Patch.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Quests\\Main\\Morrowind Extended Cut 55615 1.13 2026-07-25T01-10Z 8MahMrAG\\03 Tamriel Rebuilt Patch (Optional)\\MEC - TR Patch.esp",
+      "bytes": 67269,
+      "sha256": "2b0b216634b13b19232b22b11caf57609462f22cfa6e731f8b1fbd5bd79db614"
+    },
+    {
+      "content": "MEC - MaC Patch.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Quests\\Main\\Morrowind Extended Cut 55615 1.13 2026-07-25T01-10Z 8MahMrAG\\07 Mines and Caverns Patch (Optional)\\MEC - MaC Patch.esp",
+      "bytes": 2381,
+      "sha256": "ad2446d90eb45ee0ce8b63c13fcce9e3f4f2c54e5f4576f9fb0caff4e67df9a0"
+    },
+    {
+      "content": "Fate of Morrowind.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Quests\\Main\\Morrowind Extended Cut 55615 1.13 2026-07-25T01-10Z 8MahMrAG\\01 Fate of Morrowind (Optional)\\Fate of Morrowind.esp",
+      "bytes": 107617,
+      "sha256": "af27cf19c0a58d929769b45c46499b6b56bf65a0a8dafe1d2fa14cab495a6229"
+    },
+    {
+      "content": "Beware the Sixth House.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Overhauls\\Beware the Sixth House-46036-3-0-2-1669588136\\Beware the Sixth House.ESP",
+      "bytes": 49960,
+      "sha256": "9a34993bd05ec66d83f45df92bb6a93d4030f4ebbaf20fdbef20189fffc7b12b"
+    },
+    {
+      "content": "Lucid Disturbing Dreams.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\Lucid Disturbing Dreams - No Dream Textboxes-55705-1-0-1756135354\\Data Files\\Lucid Disturbing Dreams.ESP",
+      "bytes": 182953,
+      "sha256": "08665faa5946d5dc3b3722ece78db93275f6f28dce2f266def4790922fbdb00a"
+    },
+    {
+      "content": "OAAB Brother Junipers Twin Lamps.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\GuildsFactions\\Abalitionists\\OAAB Juniper's Twin Lamps-51424-1-5-1764359569\\OAAB Brother Junipers Twin Lamps.esp",
+      "bytes": 841379,
+      "sha256": "d95f7dbce88d52da2854cdeeda9b8822cbfd091b0777942c4d0ad69c5ac58279"
+    },
+    {
+      "content": "OAAB Twin Lamps - MW Extended Cut patch.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\GuildsFactions\\Abalitionists\\BJTL Twin Lamps - MW Extended Cut-51424-1-1-1764331062\\OAAB Twin Lamps - MW Extended Cut patch.ESP",
+      "bytes": 3042,
+      "sha256": "30a08750c1f1dc76dc76a25984fbda275006480d16bbbc767de5e344ec377015"
+    },
+    {
+      "content": "Unlock All Slaves.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\GuildsFactions\\Abalitionists\\Unlock All Slaves - BCoM-56631-1-0-0-1747447645\\Unlock All Slaves - BCoM\\Unlock All Slaves.esp",
+      "bytes": 64347,
+      "sha256": "b1ee45b25174d7aa28be0dea5429ee96d7512a2c412f6c2735eae2e7d8629371"
+    },
+    {
+      "content": "Realrange.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Weapons\\Real Range-58753-1-1777203904\\Realrange.esp",
+      "bytes": 74524,
+      "sha256": "9dba478ddf6f52705189dd9768180d950a0866ef6a7eb166becc1946fe147518"
+    },
+    {
+      "content": "Realrange - OAAB & TD & TR & PC & SHON.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Weapons\\Real Range OAAB - TD - TR - PC - SHON 58753 1.0.2 2026-08-26T20-48Z H0S90xmA\\Realrange - OAAB & TD & TR & PC & SHON.esp",
+      "bytes": 283203,
+      "sha256": "3f9c94f28d62d4f1024c41cac04c5b9bf2d7e1b61608ff24d6534a9ec654308b"
+    },
+    {
+      "content": "TLAD Ambient.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Lighting\\Dark_Interiors_OpenMW_UserStack_v1\\Dark_Interiors_OpenMW_UserStack_v1\\TLAD Ambient.esp",
+      "bytes": 116715,
+      "sha256": "3d17c05aa1fba054d70f9703c9bac398e7f682d0fcd5e63ccfe0bbb888ff8b59"
+    },
+    {
+      "content": "TR_DarkDungeons.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Lighting\\Dark_Interiors_OpenMW_UserStack_v1\\Dark_Interiors_OpenMW_UserStack_v1\\TR_DarkDungeons.esp",
+      "bytes": 85918,
+      "sha256": "427d14b254ae1b64961e40a56a017d99e1c5f8d9e1592f10a2e3fe7b8d3a323c"
+    },
+    {
+      "content": "TR_PlantLightRadiusIncrease.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Lighting\\Dark_Interiors_OpenMW_UserStack_v1\\Dark_Interiors_OpenMW_UserStack_v1\\TR_PlantLightRadiusIncrease.esp",
+      "bytes": 1232,
+      "sha256": "d80887a1761c6055c723e9767a56754af8376931204d3f6c87dcec6e374975e1"
+    },
+    {
+      "content": "Imperial Legion Expansion.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\GuildsFactions\\Legion\\Imperial Legion Expansion-44469-2-4-1634060844\\Imperial Legion Expansion.esp",
+      "bytes": 103872,
+      "sha256": "ac9358fc0d79bbf80352753a420a998adc3aa3cf6005417ca81a50db67109d10"
+    },
+    {
+      "content": "Talos Cult Conspiracy.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\GuildsFactions\\Legion\\Talos Cult Conspiracy 47576 2.01 2026-07-13T09-46Z KH7cHOjL\\00 Core (Required)\\Talos Cult Conspiracy.esp",
+      "bytes": 120088,
+      "sha256": "53be9a5160e39efbff3ca79ffbe8521697d872bb1579edfafabcd7e657951ec2"
+    },
+    {
+      "content": "Imperial Legion Redux.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\GuildsFactions\\Legion\\Imperial Legion Redux\\Data Files\\Imperial Legion Redux.esp",
+      "bytes": 46489,
+      "sha256": "2490b0f4d59f3a3af8cca44ffe2bd5870d6dde009a81ffeeb4d20274e9deecbf"
+    },
+    {
+      "content": "Imperial Legion Redux-Expansion Patch.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\GuildsFactions\\Legion\\Imperial Legion Expansion Patch\\Data Files\\Imperial Legion Redux-Expansion Patch.esp",
+      "bytes": 9040,
+      "sha256": "1becc3623462f80874589c2a04ca51a5bba05f592abc38ad0685c30bea6f01ad"
+    },
+    {
+      "content": "Clocks and Compass.ESP",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\OpenMW Clocks and Compass\\Data Files\\Clocks and Compass.ESP",
+      "bytes": 5619,
+      "sha256": "19f49dbd6d89b462a80ecd98a3ca1eeb264f72440c85a9843a1a6e8d1c646f98"
+    },
+    {
+      "content": "Physical Maps.esp",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Immersion\\Openmw Physical Maps\\Data Files\\Physical Maps.esp",
+      "bytes": 3840,
+      "sha256": "2e832870e711bb38cb1d9071a6086df98629c73f403fffcbdba27e2db6904439"
+    },
+    {
+      "content": "S3LightFixes.omwaddon",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Tools\\MOMWToolsPack\\S3LightFixes.omwaddon",
+      "bytes": 368306,
+      "sha256": "c267fe9d72399dc63b12eff5807fd3c2c692e2348f9fa4d76d60bdbf5023e0b7"
+    },
+    {
+      "content": "delta-merged.omwaddon",
+      "path": "C:\\OpenMWMods\\i-heart-vanilla-directors-cut\\Tools\\MOMWToolsPack\\delta-merged.omwaddon",
+      "bytes": 126784,
+      "sha256": "d67cf3b867314bc3ea61744940030803b2544f0ca98493331d64646929684338"
+    }
+  ],
+  "independent_verification_sha256": "dd056fcdd4bf28b07175392af07efaf50f819be827cb1922536dbc0b9bd350e3"
+}

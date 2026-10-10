@@ -96,11 +96,19 @@ Hostile policy
 The separate policy scripts retain ordinary NPCs/Mercy and remove explicit hostile
 references/records plus opt-in high-fight creatures. The latter is a discovery
 heuristic, not a complete hostile classifier. Each queued disable needs confirmation.
-The host currently adds the known creature record 'rat' to both private route
-profiles after its observed combat in user Seyda capture b9a378d8bd244b6fb0afc735f847de34.
-This bypasses Fight discovery for that record; its original Fight value was not
-recorded and is not inferred. Actor activation still queues the disable, so the
-change needs runtime verification. Old captures are never requalified by it.
+The host reads encounter-policy.json, a bounded explicit list of 32 creature
+records from the effective all-level encounter closure checked for the frozen
+mod configuration after user Seyda capture b9a378d8bd244b6fb0afc735f847de34.
+Rats, foragers, scribs, parasol spiders, netches and listed variants therefore
+bypass Fight discovery. Both route profiles use the same list; those species
+are suppressed throughout the private world, including passive individuals.
+NPC list descendants are excluded. The policy/config hash is bound in SESSION,
+and all 139 consumed ESM/ESP/omwaddon file hashes are checked before preparation.
+Changing the frozen openmw.cfg or these files requires a new audited policy. This is a bounded
+encounter audit, not complete scripted-spawn or neighboring-grid coverage.
+The original rat's modified Fight was not recorded and is not inferred from its
+base definition. Actor activation still queues the disable, so the change needs
+runtime verification. Old captures are never requalified by it.
 Combat/Pursue targets are watched per local update; any combat observed during the
 recorded interval invalidates the route's combat qualification. Queued removal does
 not guarantee that no mod callback ran before the actor was removed.

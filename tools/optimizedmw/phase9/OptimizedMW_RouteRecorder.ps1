@@ -88,6 +88,29 @@ function New-OptimizedMWRouteSession {
     $game=Assert-OptimizedMWPlainPath $GameDirectory
     $package=Assert-OptimizedMWPlainPath $PackageDirectory
     $baseline=Read-OptimizedMWFrozenLock $FrozenDirectory
+    $encounterPolicyPath=Join-Path $package 'encounter-policy.json'
+    $encounterPolicyIdentity=Get-OptimizedMWFrozenFile $encounterPolicyPath
+    if($encounterPolicyIdentity.bytes -gt 1048576){throw 'Route encounter policy exceeds 1 MiB'}
+    $encounterPolicy=[IO.File]::ReadAllText($encounterPolicyPath) | ConvertFrom-Json
+    if($encounterPolicy.schema -ne 1){throw 'Unsupported route encounter policy schema'}
+    $configIdentity=Get-OptimizedMWFrozenFile (Join-Path $baseline.directory 'openmw.cfg')
+    if([string]$encounterPolicy.frozen_config_sha256 -ine $configIdentity.sha256){throw 'Route encounter policy does not match the frozen mod configuration'}
+    $contentFiles=@($encounterPolicy.content_files)
+    if($contentFiles.Count -lt 1 -or $contentFiles.Count -gt 256){throw 'Route encounter policy requires 1-256 bound content files'}
+    $seenContent=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach($file in $contentFiles){
+        if(-not [IO.Path]::IsPathRooted([string]$file.path) -or -not $seenContent.Add([string]$file.path)){throw 'Invalid or duplicate route encounter content path'}
+        $identity=Get-OptimizedMWFrozenFile $file.path
+        if([string]$file.sha256 -notmatch '^[a-fA-F0-9]{64}$' -or $identity.sha256 -ine [string]$file.sha256 -or $null -eq $file.bytes -or $identity.bytes -ne $file.bytes){throw ('Route encounter content changed since audit: '+$file.path)}
+    }
+    $hostileRecords=@($encounterPolicy.hostile_record_ids)
+    if($hostileRecords.Count -lt 1 -or $hostileRecords.Count -gt 4096){throw 'Route encounter policy must have 1-4096 explicit records'}
+    $seenRecords=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach($record in $hostileRecords){
+        if($record -isnot [string] -or $record -cnotmatch '^[a-z0-9_][a-z0-9_ .:-]{0,511}$' -or -not $seenRecords.Add($record)){throw 'Invalid or duplicate route encounter record'}
+    }
+    $hostileRecordsLua=(@($hostileRecords | ForEach-Object {"'"+$_+"'"}) -join ',')
+    if((Get-OptimizedMWFrozenFile $encounterPolicyPath).sha256 -cne $encounterPolicyIdentity.sha256){throw 'Route encounter policy changed during validation'}
     $protected=Get-OptimizedMWRouteProtectedInputs $baseline
     $exe=Get-OptimizedMWFrozenFile (Join-Path $game 'openmw.exe')
     $packageFiles=@(Get-ChildItem -LiteralPath $package -File -Recurse -Force)
@@ -120,10 +143,9 @@ function New-OptimizedMWRouteSession {
     [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($optionsPath))
     $boolean=$(if($SmokeRun){'true'}else{'false'})
     $expectedCell=$(if($RouteName -eq 'balmora'){'Balmora'}else{'Seyda Neen'})
-    # The recorded Seyda route encountered record 'rat' outside Fight discovery.
-    # Admit that known encounter explicitly in the private calibration world.
+    # Admit the audited encounter-list closure, not only one observed spawn.
     # Lua still confirms the queued disable and rejects any observed combat.
-    $options="return { enabled=true, schema=1, session='$id', route_name='$RouteName', checkpoint_save_required=true, no_enemy_policy={enabled=true, discover_high_fight_creatures=true, creature_fight_threshold=90, hostile_reference_ids={}, hostile_record_ids={'rat'}}, smoke_autostart=$boolean, smoke_duration_seconds=$SmokeDuration, smoke_quit=$boolean, smoke_expected_cell='$expectedCell', quit_on_finish=true, require_ctrl_shift=false, key_start='F6', key_checkpoint='F9', key_finish='F10', key_abort='F11', max_seconds=600, max_records=60000, max_bytes=16777216, sample_hz=20 }"
+    $options="return { enabled=true, schema=1, session='$id', route_name='$RouteName', checkpoint_save_required=true, no_enemy_policy={enabled=true, discover_high_fight_creatures=true, creature_fight_threshold=90, hostile_reference_ids={}, hostile_record_ids={$hostileRecordsLua}}, smoke_autostart=$boolean, smoke_duration_seconds=$SmokeDuration, smoke_quit=$boolean, smoke_expected_cell='$expectedCell', quit_on_finish=true, require_ctrl_shift=false, key_start='F6', key_checkpoint='F9', key_finish='F10', key_abort='F11', max_seconds=600, max_records=60000, max_bytes=16777216, sample_hz=20 }"
     [IO.File]::WriteAllText($optionsPath,$options,[Text.UTF8Encoding]::new($false))
     [IO.File]::AppendAllText($runtime.config_path,"`ncontent=$content`n",[Text.UTF8Encoding]::new($false))
     # Recording is route setup, not a performance capture. Preserve gameplay
@@ -156,6 +178,7 @@ function New-OptimizedMWRouteSession {
         setup_script=$(if($setup){Get-OptimizedMWFrozenFile $setup}else{$null});
         scope='Route recorder only. No optimization matrix, Windows trace, automated replay, or benchmark performance claim.';
         actor_policy='Host does not remove actors. Lua policy and unexpected combat qualification are recorded separately.'}
+    $manifest | Add-Member -NotePropertyName encounter_policy -NotePropertyValue ([pscustomobject]@{identity=$encounterPolicyIdentity;frozen_config_sha256=$encounterPolicy.frozen_config_sha256;explicit_record_count=$hostileRecords.Count;verified_content_files=$contentFiles.Count;scope=$encounterPolicy.scope})
     $manifest | Add-Member -NotePropertyName native_recorder_bindings_parked -NotePropertyValue $parkedBindings
     $manifest | Add-Member -NotePropertyName validation_window -NotePropertyValue ([bool]$SmallValidationWindow)
     $manifest | Add-Member -NotePropertyName frozen_configuration -NotePropertyValue $validatedFrozen.frozen_configuration
@@ -368,6 +391,7 @@ function Invoke-OptimizedMWRouteRecorder {
     $session=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $frozen -PackageDirectory $package -RouteName $choice -SmokeRun:$Smoke -SmokeDuration $SmokeSeconds -SmallValidationWindow:$ValidationWindow
     Write-Host ('Private recording profile: '+$session.runtime.directory)
     Write-Host ('Route output: '+$session.directory)
+    Write-Host ('Private encounter policy: '+$session.manifest.encounter_policy.explicit_record_count+' creature records; ordinary NPCs retained.')
     Write-Host 'F6 starts; F9 marks a numbered stage; F10 finishes and exits; F11 aborts and exits. Press these keys alone; no Ctrl or Shift.'
     Write-Host 'Keep the same first-person view. Record the 45-second fixed view, then your route. This is route setup, not a performance capture.'
     if($PrepareOnly){Write-Host 'Prepared only; no game launched.';return $session}

@@ -62,19 +62,25 @@ Keeping explicit parked bindings prevents the native loader restoring defaults.
 Original bindings are preserved. Preparation refuses occupied parking keys.
 F8 remains unchanged because a mod uses Shift+F8 for music.
 
-The private combat policy explicitly disables creature record 'rat', which
-entered combat on the recorded Seyda Neen route. This known encounter bypasses
-the Fight heuristic in both route profiles. It also disables discovered hostile
-creatures with a high current modified AI Fight setting (90 or above), leaving
-ordinary townspeople and their AI present. It records the exact suppressed
-references. Fight is a bounded
-heuristic, not a complete classification of all scripted/modded enemies or
+The private combat policy uses RouteRecorder/encounter-policy.json to explicitly
+disable 32 creature records from the checked effective encounter-list closure.
+That includes rats, kwama foragers, scribs, parasol spiders, netches and their
+listed variants, rather than assuming the observed rat always spawns. The list
+bypasses Fight discovery and is tied to the exact frozen openmw.cfg hash plus
+the hashes of 139 audited content files; a changed setup requires a new encounter
+audit. Both route profiles
+use it. These listed creature species are suppressed throughout the private
+world, even if an individual is passive. Ordinary townspeople and their AI stay
+present. This covers the checked encounter group, not every possible scripted
+enemy or neighboring active cell. Other discovered creatures with current
+modified Fight of 90 or above are also suppressed. Exact references are recorded.
+Fight is a bounded heuristic, not a complete classification of all scripted/modded enemies or
 hostile NPCs; identified references can be added later. Unexpected combat
 invalidates the route. Mercy Combat AI stays installed. Gameplay profiles are
 unaffected by these private calibration changes. This does not create a combat
 performance benchmark or freeze every town actor's later AI movement.
-Disabling is queued and must be confirmed in a later update; the explicit rat
-rule does not prove that every mod callback or combat start was preempted.
+Disabling is queued and must be confirmed in a later update; the explicit record
+list does not prove that every mod callback or combat start was preempted.
 Observed combat and suppressions still pending at export are reported separately.
 Earlier INCOMPLETE captures keep their original qualification and evidence.
 

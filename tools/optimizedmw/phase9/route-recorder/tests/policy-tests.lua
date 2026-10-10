@@ -202,6 +202,54 @@ do
 end
 
 do
+    -- Actual effective route-list alternatives, including passive wildlife,
+    -- belong to a fixed private encounter cohort rather than a Fight classifier.
+    local ids = { 'kwama forager', 'scrib', 'ab_fau_spiderparasol', 'netch_betty', 'netch_bull' }
+    local f = fixture({ enabled = true, hostile_record_ids = ids,
+        discover_high_fight_creatures = true, creature_fight_threshold = 90 })
+    local citizen = f.actor('alternate-batch-citizen', 'NPC', 100, 'town_citizen')
+    local guard = f.actor('alternate-batch-guard', 'NPC', 100, 'town_guard')
+    local domesticGuar = f.actor('alternate-batch-domestic-guar', 'Creature', 70, 'guar')
+    f.world.activeActors = { f.player, citizen, guard, domesticGuar }
+    f.script.engineHandlers.onPlayerAdded(f.player)
+    f.advance()
+    f.advance()
+    f.script.eventHandlers.OptimizedMWRouteRecording({ session = f.options.session, active = true, t_wall = 0.04 })
+    local actors = {}
+    for i, id in ipairs(ids) do
+        -- Every alternate deliberately has low Fight so the discovery heuristic
+        -- cannot accidentally make this fixture pass.
+        actors[i] = f.actor('encounter-alternate-' .. i, 'Creature', 0, id)
+        f.script.engineHandlers.onActorActive(actors[i])
+    end
+    check(f.last().attempted_count == #ids and f.last().pending_disable == #ids
+        and f.last().suppressed_count == 0, 'all configured alternate encounters enqueue once before confirmation')
+    local stillEnabled = true
+    for _, actor in ipairs(actors) do stillEnabled = stillEnabled and actor.enabled end
+    check(stillEnabled, 'alternate batch request is not mistaken for immediate engine removal')
+    f.advance(0.02, false)
+    check(f.last().pending_disable == #ids and f.last().suppressed_count == 0,
+        'unapplied alternate batch cannot fabricate suppression completion')
+    f.advance()
+    local allDisabled = true
+    for _, actor in ipairs(actors) do allDisabled = allDisabled and not actor.enabled end
+    check(allDisabled and f.last().suppressed_count == #ids and f.last().pending_disable == 0,
+        'every low-Fight alternate confirms after queued engine actions apply')
+    local receipts, explicit = 0, true
+    for _, event in ipairs(f.events) do
+        if event.data.event == 'actor_suppressed' then
+            receipts = receipts + 1
+            explicit = explicit and event.data.reason == 'explicit_record' and event.data.during_recording
+        end
+    end
+    check(receipts == #ids and explicit, 'alternate batch retains individual explicit-record in-record receipts')
+    check(citizen.enabled and guard.enabled and domesticGuar.enabled and f.player.enabled,
+        'encounter record cohort preserves high-Fight townspeople and non-listed domestic creature')
+    check(f.last().qualified and f.last().combat_during_recording == 0
+        and f.last().preemption_guaranteed == false, 'settled alternate cohort remains qualified without claiming guaranteed preemption')
+end
+
+do
     local f = fixture()
     local citizen = f.actor('citizen-entering-combat', 'NPC', 0)
     f.script.engineHandlers.onPlayerAdded(f.player)

@@ -33,6 +33,9 @@ try{
     [IO.File]::WriteAllText((Join-Path $game 'openmw.exe'),'Never execute this fixture')
     [IO.File]::WriteAllText((Join-Path $package 'optimizedmw_route_recorder.omwscripts'),'PLAYER: scripts/optimizedmw_route_recorder/player.lua')
     [IO.File]::WriteAllText((Join-Path $package 'scripts/optimizedmw_route_recorder/player.lua'),'return {}')
+    $encounterPolicyPath=Join-Path $package 'encounter-policy.json'
+    $encounterPolicy=[ordered]@{schema=1;frozen_config_sha256=(Get-OptimizedMWFrozenFile (Join-Path $locked 'openmw.cfg')).sha256;content_files=@($asset);hostile_record_ids=@('rat','kwama forager','scrib','nix-hound');scope='Hermetic fixture encounter group, not installed mod definitions'}
+    Write-OptimizedMWRouteJson $encounterPolicyPath $encounterPolicy
     $baseline=Read-OptimizedMWFrozenLock $locked;$before=Get-OptimizedMWRouteProtectedInputs $baseline
     $existing=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing
     Check-Route ($existing.arguments -contains '--load-savegame' -and $existing.arguments -notcontains '--script-run') 'Existing route startup unexpectedly teleports'
@@ -45,7 +48,8 @@ try{
     Check-Route ([IO.File]::ReadAllText($existing.runtime.settings_path) -match 'render handoff attribution = false' -and [IO.File]::ReadAllText($existing.runtime.settings_path) -match 'async gpu profiler = false') 'Route observers remain enabled'
     Check-Route ($existing.manifest.validation_window -eq $false -and [IO.File]::ReadAllText($existing.runtime.settings_path) -match 'resolution x = 1920') 'Default route recording display changed'
     Check-Route ([IO.File]::ReadAllText($existing.manifest.options.path) -match 'require_ctrl_shift=false') 'Recorder requires native sneak/run modifier keys'
-    Check-Route ([IO.File]::ReadAllText($existing.manifest.options.path) -match "hostile_record_ids=\{'rat'\}") 'Known Seyda rat encounter is not admitted independently of Fight'
+    Check-Route ([IO.File]::ReadAllText($existing.manifest.options.path) -match "hostile_record_ids=\{'rat','kwama forager','scrib','nix-hound'\}") 'Alternative encounter records are not admitted independently of Fight'
+    Check-Route ($existing.manifest.encounter_policy.explicit_record_count -eq 4 -and $existing.manifest.encounter_policy.identity.sha256 -ceq (Get-OptimizedMWFrozenFile $encounterPolicyPath).sha256) 'Encounter policy identity or count is not frozen in the session'
     Assert-OptimizedMWRouteSessionInputs $existing;Check-Route $true 'Unchanged recorder inputs failed prelaunch qualification'
     [IO.File]::AppendAllText($existing.runtime.config_path,'# mutation')
     Reject-Route {Assert-OptimizedMWRouteSessionInputs $existing} 'Changed private recorder configuration accepted'
@@ -53,13 +57,28 @@ try{
     Check-Route ($balmora.arguments -contains '--script-run' -and [IO.File]::ReadAllText($balmora.manifest.setup_script.path) -ceq ('coc "Balmora"'+"`n")) 'Balmora setup is not a quoted named-cell COC'
     Check-Route ($balmora.runtime.directory -cne $existing.runtime.directory) 'Route profiles are not isolated'
     Check-Route ([IO.File]::ReadAllText($balmora.manifest.options.path) -match "smoke_autostart=true" -and [IO.File]::ReadAllText($balmora.manifest.options.path) -match "route_name='balmora'") 'Smoke options are not bounded and explicit'
-    Check-Route ([IO.File]::ReadAllText($balmora.manifest.options.path) -match "hostile_record_ids=\{'rat'\}") 'Balmora private policy does not retain the known rat admission rule'
+    Check-Route ([IO.File]::ReadAllText($balmora.manifest.options.path) -match "hostile_record_ids=\{'rat','kwama forager','scrib','nix-hound'\}") 'Balmora private policy does not retain the audited encounter group'
     Check-Route ($balmora.manifest.validation_window -and [IO.File]::ReadAllText($balmora.runtime.settings_path) -match 'resolution x = 1280' -and [IO.File]::ReadAllText($balmora.runtime.settings_path) -match 'resolution y = 720') 'Validation display is not marked separately'
     $seydaSmoke=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing -SmokeRun
     Check-Route ([IO.File]::ReadAllText($seydaSmoke.manifest.setup_script.path) -ceq ('coc "Seyda Neen"'+"`n")) 'Multiword smoke cell name is not quoted as one console argument'
     Check-Route (Compare-OptimizedMWRouteProtectedInputs $before (Get-OptimizedMWRouteProtectedInputs $baseline)) 'Original profile changed during recording setup'
     Reject-Route {New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName elsewhere} 'Unknown route accepted'
     Reject-Route {New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing -SmokeDuration 0} 'Unbounded smoke duration accepted'
+    $originalPolicyHash=$encounterPolicy.frozen_config_sha256;$encounterPolicy.frozen_config_sha256=('0'*64);Write-OptimizedMWRouteJson $encounterPolicyPath $encounterPolicy
+    Reject-Route {New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing} 'Encounter policy for another frozen mod configuration accepted'
+    $encounterPolicy.frozen_config_sha256=$originalPolicyHash
+    $encounterPolicy.content_files=@();Write-OptimizedMWRouteJson $encounterPolicyPath $encounterPolicy
+    Reject-Route {New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing} 'Encounter policy without content identities accepted'
+    $encounterPolicy.content_files=@([ordered]@{path=$asset.path;bytes=$asset.bytes;sha256=('0'*64)});Write-OptimizedMWRouteJson $encounterPolicyPath $encounterPolicy
+    Reject-Route {New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing} 'Encounter policy with changed source content accepted'
+    $encounterPolicy.content_files=@($asset,$asset);Write-OptimizedMWRouteJson $encounterPolicyPath $encounterPolicy
+    Reject-Route {New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing} 'Duplicate encounter source content identity accepted'
+    $encounterPolicy.content_files=@($asset)
+    foreach($invalidList in @(@(),@('rat','rat'),@("rat'"),@('rat','Scrib'),@($null))){
+        $encounterPolicy.hostile_record_ids=$invalidList;Write-OptimizedMWRouteJson $encounterPolicyPath $encounterPolicy
+        Reject-Route {New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing} 'Invalid, duplicate or unsafe encounter list accepted'
+    }
+    $encounterPolicy.hostile_record_ids=@('rat','kwama forager','scrib','nix-hound');Write-OptimizedMWRouteJson $encounterPolicyPath $encounterPolicy
     $unsafe=Join-Path $fixture 'unsafe.xml';[IO.File]::WriteAllText($unsafe,'<!DOCTYPE Controller [<!ENTITY ex SYSTEM "file:///C:/Windows/win.ini">]><Controller>&ex;</Controller>')
     Reject-Route {Protect-OptimizedMWRouteNativeBindings $unsafe} 'DTD in native input accepted'
     [IO.File]::WriteAllText($unsafe,'<Controller><Control name="1"><KeyBinder key="113"/></Control></Controller>')
