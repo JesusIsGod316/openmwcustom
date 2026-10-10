@@ -324,7 +324,7 @@ $SoundWarm='true'
 $ShadowConsistency='true'
 
 # Avoid running two launchers over the same settings file.
-$existingGame=Get-Process openmw -ErrorAction SilentlyContinue
+$existingGame=Get-Process -Name @('openmw','Morrowind') -ErrorAction SilentlyContinue
 if($existingGame){throw 'Close OpenMW before starting a Phase 9 test.'}
 $mutex=[Threading.Mutex]::new($false,'Local\OptimizedMW-Test-Profile')
 $ownsMutex=$false

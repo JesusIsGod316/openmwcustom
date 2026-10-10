@@ -41,6 +41,8 @@ Explorer result or start an elevated Windows recorder. Owned descendants are
 bounded by a kill-on-close job. Visible owned windows on the input desktop stop
 the run. The engine refuses an automatic run unless its resolved master volume
 is zero. Every comparison uses the same muted cohort.
+The receipt retains visibility observed at any point in the owned window lifetime;
+hidden helper windows left during export do not erase the earlier witness.
 
 Canonical archives stay in Benchmarks. Each matrix keeps build/route/tool pins,
 requested settings, desktop/process receipts, route/actor policy, artifact hashes

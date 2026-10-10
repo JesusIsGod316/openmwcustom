@@ -236,7 +236,12 @@ def launch(executable, arguments, cwd, output, timeout):
                 raise RuntimeError('Owned window escaped to the input desktop; stopped private process tree')
             if windows:
                 state['owned_private_windows'] = windows
-                state['owned_render_window_observed'] = any(w['visible_on_private_desktop'] for w in windows)
+                # A normal game closes its visible SDL window before its launcher
+                # finishes exporting evidence. Hidden helper windows can remain.
+                # Retain the lifetime witness; the final window list is separate.
+                visible = any(w['visible_on_private_desktop'] for w in windows)
+                state['owned_render_window_observed'] = state['owned_render_window_observed'] or visible
+                state['latest_private_windows_visible'] = visible
                 save(receipt_path, state)
             if time.monotonic() - started >= timeout:
                 state['timed_out'] = True

@@ -130,5 +130,24 @@ class Benchmarks(unittest.TestCase):
             self.assertEqual(matrix.read_json(path)['generation'],2)
             self.assertFalse(path.with_suffix('.json.writing').exists())
 
+    def test_private_window_lifetime_witness_survives_hide_before_exit(self):
+        if matrix.benchmark_desktop.os.name != 'nt':
+            self.skipTest('Windows owned private desktop lifecycle')
+        import sys
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'private-lifecycle'
+            code = matrix.benchmark_desktop.launch(sys.executable,
+                [str(ROOT / 'benchmark-window-probe.py')], ROOT, output, 15)
+            self.assertEqual(code, 0)
+            receipt = matrix.read_json(output / 'DESKTOP-RECEIPT.json')
+            self.assertTrue(receipt['owned_render_window_observed'])
+            self.assertFalse(receipt['latest_private_windows_visible'])
+            self.assertFalse(receipt['input_desktop_owned_visible_windows'])
+            self.assertTrue(receipt['input_desktop_unchanged'])
+            self.assertFalse(receipt['desktop_switched'])
+            probe = json.loads((output / 'stdout.log').read_text().strip())
+            self.assertEqual(probe['console_window'], 0)
+            self.assertTrue(probe['visible_then_hidden_before_exit'])
+
 
 if __name__=='__main__':unittest.main()
