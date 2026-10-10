@@ -478,7 +478,7 @@ function Start-OptimizedMWRouteOwnedProcess {
         # user's input desktop. CreateNoWindow prevents console allocation.
         $info=[Diagnostics.ProcessStartInfo]::new()
         $info.FileName=$Executable;$info.Arguments=$Arguments -join ' ';$info.WorkingDirectory=$WorkingDirectory
-        $info.UseShellExecute=$false;$info.CreateNoWindow=$true;$info.WindowStyle='Hidden'
+        $info.UseShellExecute=$false;$info.CreateNoWindow=$true
         $info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
         $streams=@([IO.File]::Open($StandardOutput,'CreateNew','Write','Read'),[IO.File]::Open($StandardError,'CreateNew','Write','Read'))
         try{

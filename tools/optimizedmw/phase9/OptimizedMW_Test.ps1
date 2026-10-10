@@ -516,6 +516,9 @@ try{
         Copy-Item -LiteralPath $ExperimentSettingsFile -Destination (Join-Path $ProfileDir 'experiment-settings.json')
     }
     if($automatedSession){
+        $automatedSession.arguments+=@('--random-seed','20261010')
+        $automatedSession.manifest.arguments=$automatedSession.arguments
+        $automatedSession.manifest|Add-Member -NotePropertyName engine_random_seed -NotePropertyValue 20261010
         foreach($entry in @(@('Video','fullscreen','false'),@('Video','minimize on focus loss','false'),@('Sound','master volume','0'))){
             Set-OptimizedMWRouteIniValue -Path $SettingsPath -Section $entry[0] -Key $entry[1] -Value $entry[2]
         }
