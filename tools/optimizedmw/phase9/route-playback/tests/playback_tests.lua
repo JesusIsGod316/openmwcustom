@@ -1,5 +1,6 @@
 local root = assert(arg[1], 'package directory required')
 local pure = dofile(root .. '/scripts/optimizedmw_route_playback/core.lua')
+local guide = dofile(root .. '/scripts/optimizedmw_route_playback/guidance.lua')
 local checks = 0
 local function check(condition, description)
     checks = checks + 1
@@ -71,10 +72,70 @@ check(near(timeSlow,timeFast) and near(endSlow.camera.yaw,endFast.camera.yaw), '
 check(not pcall(future,0,-0.1), 'negative command delta rejected')
 check(not pcall(future,0,0/0), 'nonfinite command delta rejected')
 
+local forward,side=guide.worldToLocal(3,4,0)
+check(near(forward,4) and near(side,3), 'native yaw-zero basis projects world +Y forward and +X right')
+forward,side=guide.worldToLocal(3,4,math.pi/2)
+check(near(forward,3) and near(side,-4), 'quarter-turn actor basis preserves correction signs')
+local wx,wy=guide.localToWorld(forward,side,math.pi/2)
+check(near(wx,3) and near(wy,4), 'actor-local projection round trips to world motion')
+local origin={x=0,y=0,z=0}
+local applied=guide.command(origin,{x=1000,y=1000,z=0},input(0,1),0,100,false)
+check(applied.correction_norm<=0.350000001 and applied.input_norm<=1.000000001,
+    'large physical feedback remains bounded independently and after nominal input')
+applied=guide.command(origin,{x=0,y=40,z=0},input(0,1),0,100,true)
+check(applied.nominal_movement==0 and applied.movement>0 and applied.input_norm<=0.350000001,
+    'held reference drops nominal forward motion while bounded feedback catches up')
+applied=guide.command(origin,{x=20,y=20,z=0},input(0,0),0,100,false)
+check(applied.movement==0 and applied.side_movement==0 and applied.stationary_source,
+    'recorded fixed-view and stop inputs do not acquire corrective motion')
+applied=guide.setupCommand(origin,{x=100,y=100,z=0},0,100)
+check(applied.input_norm<=0.200000001, 'initial alignment has its separate slower input cap')
+check(not pcall(guide.setupCommand,origin,origin,0,0), 'missing gait speed does not invent physical velocity')
+local clock=guide.newClock(10)
+check(clock:advance(0.1)==0.1, 'reference clock advances the elapsed prior physics interval')
+local held,changed=clock:updateHold(33)
+check(held and changed and clock:futureDelta(0.1)==0, 'corridor excess holds the current reference target')
+local ref,lag=clock:advance(0.4)
+check(near(ref,0.1) and near(lag,0.3) and near(clock.hold_seconds,0.3),
+    'held clock is monotone and preserves explicit source/reference lag')
+held,changed=clock:updateHold(20)
+check(held and not changed, 'hold hysteresis does not resume between thresholds')
+held,changed=clock:updateHold(15)
+check(not held and changed and near(clock:futureDelta(0.05),0.05), 'recovered corridor resumes only below exit threshold')
+ref,lag=clock:advance(0.5)
+check(near(ref,0.2) and near(lag,0.3), 'reference resumes without an unbounded time jump')
+check(not pcall(clock.advance,clock,0.4), 'guided clock rejects reversal')
+local recovery={x=0,y=-60,z=0}
+local recoveryClock=guide.newClock(10)
+recoveryClock:updateHold(60)
+for i=1,360 do
+    local cmd=guide.command(recovery,origin,input(0,1),0,100,recoveryClock.held)
+    local dx,dy=guide.localToWorld(cmd.movement,cmd.side_movement,0)
+    recovery.x,recovery.y=recovery.x+dx*100/120,recovery.y+dy*100/120
+    recoveryClock:advance(i/120)
+    local xy=guide.errors(recovery,origin)
+    if xy<16 then recoveryClock:updateHold(xy); break end
+end
+check(guide.errors(recovery,origin)<16 and recovery.y>-60 and recoveryClock.reference==0,
+    'ordinary physics feedback closes XY error while the target clock stays held')
+local stall=guide.newStallGuard()
+check(not stall:observe(0,origin,0.5) and not stall:observe(1.9,{x=7,y=0,z=0},0.5), 'stall requires a full bounded observation window')
+check(stall:observe(2,{x=7,y=0,z=0},0.5), 'commanded motion without eight units progress fails after two seconds')
+stall=guide.newStallGuard(); stall:observe(0,origin,0.5)
+check(not stall:observe(2,{x=8,y=0,z=0},0.5), 'actual physical progress resets the stall window')
+stall:observe(3,{x=8,y=0,z=0},0)
+check(not stall:observe(5,{x=8,y=0,z=0},0.5), 'recorded stops do not inherit a stale stall window')
+check(guide.finalPoseAccepted({x=24,y=0,z=48},origin), 'final corridor permits its inclusive XY/Z bounds')
+check(not guide.finalPoseAccepted({x=25,y=0,z=0},origin) and not guide.finalPoseAccepted({x=0,y=0,z=49},origin),
+    'reference time alone cannot accept an inaccurate endpoint')
+
 -- Mock the actual PLAYER file for timing, override release, policy drain and errors.
-local function playerFixture(seedX, seedCell)
+local function playerFixture(seedX, seedCell, fixtureOptions, fixtureRoute)
+    fixtureOptions=fixtureOptions or {}; fixtureRoute=fixtureRoute or route()
     local clock, position, yaw, pitch, paused = 0,{x=seedX or 0,y=0,z=0},math.pi-0.1,0.1,false
-    local actorYaw, actorPitch = math.pi-0.1,0.1
+    local actorYaw, actorPitch = fixtureRoute.samples[1].camera.yaw,fixtureRoute.samples[1].camera.pitch
+    yaw,pitch=actorYaw,actorPitch
+    local collision=true
     local calls, messages, events, quit, flags = {},{}, {},false,{movement=false,combat=false,ui=false}
     local actor = { controls={}, ATTACK_TYPE={NoAttack=0},position=position,
         cell={id=seedCell or 'Balmora1',isExterior=true}, rotation={getYaw=function() return actorYaw end,getPitch=function() return actorPitch end} }
@@ -89,12 +150,18 @@ local function playerFixture(seedX, seedCell)
         overrideUiControls=function(v) flags.ui=v end}}
     local modules={['openmw.core']=fakeCore,['openmw.self']=actor,['openmw.camera']=fakeCamera,
         ['openmw.input']={KEY={F11=11}},['openmw.ui']={showMessage=function(v) messages[#messages+1]=v end},
-        ['openmw.types']={Player={CONTROL_SWITCH={VanityMode=1},setControlSwitch=function() end}},
+        ['openmw.types']={Player={CONTROL_SWITCH={VanityMode=1},setControlSwitch=function() end},
+            Actor={getRunSpeed=function() return 100 end,getWalkSpeed=function() return 50 end,
+                isOnGround=function() return true end,isSwimming=function() return false end,
+                getCurrentSpeed=function() return actor.controls.run and 100 or 50 end}},
+        ['openmw.debug']={isCollisionEnabled=function() return collision end},
         ['openmw.interfaces']=interfaces,['scripts.optimizedmw_route_playback.core']=pure,
+        ['scripts.optimizedmw_route_playback.guidance']=guide,
         ['scripts.optimizedmw_route_playback.options']={enabled=true,session=string.rep('a',32),autostart_seconds=1,
             quit_on_finish=true,position_tolerance=128,abort_position_error=2048,max_duration_seconds=180},
-        ['scripts.optimizedmw_route_playback.timeline']=route(),
+        ['scripts.optimizedmw_route_playback.timeline']=fixtureRoute,
         ['scripts.optimizedmw_route_recorder.common']={json=function(v) calls[#calls+1]=v; return v.event end}}
+    for name,value in pairs(fixtureOptions) do modules['scripts.optimizedmw_route_playback.options'][name]=value end
     for name,value in pairs(modules) do package.loaded[name]=value end
     local beforePrint=print
     print=function() end
@@ -107,6 +174,18 @@ local function playerFixture(seedX, seedCell)
     end
     return { actor=actor,flags=flags,calls=calls,events=events,
         tick=function(t,dt) clock=t; invoke(dt) end,
+        step=function(dt,blocked)
+            invoke(dt)
+            actorYaw=actorYaw+(actor.controls.yawChange or 0); actorPitch=actorPitch+(actor.controls.pitchChange or 0)
+            actor.controls.yawChange,actor.controls.pitchChange=0,0
+            if not blocked then
+                local dx,dy=guide.localToWorld(actor.controls.movement or 0,actor.controls.sideMovement or 0,actorYaw)
+                local speed=actor.controls.run and 100 or 50
+                position.x,position.y=position.x+dx*speed*dt,position.y+dy*speed*dt
+            end
+            clock=clock+dt
+        end,
+        collision=function(v) collision=v end,
         policy=function(event)
             local oldPrint=print; print=function() end
             handlers.eventHandlers.OptimizedMWRoutePolicy(event)
@@ -182,4 +261,67 @@ check(initialCheck.actual_actor_yaw_before==initialCheck.actor_yaw_after_write,
     'camera setter readback does not pretend mechanics already rotated actor')
 check(near(initialCheck.camera_postwrite_yaw_error,0) and initialCheck.postwrite_readback_phase,
     'postwrite camera readback is separated from pre-command observations')
+local function guidedRoute()
+    return {schema=1,route_name='balmora',duration=3,
+        controls={input(0,0),input(1,1),input(3,0)},
+        samples={row(0,0,math.pi/2),row(1,0,math.pi/2),row(2,100,math.pi/2),row(3,200,math.pi/2)},markers={}}
+end
+local function guidedFinish(f, blocked)
+    local acknowledged=false
+    for i=1,150 do
+        f.step(0.1,blocked)
+        for _,event in ipairs(f.events) do
+            if event.data.active==false and not acknowledged then
+                f.policy({session=string.rep('a',32),event='policy_stopped',ready=true,qualified=true,pending_disable=0})
+                acknowledged=true
+            end
+        end
+        if f.isQuit() then return lastEvent(f,'finish') end
+    end
+    error('Guided fixture did not finish in bounded time')
+end
+f=playerFixture(-8,nil,{guidance_enabled=true},guidedRoute()); ready(f)
+local finish=guidedFinish(f,false)
+check(finish.reason=='route_finished' and finish.route_playback_finished and not finish.input_replay_finished,
+    'real PLAYER feedback preview completes physical route but never claims raw input replay')
+check(lastEvent(f,'alignment_check') and lastEvent(f,'alignment_finished').horizontal_error<=6,
+    'PLAYER physically aligns the seed before its fixed-view route begins')
+check(lastEvent(f,'start').starting_position.x<0 and lastEvent(f,'start').starting_position.x>=-6,
+    'initial alignment uses limited ordinary movement rather than rewriting start position')
+check(finish.playback_protocol=='physical_xy_follower_v1' and finish.physical_state.collision_enabled==true
+    and finish.benchmark_qualified==false, 'successful guided preview identifies protocol and collision proof without benchmark claim')
+local guidedCheck=lastEvent(f,'check')
+check(guidedCheck.horizontal_error<=24 and guidedCheck.vertical_error<=48,
+    'physical feedback endpoint satisfies the final position corridor')
+local detailed
+for _,v in ipairs(f.calls) do if v.event=='check' and v.guidance_command then detailed=v end end
+check(detailed and detailed.raw_controls and detailed.applied_controls and detailed.reference_time
+    and detailed.guidance_command.correction_norm<=0.350000001,
+    'PLAYER separately reports acquired input, applied input and bounded corrective work')
+f=playerFixture(0,nil,{guidance_enabled=true},guidedRoute()); ready(f)
+finish=guidedFinish(f,true)
+check(finish.reason=='physical_movement_stalled' and not finish.route_playback_finished,
+    'collision-blocked ordinary movement aborts through the actual PLAYER stall guard')
+check(lastEvent(f,'reference_hold') and finish.reference_hold_count>=1,
+    'stalled physics holds route time explicitly before aborting')
+f=playerFixture(0,nil,{guidance_enabled=true},guidedRoute()); f.collision(false); ready(f)
+finish=guidedFinish(f,false)
+check(finish.reason=='collision_disabled' and finish.physical_state.collision_enabled==false,
+    'guided preview refuses collision-off playback and preserves false in telemetry')
+f=playerFixture(0,nil,{guidance_enabled=true},guidedRoute()); f.collision(nil); ready(f)
+finish=guidedFinish(f,false)
+check(finish.reason=='collision_state_unavailable' and not finish.route_playback_finished,
+    'missing physical collision proof cannot silently validate guided preview')
+f=playerFixture(0,nil,{guidance_enabled=true},guidedRoute()); f.actor.position.z=49; ready(f)
+finish=guidedFinish(f,false)
+check(finish.reason=='initial_vertical_mismatch', 'guided setup rejects a different vertical level without repositioning')
+f=playerFixture(0,nil,{guidance_enabled=true},guidedRoute()); ready(f); f.tick(0,1)
+f.actor.position.x=100; f.tick(0.3,0.3)
+finish=guidedFinish(f,false)
+check(finish.reason=='guided_horizontal_divergence' and not finish.route_playback_finished,
+    'guided hard corridor is tighter than raw replay tolerance')
+f=playerFixture(0,nil,{guidance_enabled=true},guidedRoute()); ready(f); f.tick(0,1)
+f.actor.position.x=40; f.tick(0.3,0.3)
+finish=guidedFinish(f,false)
+check(finish.reason=='stationary_pose_divergence', 'stationary source segment does not move the character to hide a mismatch')
 print('Playback core and PLAYER mock checks passed: '..checks)

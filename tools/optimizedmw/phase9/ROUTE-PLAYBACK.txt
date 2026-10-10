@@ -11,16 +11,21 @@ are in Benchmarks\Playback\balmora_<session>. The original recording, starting
 save, frozen baseline and normal gameplay configuration are preserved.
 The engine's fixed Windows renderer cache is still shared.
 
-The captured route is replayed with movement/run/sneak inputs and interpolated
-first-person camera direction, scheduled in simulation time. Normal physics
-and collisions move the character; there are no position teleports or corrections.
-The character holds the recorded view first, then walks the recorded route.
-Position, cell and camera errors are logged at 5 Hz using OMWPLAY JSON records.
-Unexpected pause, combat, policy failure, starting mismatch or large drift aborts.
+The default preview follows the captured path through normal movement controls,
+with bounded horizontal steering corrections and interpolated first-person
+camera direction. Normal physics and collisions move the character. Playback
+never writes position, disables collision, or changes the character's stats.
+If the character falls behind, the reference clock can briefly hold while
+ordinary movement catches up. Steering, holds, reference lag, position/camera
+errors and live collision state are recorded at 5 Hz using OMWPLAY JSON records.
+The initial fixed view and recorded stationary segments remain stationary.
+Starting mismatch, combat, policy failure, large drift or a blocked path aborts.
 
-This is an input playback preview, not a performance benchmark. Reaching the end
-does not prove an identical path or repeatable actor workload. Review SUMMARY.json
-and playback.jsonl before qualifying a future automatic benchmark. Current support
+This is a guided route preview, not a performance benchmark. Its steering and
+reference-clock holds change the original timed-input workload. Reaching the end
+does not prove repeatable actor workload or qualify a performance comparison.
+Review SUMMARY.json and playback.jsonl before designing an automatic benchmark.
+Current support
 is limited to the complete exterior Balmora recording, with no jump, attack,
 activation, door, menu or interior replay. The older incomplete Seyda Neen recording
 remains incomplete and is not admitted by this launcher.
@@ -28,4 +33,8 @@ remains incomplete and is not admitted by this launcher.
 Developer use:
 powershell -NoProfile -File OptimizedMW_RoutePlayback.ps1 -GameDir C:\OptimizedMW_Test -PrepareOnly
 Optional -CaptureDirectory selects a specific complete recording.
+Optional -RawInputs preserves the original uncorrected timed-input control path.
+SUMMARY.json distinguishes playback_complete from input_replay_complete; guided
+completion never claims exact raw-input completion. Both protocols remain
+PREVIEW_NOT_BENCHMARK_VALIDATED.
 Python 3 is required for the bounded route compiler; -PythonExecutable can select it.

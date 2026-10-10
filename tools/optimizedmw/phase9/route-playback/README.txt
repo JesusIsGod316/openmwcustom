@@ -1,4 +1,4 @@
-PRIVATE BALMORA INPUT PLAYBACK PREVIEW
+PRIVATE BALMORA PHYSICAL ROUTE PREVIEW
 
 The host generates options.lua and timeline.lua under scripts/optimizedmw_route_playback.
 Append this PLAYER script last in the private content order. The existing private
@@ -16,6 +16,37 @@ pose-only sampler. Movement input and position comparisons remain at current
 elapsed time. This phase repair is a preview mechanism, not exact native input
 or deterministic traversal proof.
 No position teleport or corrective position write is present.
+
+options.guidance_enabled=true explicitly selects physical_xy_follower_v1. The
+Lua package defaults to raw_physics_input when the flag is absent/false; the
+host may select guided preview by default and expose its -RawInputs control.
+Guidance is ordinary actor-local movement only. A separate setup phase aligns
+XY within six units, with input norm <=0.2 and five simulation seconds maximum;
+starting Z must remain within 48 units. Recorded camera headings and gait flags
+remain the reference. No collision, stat, position, or console-mode writes occur.
+Player collision must be confirmed enabled by the read-only debug API.
+
+During guided travel, gain-two world XY feedback is projected into actor-local
+controls using the heading mechanics consumes this frame. Correction norm is
+<=0.35; total input norm is <=1. Reference time holds when current XY error
+exceeds 32 units and resumes below 16. While held, nominal movement is zeroed
+and bounded feedback catches up to the held target. Reference time is monotone,
+and the next heading uses its allowed frame advance. Fixed-view/stop inputs stay
+stationary; an out-of-corridor stationary pose fails explicitly. Hard XY/Z drift
+limits are 96 units each. Command norm >0.25 with less than eight XY units of
+progress for two simulation seconds fails as a stall. Clock lag >15 seconds or
+runtime >180 seconds also fails. End XY <=24 and Z <=48 are required for finish.
+These bounds cannot make collision-obstructed or physically unreachable paths
+reachable. The live stairs/path check is required before accepting this preview.
+
+Guided checks include source elapsed time, reference time/advance/hold/lag,
+separate acquired and applied controls, corrections and gait-speed estimate,
+XY/Z errors, and read-only collision/ground/swimming/current-speed observations.
+Hold/resume and initial alignment events are explicit. getRunSpeed/getWalkSpeed
+are estimates used to scale feedback; getCurrentSpeed is separately observed.
+Neither speed read proves achieved physical velocity. Successful guided finish
+sets route_playback_finished=true and input_replay_finished=false. Successful
+raw finish sets both true. Both remain PREVIEW_NOT_BENCHMARK_VALIDATED.
 
 This preview supports the current exterior first-person Balmora recording only.
 It rejects jump/attack inputs and lacks activation, doors or menu replay. Bare

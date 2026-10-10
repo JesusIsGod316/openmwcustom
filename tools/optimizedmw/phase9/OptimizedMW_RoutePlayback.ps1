@@ -3,12 +3,13 @@ param(
     [string]$CaptureDirectory='',
     [string]$FrozenConfigDirectory='',
     [string]$PythonExecutable='',
+    [switch]$RawInputs,
     [switch]$PrepareOnly,
     [switch]$LibraryOnly
 )
 $ErrorActionPreference='Stop'
 # Dot-sourced recorder parameters must not replace this invocation's switches.
-$playbackInvocation=@{Game=$GameDir;Capture=$CaptureDirectory;Frozen=$FrozenConfigDirectory;Python=$PythonExecutable;Prepare=[bool]$PrepareOnly;Library=[bool]$LibraryOnly}
+$playbackInvocation=@{Game=$GameDir;Capture=$CaptureDirectory;Frozen=$FrozenConfigDirectory;Python=$PythonExecutable;Raw=[bool]$RawInputs;Prepare=[bool]$PrepareOnly;Library=[bool]$LibraryOnly}
 . (Join-Path $PSScriptRoot 'OptimizedMW_FrozenConfig.ps1')
 . (Join-Path $PSScriptRoot 'OptimizedMW_RouteRecorder.ps1') -GameDir $playbackInvocation.Game -LibraryOnly
 
@@ -21,7 +22,7 @@ function Assert-OptimizedMWPlaybackIdentities {
 }
 
 function New-OptimizedMWPlaybackSession {
-    param([string]$GameDirectory,[string]$Capture,[string]$Frozen,[string]$Python)
+    param([string]$GameDirectory,[string]$Capture,[string]$Frozen,[string]$Python,[switch]$Raw)
     $game=Assert-OptimizedMWPlainPath $GameDirectory
     $capture=Assert-OptimizedMWPlainPath $Capture
     if(-not $Frozen){$Frozen=Join-Path $game 'Configuration\Benchmark-SaintJs-Balmora'}
@@ -30,7 +31,7 @@ function New-OptimizedMWPlaybackSession {
     $package=Assert-OptimizedMWPlainPath (Join-Path $game 'RoutePlayback')
     $session=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $Frozen -PackageDirectory (Join-Path $game 'RouteRecorder') -RouteName balmora -SmallValidationWindow -OutputCategory Playback
     $data=Join-Path $session.runtime.user_data_directory 'data'
-    $relativeFiles=@('optimizedmw_route_playback.omwscripts','scripts\optimizedmw_route_playback\core.lua','scripts\optimizedmw_route_playback\player.lua')
+    $relativeFiles=@('optimizedmw_route_playback.omwscripts','scripts\optimizedmw_route_playback\core.lua','scripts\optimizedmw_route_playback\player.lua','scripts\optimizedmw_route_playback\guidance.lua')
     $playbackInputs=[Collections.Generic.List[object]]::new()
     foreach($relative in $relativeFiles){
         $source=Get-OptimizedMWFrozenFile (Join-Path $package $relative)
@@ -63,14 +64,16 @@ function New-OptimizedMWPlaybackSession {
     $text='return { enabled=false, schema=1,'+$text.Substring('return { enabled=true, schema=1,'.Length)
     [IO.File]::WriteAllText($recorderOptions,$text,[Text.UTF8Encoding]::new($false))
     $options=Join-Path $data 'scripts\optimizedmw_route_playback\options.lua'
-    [IO.File]::WriteAllText($options,("return { enabled=true, session='"+$session.id+"', autostart_seconds=3, quit_on_finish=true, setup_timeout_seconds=90, position_tolerance=128, abort_position_error=2048, max_duration_seconds=180 }"),[Text.UTF8Encoding]::new($false))
+    $guided=$(if($Raw){'false'}else{'true'})
+    [IO.File]::WriteAllText($options,("return { enabled=true, session='"+$session.id+"', guidance_enabled="+$guided+", autostart_seconds=3, quit_on_finish=true, setup_timeout_seconds=90, position_tolerance=128, abort_position_error=2048, max_duration_seconds=180 }"),[Text.UTF8Encoding]::new($false))
     [IO.File]::AppendAllText($session.runtime.config_path,"`ncontent=optimizedmw_route_playback.omwscripts`n",[Text.UTF8Encoding]::new($false))
     $session.arguments=@(Get-OptimizedMWFrozenArguments $session.runtime)+@('--load-savegame',('"'+$privateStart+'"'),'--skip-menu')
     $session.manifest.arguments=$session.arguments
     $session.manifest.options=Get-OptimizedMWFrozenFile $recorderOptions
     $session.manifest.derived_private_inputs=@((Get-OptimizedMWFrozenFile $session.runtime.config_path),(Get-OptimizedMWFrozenFile $session.runtime.settings_path),(Get-OptimizedMWFrozenFile (Join-Path $session.runtime.directory 'input_v3.xml')))
-    $session.manifest.mode='private_physics_input_replay_preview'
-    $session.manifest.scope='Visible private input playback with path/camera observations. No optimization benchmark or performance acceptance.'
+    $session.manifest.mode=$(if($Raw){'private_physics_input_replay_preview'}else{'private_guided_physics_route_preview'})
+    $session.manifest.scope='Visible private route preview. Guided controls and any source-clock holds are recorded; no exact timed-input equivalence or performance acceptance.'
+    $session.manifest | Add-Member -NotePropertyName playback_protocol -NotePropertyValue $(if($Raw){'raw_physics_input'}else{'physical_xy_follower_v1'})
     $session.manifest.starting_location_mode='load_copied_captured_start_no_teleport'
     $session.manifest.frozen_configuration.mode='verified_baseline_inputs_before_playback_derivation'
     $session.manifest.frozen_configuration.save_load_status='Baseline seed retained privately; separate playback_start copy is loaded by top-level arguments'
@@ -92,7 +95,7 @@ function Export-OptimizedMWPlaybackLog {
     if(Test-Path -LiteralPath $OutputPath){throw 'Preserving existing playback evidence'}
     if((Get-OptimizedMWFrozenFile $LogPath).bytes -gt 67108864){throw 'Playback stdout exceeds 64 MiB observer budget'}
     $failures=[Collections.Generic.List[string]]::new();$counts=@{};$seq=0L;$finish=$null;$started=$false;$closed=$false
-    $checks=[Collections.Generic.List[object]]::new()
+    $checks=[Collections.Generic.List[object]]::new();$collisionObservations=[Collections.Generic.List[object]]::new()
     $writer=[IO.StreamWriter]::new($OutputPath,$false,[Text.UTF8Encoding]::new($false))
     try{
         foreach($line in [IO.File]::ReadLines($LogPath)){
@@ -108,8 +111,9 @@ function Export-OptimizedMWPlaybackLog {
             if($closed){$failures.Add('Observation follows playback footer')}
             if($seq -eq 1 -and $event -cne 'setup'){$failures.Add('Playback setup is not the first observation')}
             if($event -eq 'start'){$started=$true}
-            if($event -in @('check','marker','finish') -and -not $started){$failures.Add('Playback work/footer precedes start')}
-            if($event -notin @('setup','start','check','marker','finish','error','combat')){$failures.Add('Unknown playback event')}
+            if($event -in @('check','marker','finish','reference_hold','reference_resume') -and -not $started){$failures.Add('Playback work/footer precedes start')}
+            if($event -notin @('setup','start','check','marker','finish','error','combat','alignment_check','alignment_finished','reference_hold','reference_resume')){$failures.Add('Unknown playback event')}
+            if($event -in @('setup','start','check','finish')){$collisionObservations.Add($record.physical_state)}
             if(-not $counts.ContainsKey($event)){$counts[$event]=0};$counts[$event]++
             if($event -eq 'check'){
                 if(-not (Test-OptimizedMWRouteNumber $record.position_error 0 1e8) -or $record.cell_matches -isnot [bool]){$failures.Add('Invalid playback position/cell check')}
@@ -124,7 +128,17 @@ function Export-OptimizedMWPlaybackLog {
     if($null -eq $ExitCode -or $ExitCode -ne 0){$failures.Add('Game did not exit normally')}
     if($checks.Count -lt 2){$failures.Add('Insufficient playback path observations')}
     if($finish){
-        if([string]$finish.reason -cne 'route_finished' -or $finish.input_replay_finished -isnot [bool] -or -not $finish.input_replay_finished){$failures.Add('Input replay did not finish its route')}
+        $protocol='raw_physics_input'
+        if($finish.PSObject.Properties['playback_protocol']){$protocol=[string]$finish.playback_protocol}
+        if($protocol -cnotin @('raw_physics_input','physical_xy_follower_v1')){$failures.Add('Unknown playback protocol')}
+        $routeFinished=$finish.input_replay_finished
+        if($finish.PSObject.Properties['route_playback_finished']){$routeFinished=$finish.route_playback_finished}
+        if([string]$finish.reason -cne 'route_finished' -or $routeFinished -isnot [bool] -or -not $routeFinished){$failures.Add('Playback did not finish its route')}
+        if($protocol -ceq 'physical_xy_follower_v1' -and ($finish.input_replay_finished -isnot [bool] -or $finish.input_replay_finished)){$failures.Add('Guided playback incorrectly claims raw input replay')}
+        if($protocol -ceq 'physical_xy_follower_v1'){
+            foreach($physical in $collisionObservations){if($null -eq $physical -or $physical.collision_enabled -isnot [bool] -or -not $physical.collision_enabled){$failures.Add('Guided playback collision state unavailable or disabled');break}}
+        }
+        if($protocol -ceq 'raw_physics_input' -and ($finish.input_replay_finished -isnot [bool] -or -not $finish.input_replay_finished)){$failures.Add('Raw playback did not finish its input replay')}
         if($finish.policy_stop_acknowledged -isnot [bool] -or -not $finish.policy_stop_acknowledged -or
             $finish.policy.qualified -isnot [bool] -or -not $finish.policy.qualified -or $finish.policy.failed -isnot [bool] -or $finish.policy.failed -or
             $finish.policy.ready -isnot [bool] -or -not $finish.policy.ready -or $finish.policy.enabled -isnot [bool] -or -not $finish.policy.enabled -or
@@ -133,9 +147,10 @@ function Export-OptimizedMWPlaybackLog {
         if($finish.benchmark_qualified -isnot [bool] -or $finish.benchmark_qualified){$failures.Add('Preview incorrectly claims benchmark qualification')}
         if($finish.check_count -ne $checks.Count){$failures.Add('Playback check-count mismatch')}
     }
-    return [pscustomobject][ordered]@{schema=1;session=$SessionId;input_replay_complete=($failures.Count -eq 0);qualification='PREVIEW_NOT_BENCHMARK_VALIDATED';
+    if(-not $finish){$protocol='unavailable'}
+    return [pscustomobject][ordered]@{schema=1;session=$SessionId;playback_complete=($failures.Count -eq 0);input_replay_complete=($failures.Count -eq 0 -and $protocol -ceq 'raw_physics_input');playback_protocol=$protocol;qualification='PREVIEW_NOT_BENCHMARK_VALIDATED';
         exit_code=$ExitCode;errors=@($failures | Select-Object -Unique);record_count=$seq;events=$counts;finish=$finish;
-        playback_file=(Get-OptimizedMWFrozenFile $OutputPath);scope='Physical input replay preview; path errors and cell mismatches require review before automated benchmarking.'}
+        playback_file=(Get-OptimizedMWFrozenFile $OutputPath);scope='Physical route preview; steering, reference-clock holds, path errors and cell mismatches require review before automated benchmarking.'}
 }
 
 function Invoke-OptimizedMWRoutePlayback {
@@ -152,9 +167,10 @@ function Invoke-OptimizedMWRoutePlayback {
         }
         if(-not $capture){throw 'No complete Balmora recording found'}
     }
-    $session=New-OptimizedMWPlaybackSession -GameDirectory $game -Capture $capture -Frozen $playbackInvocation.Frozen -Python $playbackInvocation.Python
+    $session=New-OptimizedMWPlaybackSession -GameDirectory $game -Capture $capture -Frozen $playbackInvocation.Frozen -Python $playbackInvocation.Python -Raw:$playbackInvocation.Raw
     Write-Host ('Source recording: '+$capture)
     Write-Host ('Playback evidence: '+$session.directory)
+    Write-Host ('Playback protocol: '+$session.manifest.playback_protocol+'; preview only.')
     Write-Host 'Visible 1280x720 private preview. Playback starts automatically after loading. F11 aborts.'
     if($playbackInvocation.Prepare){Write-Host 'Prepared only; no game launched.';return $session}
     Assert-OptimizedMWRouteSessionInputs $session
@@ -175,21 +191,21 @@ function Invoke-OptimizedMWRoutePlayback {
         $process.WaitForExit()
         $summary=Export-OptimizedMWPlaybackLog -LogPath $session.manifest.stdout_path -OutputPath (Join-Path $session.directory 'playback.jsonl') -SessionId $session.id -ExitCode $process.ExitCode
         $sourceUnchanged=$true;$unchanged=$true
-        try{Assert-OptimizedMWPlaybackIdentities $session.manifest.source_capture}catch{$sourceUnchanged=$false;$summary.errors+=@($_.Exception.Message);$summary.input_replay_complete=$false}
+        try{Assert-OptimizedMWPlaybackIdentities $session.manifest.source_capture}catch{$sourceUnchanged=$false;$summary.errors+=@($_.Exception.Message);$summary.input_replay_complete=$false;$summary.playback_complete=$false}
         try{
             $protectedAfter=Get-OptimizedMWRouteProtectedInputs $session.baseline
             $unchanged=Compare-OptimizedMWRouteProtectedInputs $session.manifest.protected_before $protectedAfter
         }catch{$unchanged=$false;$summary.errors+=@($_.Exception.Message)}
-        if(-not $unchanged){$summary.errors+=@('Protected original inputs changed during playback');$summary.input_replay_complete=$false}
+        if(-not $unchanged){$summary.errors+=@('Protected original inputs changed during playback');$summary.input_replay_complete=$false;$summary.playback_complete=$false}
         $summary | Add-Member -NotePropertyName protected_inputs_unchanged -NotePropertyValue $unchanged
         $summary | Add-Member -NotePropertyName source_capture_unchanged -NotePropertyValue $sourceUnchanged
         Write-OptimizedMWRouteJson (Join-Path $session.directory 'SUMMARY.json') $summary
-        if(-not $summary.input_replay_complete){Write-Warning ('Playback incomplete: '+($summary.errors -join '; '))}
+        if(-not $summary.playback_complete){Write-Warning ('Playback incomplete: '+($summary.errors -join '; '))}
         return $summary
     }finally{foreach($name in $environment.Keys){[Environment]::SetEnvironmentVariable($name,$environment[$name],'Process')}}
 }
 if(-not $playbackInvocation.Library){
     $playbackResult=Invoke-OptimizedMWRoutePlayback
     $playbackResult
-    if(-not $playbackInvocation.Prepare -and -not $playbackResult.input_replay_complete){exit 1}
+    if(-not $playbackInvocation.Prepare -and -not $playbackResult.playback_complete){exit 1}
 }

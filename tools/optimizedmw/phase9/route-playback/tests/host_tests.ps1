@@ -20,6 +20,18 @@ function New-PlaybackFixtureRows {
         [ordered]@{event='finish';reason='route_finished';input_replay_finished=$true;benchmark_qualified=$false;qualification='PREVIEW_NOT_BENCHMARK_VALIDATED';maximum_position_error=0;maximum_camera_yaw_error=0;maximum_camera_pitch_error=0;cell_mismatch_check_count=0;outside_position_tolerance_check_count=0;check_count=2;policy=(New-PlaybackFixturePolicy);policy_stop_acknowledged=$true;policy_observer_drained=$true;policy_drain_timed_out=$false}
     )
 }
+function New-GuidedPlaybackFixtureRows {
+    $rows=New-PlaybackFixtureRows
+    $rows[0].scope='private_guided_physics_route_preview'
+    foreach($row in $rows){
+        $row.playback_protocol='physical_xy_follower_v1'
+        $row.physical_state=[ordered]@{collision_enabled=$true;on_ground=$true;swimming=$false;current_speed=120}
+    }
+    $rows[4].playback_protocol='physical_xy_follower_v1'
+    $rows[4].route_playback_finished=$true
+    $rows[4].input_replay_finished=$false
+    return $rows
+}
 function Export-PlaybackFixture {
     param([object[]]$Rows,[Nullable[int]]$ExitCode=0,[string]$InjectedRaw='', [switch]$PreserveSequence)
     $id=[Guid]::NewGuid().ToString('N')
@@ -44,21 +56,68 @@ function Export-PlaybackFixture {
 function Check-IncompletePlayback {
     param([object[]]$Rows,[string]$Message,[Nullable[int]]$ExitCode=0,[string]$InjectedRaw='', [switch]$PreserveSequence)
     $result=Export-PlaybackFixture -Rows $Rows -ExitCode $ExitCode -InjectedRaw $InjectedRaw -PreserveSequence:$PreserveSequence
-    Check-Playback (-not $result.input_replay_complete -and $result.errors.Count -gt 0) $Message
+    Check-Playback (-not $result.playback_complete -and -not $result.input_replay_complete -and $result.errors.Count -gt 0) $Message
     return $result
 }
 try{
     # Actual dot-source parameter binding must retain playback invocation values.
-    . $hostPath -GameDir $fixture -CaptureDirectory (Join-Path $fixture 'capture') -FrozenConfigDirectory (Join-Path $fixture 'frozen') -PythonExecutable (Join-Path $fixture 'python.exe') -PrepareOnly -LibraryOnly
+    . $hostPath -GameDir $fixture -CaptureDirectory (Join-Path $fixture 'capture') -FrozenConfigDirectory (Join-Path $fixture 'frozen') -PythonExecutable (Join-Path $fixture 'python.exe') -RawInputs -PrepareOnly -LibraryOnly
     Check-Playback ($playbackInvocation.Prepare -eq $true -and $playbackInvocation.Library -eq $true) 'Dot-sourced recorder replaced playback switches'
     Check-Playback ($playbackInvocation.Game -ceq $fixture -and $playbackInvocation.Capture -ceq (Join-Path $fixture 'capture') -and $playbackInvocation.Frozen -ceq (Join-Path $fixture 'frozen') -and $playbackInvocation.Python -ceq (Join-Path $fixture 'python.exe')) 'Dot-source replaced selected playback inputs'
+    Check-Playback ($playbackInvocation.Raw -eq $true) 'Dot-sourced recorder replaced explicit raw-input protocol selection'
     $tokens=$null;$parseErrors=$null;$null=[Management.Automation.Language.Parser]::ParseFile($hostPath,[ref]$tokens,[ref]$parseErrors)
     Check-Playback ($parseErrors.Count -eq 0) 'Playback host source does not parse'
 
     $valid=Export-PlaybackFixture (New-PlaybackFixtureRows)
-    Check-Playback ($valid.input_replay_complete -and $valid.errors.Count -eq 0 -and $valid.record_count -eq 5) 'Valid physical input preview was rejected'
+    Check-Playback ($valid.playback_complete -and $valid.input_replay_complete -and $valid.playback_protocol -ceq 'raw_physics_input' -and $valid.errors.Count -eq 0 -and $valid.record_count -eq 5) 'Valid legacy physical input preview was rejected'
     Check-Playback ($valid.qualification -ceq 'PREVIEW_NOT_BENCHMARK_VALIDATED' -and $valid.finish.benchmark_qualified -eq $false) 'Preview falsely claims benchmark qualification'
     Check-Playback ($valid.events.check -eq 2 -and (Get-OptimizedMWFrozenFile $valid.playback_file.path).sha256 -ceq $valid.playback_file.sha256) 'Exported observation count/identity unavailable'
+
+    # Guided completion is explicitly distinct from exact raw input completion.
+    $guided=Export-PlaybackFixture (New-GuidedPlaybackFixtureRows)
+    Check-Playback ($guided.playback_complete -and -not $guided.input_replay_complete -and $guided.playback_protocol -ceq 'physical_xy_follower_v1' -and $guided.errors.Count -eq 0) 'Valid guided preview was rejected or falsely claims raw replay'
+    Check-Playback ($guided.finish.route_playback_finished -eq $true -and $guided.finish.input_replay_finished -eq $false -and $guided.qualification -ceq 'PREVIEW_NOT_BENCHMARK_VALIDATED') 'Guided completion/provenance lost during export'
+    $rows=New-PlaybackFixtureRows;$rows[4].playback_protocol='raw_physics_input';$rows[4].route_playback_finished=$true
+    $explicitRaw=Export-PlaybackFixture $rows
+    Check-Playback ($explicitRaw.playback_complete -and $explicitRaw.input_replay_complete -and $explicitRaw.playback_protocol -ceq 'raw_physics_input') 'Explicit raw protocol rejected'
+    $rows=New-GuidedPlaybackFixtureRows;$rows[4].input_replay_finished=$true;$null=Check-IncompletePlayback $rows 'Guided preview falsely claiming exact raw replay accepted'
+    $rows=New-GuidedPlaybackFixtureRows;$rows[4].input_replay_finished='false';$null=Check-IncompletePlayback $rows 'String raw completion flag accepted for guided preview'
+    $rows=New-GuidedPlaybackFixtureRows;$rows[4].input_replay_finished=$null;$null=Check-IncompletePlayback $rows 'Unavailable raw completion flag accepted for guided preview'
+    $rows=New-GuidedPlaybackFixtureRows;$rows[4].route_playback_finished=$false;$null=Check-IncompletePlayback $rows 'Unfinished guided route accepted'
+    $rows=New-GuidedPlaybackFixtureRows;$rows[4].route_playback_finished='true';$null=Check-IncompletePlayback $rows 'String route completion flag accepted'
+    $rows=New-GuidedPlaybackFixtureRows;$rows[4].Remove('route_playback_finished');$null=Check-IncompletePlayback $rows 'Guided footer without route completion accepted'
+    $rows=New-GuidedPlaybackFixtureRows;$rows[4].playback_protocol='physical_xy_follower_v99';$null=Check-IncompletePlayback $rows 'Unsupported guided protocol accepted'
+    $rows=New-GuidedPlaybackFixtureRows;$rows[4].playback_protocol='Physical_xy_follower_v1';$null=Check-IncompletePlayback $rows 'Case-mutated guided protocol accepted'
+    $rows=New-PlaybackFixtureRows;$rows[4].route_playback_finished=$false;$null=Check-IncompletePlayback $rows 'Legacy true flag overrides explicit unfinished route'
+    $rows=New-PlaybackFixtureRows;$rows[4].playback_protocol='raw_physics_input';$rows[4].route_playback_finished=$true;$rows[4].input_replay_finished=$false;$null=Check-IncompletePlayback $rows 'Raw protocol with unfinished input replay falsely claims exact raw completion'
+    $rows=New-GuidedPlaybackFixtureRows;$null=Check-IncompletePlayback $rows 'Guided preview with nonzero native exit accepted' -ExitCode 17
+    $rows=New-GuidedPlaybackFixtureRows;$rows[4].policy_observer_drained=$false;$null=Check-IncompletePlayback $rows 'Guided preview with undrained observer accepted'
+    $rows=New-GuidedPlaybackFixtureRows;$null=Check-IncompletePlayback $rows[0..3] 'Guided preview without footer accepted'
+
+    # Physical collision provenance must stay affirmative throughout guided work.
+    foreach($rowIndex in @(0,1,2,4)){
+        foreach($invalidCollision in @($false,'true',1)){
+            $rows=New-GuidedPlaybackFixtureRows
+            $rows[$rowIndex].physical_state.collision_enabled=$invalidCollision
+            $null=Check-IncompletePlayback $rows ('Guided '+$rows[$rowIndex].event+' accepted invalid collision state '+[string]$invalidCollision)
+        }
+        $rows=New-GuidedPlaybackFixtureRows;$rows[$rowIndex].physical_state.Remove('collision_enabled')
+        $null=Check-IncompletePlayback $rows ('Guided '+$rows[$rowIndex].event+' accepted missing collision flag')
+        $rows=New-GuidedPlaybackFixtureRows;$rows[$rowIndex].Remove('physical_state')
+        $null=Check-IncompletePlayback $rows ('Guided '+$rows[$rowIndex].event+' accepted missing physical state')
+    }
+
+    # Pre-route alignment and explicit source-clock holds are preview observations.
+    $rows=New-GuidedPlaybackFixtureRows
+    $alignmentCheck=[ordered]@{event='alignment_check';actual_position=@{x=1;y=2;z=3};expected_position=@{x=1;y=2;z=3};command=@{movement=0;side_movement=0};physical_state=$rows[0].physical_state;elapsed=0.2}
+    $alignmentFinished=[ordered]@{event='alignment_finished';initial_seed_position=@{x=1;y=2;z=3};actual_position=@{x=1;y=2;z=3};expected_position=@{x=1;y=2;z=3};horizontal_error=0;vertical_error=0;alignment_seconds=0.2;physical_state=$rows[0].physical_state}
+    $hold=[ordered]@{event='reference_hold';reference_time=0.5;source_elapsed=0.5;reference_clock_lag=0;horizontal_error=100;vertical_error=0}
+    $resume=[ordered]@{event='reference_resume';reference_time=0.5;source_elapsed=0.7;reference_clock_lag=0.2;horizontal_error=10;vertical_error=0}
+    $transitions=Export-PlaybackFixture @($rows[0],$alignmentCheck,$alignmentFinished,$rows[1],$rows[2],$hold,$resume,$rows[3],$rows[4])
+    Check-Playback ($transitions.playback_complete -and -not $transitions.input_replay_complete -and $transitions.record_count -eq 9 -and $transitions.errors.Count -eq 0) 'Valid guided alignment/hold transitions were rejected or falsely claim raw completion'
+    Check-Playback ($transitions.events.alignment_check -eq 1 -and $transitions.events.alignment_finished -eq 1 -and $transitions.events.reference_hold -eq 1 -and $transitions.events.reference_resume -eq 1 -and $transitions.events.check -eq 2) 'Guided transition observations lost in export'
+    $rows=New-GuidedPlaybackFixtureRows;$null=Check-IncompletePlayback @($rows[0],$hold,$rows[1],$rows[2],$rows[3],$rows[4]) 'Source clock hold before route start accepted'
+    $rows=New-GuidedPlaybackFixtureRows;$null=Check-IncompletePlayback @($rows[0],$resume,$rows[1],$rows[2],$rows[3],$rows[4]) 'Source clock resume before route start accepted'
     $null=Check-IncompletePlayback (New-PlaybackFixtureRows) 'Nonzero native exit was accepted' -ExitCode 17
     $null=Check-IncompletePlayback (New-PlaybackFixtureRows) 'Unavailable native exit was accepted' -ExitCode $null
     $null=Check-IncompletePlayback (New-PlaybackFixtureRows) 'Malformed JSON was accepted' -InjectedRaw '{broken'
