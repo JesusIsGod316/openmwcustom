@@ -16,7 +16,7 @@ does not replace the frozen baseline. The ordinary START-OptimizedMW-Test.bat
 continues using the normal gameplay profile unless passed -FrozenConfigDirectory.
 
 The supplied baseline preserves the captured ordered mod configuration and
-Normal Headroom settings: 227 content entries, 310 explicit mod data paths,
+Normal Headroom settings: 227 content entries, 309 explicit mod data paths,
 8 groundcover entries, and 3 fallback archives. Runtime configuration also
 retains the package's ordinary resources/vfs-mw data and original local mod
 data with their priorities. Lua storage, key bindings and shaders.yaml were
@@ -28,6 +28,12 @@ directory requirement. Its plugin/scripts were already absent from the captured
 content list. The revised LOCK.json records the prior lock/config identities and
 this one-directory removal as a new configuration cohort. SaintJs, Hip Lanterns,
 Belt Lanterns, copied saves and all remaining requirements are preserved.
+
+The same day, the user authorized removing the obsolete Physical Maps/Held
+Prototype/Data Files directory requirement. The current main Physical Maps
+Data Files already supplies the held scripts and an empty compatibility
+manifest. That content entry, Physical Maps.esp, and Test Copies remain
+enabled. Only the stale directory reference was removed in this next cohort.
 
 SaintJs means the 16 visual/PBR replacer directories. Their 1,027 referenced
 files have a saved SHA256/length manifest. Keep the installed asset directories:
