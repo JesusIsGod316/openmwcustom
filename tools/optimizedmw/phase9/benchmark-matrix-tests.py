@@ -58,5 +58,45 @@ class Benchmarks(unittest.TestCase):
             matrix.route_quality({'playback':{'playback_complete':True,'errors':[],
                 'finish':{'policy':{'qualified':True,'combat_during_recording':1}}}})
 
+    def test_bounded_exterior_crossing_and_wrong_itinerary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)
+            rows=[{'event':'check','seq':1,'t_wall':1.,'cell_matches':True,
+                   'actual_cell':'Esm3ExteriorCell:-3:-3','expected_cell':'Esm3ExteriorCell:-3:-3',
+                   'actual_position':{'x':-20030,'y':-16410,'z':289},
+                   'expected_position':{'x':-20030,'y':-16410,'z':289}},
+                  {'event':'check','seq':2,'t_wall':1.2,'cell_matches':False,
+                   'actual_cell':'Esm3ExteriorCell:-3:-2','expected_cell':'Esm3ExteriorCell:-3:-3',
+                   'actual_position':{'x':-20032,'y':-16375,'z':289},
+                   'expected_position':{'x':-20005,'y':-16389,'z':289}},
+                  {'event':'check','seq':3,'t_wall':1.4,'cell_matches':True,
+                   'actual_cell':'Esm3ExteriorCell:-3:-2','expected_cell':'Esm3ExteriorCell:-3:-2',
+                   'actual_position':{'x':-20110,'y':-16280,'z':289},
+                   'expected_position':{'x':-20110,'y':-16280,'z':289}}]
+            def save():
+                (path/'playback.jsonl').write_text('\n'.join(map(json.dumps,rows)))
+            save()
+            result=matrix.cell_crossings(path,1)
+            self.assertEqual(result['qualification'],'BOUNDED_EXTERIOR_BOUNDARY_SKEW')
+            self.assertEqual(result['mismatch_checks'],1)
+            rows[-1]['t_wall']=2.; save()
+            with self.assertRaises(ValueError):matrix.cell_crossings(path,1)
+            rows[-1]['t_wall']=1.4
+            rows[1]['actual_position']['x']-=100; save()
+            with self.assertRaises(ValueError):matrix.cell_crossings(path,1)
+            rows[1]['actual_position']['x']+=100
+            rows[1]['actual_cell']='Esm3ExteriorCell:-4:-2';save()
+            with self.assertRaises(ValueError):matrix.cell_crossings(path,1)
+
+    def test_cache_engagement_does_not_prove_visible_lod(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)
+            (path/'openmw.log').write_text('active_consumed_draws=0 cache_fast_hits=5\n')
+            result=matrix.engagement(path,{'lod cache hit admission':'true'},1)
+            self.assertTrue(result['positive_work']['lod_cache_hit'])
+            self.assertFalse(result['all_requested_positive'])
+            (path/'openmw.log').write_text('active_consumed_draws=10 cache_fast_hits=5\n')
+            self.assertTrue(matrix.engagement(path,{'lod cache hit admission':'true'},1)['all_requested_positive'])
+
 
 if __name__=='__main__':unittest.main()

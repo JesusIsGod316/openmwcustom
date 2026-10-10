@@ -54,6 +54,14 @@ before accepting numerical A/B results. Use matched ABBA repeats. Deep output is
 diagnostic and must not be pooled with Normal FPS results. Off-screen presentation
 is a separate cohort from visible user gameplay. No automatic promotion occurs.
 
+Cell checks retain every mismatch. A crossing may qualify as bounded exterior
+boundary skew only with the same ordered cell itinerary, correctly located
+coordinates on one adjacent boundary, XY error at most 64 units/Z at most 32,
+and matching samples enclosing the mismatch within half a second. Interior,
+skipped-cell, wider-path and sustained mismatches fail. This is sampled guided
+crossing evidence, not frame-exact transition timing. Active-grid LOD candidates
+also require actual reduced draws; successful cooking/cache hits alone fail.
+
 Analysis includes median/tail times, MAD/IQR/standard deviation, adjacent-frame
 changes and rolling-median relative spikes below fixed hitch thresholds. Route
 phase boundaries use logged wall-time prefixes joined to system-clock frames,

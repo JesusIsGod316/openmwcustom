@@ -132,9 +132,14 @@ def analyze(profile):
             'metrics': {key:pacing(values) for key,values in groups.items() if values}}
 
 
-def engagement(profile, requested):
+def engagement(profile, requested, asset_mask=0):
     text = (profile/'openmw.log').read_text(encoding='utf-8-sig')
     positive = {}
+    if asset_mask & 1:
+        # A successful cook/cache lookup is not proof that visible LOD draws
+        # consumed the reduced product in the real active-grid renderer.
+        matches = re.findall(r'active_consumed_draws=(\d+)',text)
+        positive['active_grid_lod_draws'] = bool(matches and int(matches[-1])>0)
     if requested.get('prepare material images') == 'true':
         matches = re.findall(r'OptimizedMW material image preparation:.*?decoded=(\d+)',text)
         positive['material_images'] = bool(matches and int(matches[-1])>0)
@@ -149,19 +154,80 @@ def engagement(profile, requested):
             'limit': 'Preparation/dispatch engagement; visible resource adoption and performance require separate evidence'}
 
 
-def route_quality(receipt):
+def cell_crossings(profile, expected_count):
+    """Audit sampled boundary skew without hiding wrong-cell route excursions.
+
+    A physical follower can cross an exterior boundary a fraction of a second
+    before/after its reference. Preserve the mismatch, require the same ordered
+    cell itinerary, and bound BOTH positions and the surrounding sample window.
+    Interior transitions, skipped cells, sustained mismatches and wider path
+    departures remain failures. This never claims frame-exact cell ownership.
+    """
+    if not expected_count:
+        return {'qualification':'EXACT_SAMPLED_CELLS','mismatch_checks':0}
+    if profile is None:
+        raise ValueError('Cell mismatch requires the complete route evidence')
+    with (Path(profile)/'playback.jsonl').open(encoding='utf-8-sig') as stream:
+        checks = [json.loads(line) for line in stream if line.strip()]
+    checks = [row for row in checks if row.get('event')=='check']
+    mismatches = [i for i,row in enumerate(checks) if not row.get('cell_matches')]
+    if len(mismatches)!=expected_count:
+        raise ValueError('Cell mismatch count does not match raw route checks')
+    def itinerary(key):
+        cells=[]
+        for row in checks:
+            if not cells or cells[-1]!=row[key]: cells.append(row[key])
+        return cells
+    if itinerary('actual_cell')!=itinerary('expected_cell'):
+        raise ValueError('Playback changed the ordered exterior cell itinerary')
+    def exterior(value,position):
+        match=re.fullmatch(r'Esm3ExteriorCell:(-?\d+):(-?\d+)',value)
+        if not match: raise ValueError('Interior or unknown cell mismatch')
+        grid=tuple(map(int,match.groups()))
+        if grid!=tuple(math.floor(position[axis]/8192) for axis in ('x','y')):
+            raise ValueError('Cell mismatch is not explained by actual exterior coordinates')
+        return grid
+    windows=[]
+    start=0
+    while start<len(mismatches):
+        end=start
+        while end+1<len(mismatches) and mismatches[end+1]==mismatches[end]+1: end+=1
+        first,last=mismatches[start],mismatches[end]
+        if first==0 or last==len(checks)-1:
+            raise ValueError('Unclosed cell-boundary mismatch')
+        duration=checks[last+1]['t_wall']-checks[first-1]['t_wall']
+        if not 0<duration<=.5:
+            raise ValueError('Cell mismatch exceeds the half-second sampled boundary window')
+        for i in mismatches[start:end+1]:
+            row=checks[i]; a=row['actual_position']; b=row['expected_position']
+            actual=exterior(row['actual_cell'],a); expected=exterior(row['expected_cell'],b)
+            if sum(abs(x-y) for x,y in zip(actual,expected))!=1:
+                raise ValueError('Cell mismatch is not one adjacent exterior boundary')
+            if math.hypot(a['x']-b['x'],a['y']-b['y'])>64 or abs(a['z']-b['z'])>32:
+                raise ValueError('Boundary mismatch exceeds the narrow physical path allowance')
+        windows.append({'first_seq':checks[first]['seq'],'last_seq':checks[last]['seq'],
+                        'surrounding_sample_seconds':duration})
+        start=end+1
+    return {'qualification':'BOUNDED_EXTERIOR_BOUNDARY_SKEW','mismatch_checks':expected_count,
+            'same_ordered_cell_itinerary':True,'windows':windows,
+            'limit':'Sampled physical crossings, not frame-exact cell-transition timing'}
+
+
+def route_quality(receipt, profile=None):
     playback = receipt['playback']; finish = playback.get('finish') or {}
     if not playback.get('playback_complete') or playback.get('errors'):
         raise ValueError('Route did not complete cleanly')
     policy = finish.get('policy') or {}
     if not policy.get('qualified') or policy.get('combat_during_recording') or not finish.get('policy_observer_drained'):
         raise ValueError('Actor/combat policy incomplete')
-    if finish.get('cell_mismatch_check_count',1) or finish.get('outside_position_tolerance_check_count',1):
-        raise ValueError('Playback changed cell/path cohort')
+    if finish.get('outside_position_tolerance_check_count',1):
+        raise ValueError('Playback changed the physical path cohort')
+    crossing=cell_crossings(profile,finish.get('cell_mismatch_check_count',1))
     return {'lag_seconds':finish['reference_clock_lag'], 'hold_seconds':finish['reference_hold_seconds'],
             'hold_count':finish['reference_hold_count'], 'maximum_xy':finish['maximum_horizontal_error'],
             'maximum_z':finish['maximum_vertical_error'], 'route_wall_seconds':finish['t_wall'],
             'physical_collision':finish['physical_state']['collision_enabled'],
+            'cell_crossings':crossing,
             'scope':'guided route; input_replay_complete remains distinct'}
 
 
@@ -216,9 +282,9 @@ def run_matrix(plan_path, output):
             text = (profile/'openmw.log').read_text(encoding='utf-8-sig')
             if 'OptimizedMW automatic benchmark: master_volume=0' not in text:
                 raise ValueError('Engine did not confirm actual muted settings')
-            quality = route_quality(receipt)
+            quality = route_quality(receipt,profile)
             requested = {entry['key']:entry['value'] for entry in settings if entry['section']=='Cells'}
-            engaged = engagement(profile,requested)
+            engaged = engagement(profile,requested,case.get('asset_mask',0))
             metrics = analyze(profile)
             benchmark_desktop.save(directory/'ANALYSIS.json',metrics)
             result = {'id':case['id'],'route':case['route'],'depth':case.get('depth','Normal'),
