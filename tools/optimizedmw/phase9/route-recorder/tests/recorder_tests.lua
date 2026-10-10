@@ -104,7 +104,9 @@ vmeta.__mul = function(a, b) return vec(a.x * b, a.y * b, a.z * b) end
 local visualObject = { id = 'visual_door', recordId = 'door_visual', cell = cell,
     position = vec(1, 20, 3), rotation = { getAnglesZYX = function() return 0, 0, 0 end } }
 local input = {
-    KEY = { F6 = 63, F9 = 66, F10 = 67, F11 = 68 }, triggers = { Activate = true, Jump = true },
+    KEY = { F6 = 63, F9 = 66, F10 = 67, F11 = 68 },
+    triggers = { Activate = true, Jump = true, AutoMove = true, AlwaysRun = true, ToggleSneak = true,
+        ToggleWeapon = true, ToggleSpell = true, TogglePOV = true, Inventory = true, Journal = true, GameMenu = true },
     getRangeActionValue = function(key) return resolved[key] end,
     getBooleanActionValue = function() return false end,
     getMouseMoveX = function() return 0 end, getMouseMoveY = function() return 0 end,
@@ -405,6 +407,7 @@ package.loaded['openmw.types'] = api['openmw.types']
 local function compatibleFixture(exterior, mode, collision, cohort)
     storageData = {}; playerRecording = false
     cdata.movement, cdata.sideMovement, cdata.jump, cdata.use = 0, 0, false, 0
+    cdata.run, cdata.sneak = false, false
     resolved.MoveForward = 0; pausedValue = false
     cell.isExterior = exterior ~= false
     cameraMode, primaryCameraMode = mode or 1, mode or 1
@@ -513,6 +516,11 @@ check(playerRecording, 'drained start policy can recover in the same ready sessi
 f.press(67); f.policy('policy_stopped',1); f.step(5.1); f.step()
 check(f.footer():find('"complete":false',1,true) and f.footer():find('policy_finish_ack_timeout',1,true),
     'pending final suppression eventually exports specific incomplete evidence')
+check(f.footer():find('"observation_settle_timeout":true',1,true),
+    'a requested final observer drain that really times out retains its explicit timeout flag')
+f=compatibleFixture(true,1,true); f.press(63); f.ack(); f.press(67); f.press(68); f.step()
+check(f.footer():find('user_aborted',1,true) and not f.footer():find('observation_settle_timeout',1,true),
+    'F11 while an unacknowledged drain is still inside its deadline is an abort rather than a timeout')
 
 f=compatibleFixture(true,1,true); f.press(63); f.ack(); cell.isExterior=false; f.step(); f.step()
 check(f.footer():find('"complete":false',1,true) and f.footer():find('playback_scope_exterior_required',1,true),
@@ -526,6 +534,58 @@ check(f.footer():find('"complete":false',1,true) and f.footer():find('playback_s
 f=compatibleFixture(true,1,true); f.press(63); f.ack(); triggerCallbacks.Activate(); f.step()
 check(f.footer():find('"complete":false',1,true) and f.footer():find('unsupported_input_trigger_activate',1,true),
     'actual resolved interaction trigger cannot silently enter the exterior motion preview')
+check(not f.footer():find('observation_settle_timeout',1,true),
+    'immediate unsupported interaction abort cannot imply a final observer drain was requested')
+
+f=compatibleFixture(true,1,true); f.press(63); f.ack()
+local beforeMarkerQuit=quitCount
+f.press(66); f.step()
+check(playerRecording and not f.footer() and quitCount==beforeMarkerQuit,
+    'ordinary F9 retains the recording and does not stop or quit compatible acquisition')
+triggerCallbacks.AutoMove(); cdata.movement=1; resolved.MoveForward=1; f.step()
+check(playerRecording and not f.footer(), 'resolved AutoMove toggle is allowed without ending acquisition')
+triggerCallbacks.AlwaysRun(); cdata.run=true; f.step()
+check(playerRecording and not f.footer(), 'resolved AlwaysRun toggle is allowed without ending acquisition')
+triggerCallbacks.ToggleSneak(); cdata.sneak=true; f.step()
+check(playerRecording and not f.footer(), 'resolved ToggleSneak toggle is allowed without ending acquisition')
+f.press(67)
+-- These are native changes after the acquisition endpoint. They must not
+-- overwrite F10 control proof or enter the acquired trigger/control timeline.
+cdata.movement,cdata.run,cdata.sneak=0,false,false
+triggerCallbacks.AutoMove(); f.policy('policy_stopped',0)
+for _=1,5 do f.step() end
+local function capturedRecord(event,pattern)
+    for _,line in ipairs(f.lines) do
+        if line:find('"event":"'..event..'"',1,true) and (not pattern or line:find(pattern,1,true)) then return line end
+    end
+end
+check(capturedRecord('checkpoint','"index":1') and f.footer():find('"complete":true',1,true),
+    'F9 marker and subsequent movement toggles survive a qualified explicit completed capture')
+for _,name in ipairs({'AutoMove','AlwaysRun','ToggleSneak'}) do
+    local line=capturedRecord('trigger','"name":"'..name..'"')
+    check(line and line:find('"simulation":',1,true) and line:find('"playback_replayed_as":"resolved_native_control_snapshot"',1,true),
+        name..' retains simulation-timed trigger evidence while playback consumes resolved controls')
+end
+local countAutoMove=0
+for _,line in ipairs(f.lines) do
+    if line:find('"event":"trigger"',1,true) and line:find('"name":"AutoMove"',1,true) then countAutoMove=countAutoMove+1 end
+end
+check(countAutoMove==1, 'native toggles after F10 do not extend the acquired trigger timeline into observer draining')
+check(capturedRecord('control','"movement":1') and capturedRecord('control','"run":true')
+    and capturedRecord('control','"sneak":true'), 'native movement/run/sneak changes following allowed toggles are all acquired')
+check(f.lines[2]:find('"resolved_controls"',1,true) and f.lines[2]:find('"movement":0',1,true),
+    'START exposes initial resolved native controls for supported toggle audit')
+check(f.footer():find('"resolved_controls":{"jump":false,"movement":1',1,true)
+    and f.footer():find('"run":true',1,true) and f.footer():find('"sneak":true',1,true),
+    'FINISH exposes resolved controls frozen at F10 rather than changed post-drain native state')
+check(not f.footer():find('observation_settle_timeout',1,true), 'fully acknowledged drain does not claim a settle timeout')
+for _,name in ipairs({'Jump','ToggleWeapon','ToggleSpell','TogglePOV','Inventory','Journal','GameMenu'}) do
+    f=compatibleFixture(true,1,true); f.press(63); f.ack(); triggerCallbacks[name](); f.step()
+    check(f.footer():find('"complete":false',1,true) and f.footer():find('unsupported_input_trigger_'..name:lower(),1,true),
+        'allowing resolved movement toggles preserves rejection of '..name)
+    check(not f.footer():find('observation_settle_timeout',1,true),
+        name..' immediate scope rejection is not mislabeled as an observer-drain timeout')
+end
 f=compatibleFixture(true,1,true); f.press(63); f.ack(); f.step(150.1)
 check(displayedMessages[#displayedMessages].text:find('Press F10',1,true)
     and displayedMessages[#displayedMessages].text:find('cap is incomplete',1,true), 'duration warning asks for explicit finish before the bounded cap')
@@ -563,15 +623,15 @@ check(math.abs(numericField(footer,'duration_wall')-200.05)<0.000001
     and numericField(footer,'observation_settle_wall')>=2
     and numericField(footer,'observation_settle_simulation')>=0.2,
     'compatible footer reports acquisition and independent final observer-drain duration')
-f=compatibleFixture(true,1,true); f.press(63); f.ack(); f.step(300,5); f.step()
+f=compatibleFixture(true,1,true); f.press(63); f.ack(); f.step(300.001,5); f.step()
 check(f.footer():find('maximum_wall_duration_reached',1,true) and f.footer():find('"complete":false',1,true),
     'independent 300-second wall budget stops a compatible capture with only five simulation seconds')
 f=compatibleFixture(true,1,true); f.press(63); f.ack()
-f.player.engineHandlers.onKeyPress({code=67}); f.step(0.05,180); f.step()
+f.player.engineHandlers.onKeyPress({code=67}); f.step(0.05,180.001); f.step()
 check(f.footer():find('maximum_duration_reached',1,true) and f.footer():find('"complete":false',1,true),
     'queued F10 at the simulation cap cannot turn an over-budget route into a successful capture')
 f=compatibleFixture(true,1,true); f.press(63); f.ack()
-f.player.engineHandlers.onKeyPress({code=67}); f.step(300,5); f.step()
+f.player.engineHandlers.onKeyPress({code=67}); f.step(300.001,5); f.step()
 check(f.footer():find('maximum_wall_duration_reached',1,true) and f.footer():find('"complete":false',1,true),
     'queued F10 at the wall cap cannot bypass the independent wall budget')
 f=compatibleFixture(true,1,true,{model='animation_displacement',private_override=false}); f.press(63); f.ack()

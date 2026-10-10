@@ -157,7 +157,8 @@ local function captureScope()
         duration_clock = playbackCompatible and 'unpaused_simulation' or 'wall',
         native_input_replay_compatible = playbackCompatible and options.movement_cohort.model == 'native_input_displacement_with_visual_animations'
             and options.movement_cohort.private_override == true,
-        unsupported_actions = playbackCompatible and 'activation, doors, jumps, attacks, menus, view changes, input toggles' or nil }
+        supported_control_triggers = playbackCompatible and { 'AutoMove', 'AlwaysRun', 'ToggleSneak' } or nil,
+        unsupported_actions = playbackCompatible and 'activation, doors, jumps, attacks, menus, view changes, weapon/spell toggles' or nil }
 end
 local function scopeFailure()
     if not playbackCompatible then return nil end
@@ -246,8 +247,7 @@ local function finalize(reason, now)
     recorder.flags.policy_qualified = policy.qualified == true
     if policy.failed or policy.qualified ~= true or (policy.pending_disable or 0) ~= 0
         or (policy.failure_count or 0) ~= 0 then recorder.flags.combat_invalid = true end
-    if playbackCompatible and (not closing or not closing.acknowledged or policy.pending_disable ~= 0) then
-        recorder.flags.observation_settle_timeout = true
+    if playbackCompatible and closing and (not closing.acknowledged or policy.pending_disable ~= 0) then
         if reason == 'user_finished' or reason == 'smoke_finished' then reason = 'policy_finish_not_drained' end
     end
     if playbackCompatible and (reason == 'user_finished' or reason == 'smoke_finished') then
@@ -268,6 +268,7 @@ local function finalize(reason, now)
         private_lua_key_bindings = privateBindings,
         private_camera_setup = privateCamera,
         movement_cohort = options.movement_cohort, capture_scope = captureScope(), physical_state = physicalState(),
+        resolved_controls = closing and closing.end_controls or controlSnapshot().controls,
         activation_coverage = activationCounts,
         acquisition_end_wall = closing and closing.end_wall - startWall or (startWall and now - startWall or 0),
         acquisition_end_simulation = closing and closing.end_sim - startSim or (startSim and endSim - startSim or 0),
@@ -292,7 +293,7 @@ local function finish(reason, now)
             end
         end
         closing = { reason = reason, end_wall = now, end_sim = core.getSimulationTime(),
-            end_game = core.getGameTime(), frames = 0, acknowledged = false }
+            end_game = core.getGameTime(), end_controls = controlSnapshot().controls, frames = 0, acknowledged = false }
         core.sendGlobalEvent('OptimizedMWRouteRecording', { active = false, session = options.session, t_wall = now })
         message('Finishing; waiting for the final actor observations.')
         return
@@ -316,6 +317,7 @@ local function beginRecording(now)
         private_lua_key_bindings = privateBindings,
         private_camera_setup = privateCamera,
         movement_cohort = options.movement_cohort, capture_scope = captureScope(), physical_state = physicalState(),
+        resolved_controls = controlSnapshot().controls,
         checkpoint_save = checkpointSave, checkpoint_pose = checkpointPose }, relativeWall(now))
     bridge:set('last_immediate_sequence', recorder.seq)
     local suppressedKeys = {}
@@ -375,17 +377,20 @@ end
 
 local triggers = { 'Activate', 'Jump', 'AutoMove', 'AlwaysRun', 'ToggleSneak', 'ToggleWeapon',
     'ToggleSpell', 'Inventory', 'Journal', 'GameMenu', 'QuickSave', 'QuickLoad', 'TogglePOV' }
+local resolvedMovementTriggers = { AutoMove = true, AlwaysRun = true, ToggleSneak = true }
 local function registerTriggers()
     if registeredTriggers then return end
     registeredTriggers = true
     for _, name in ipairs(triggers) do
         if input.triggers[name] then
             input.registerTriggerHandler(name, async:callback(function()
-                if recorder.state == 'recording' then
+                if recorder.state == 'recording' and (not playbackCompatible or not closing) then
                     local now = core.getRealTime()
                     push('trigger', { name = name, f = frame,
+                        simulation = core.getSimulationTime() - startSim,
+                        playback_replayed_as = playbackCompatible and resolvedMovementTriggers[name] and 'resolved_native_control_snapshot' or nil,
                         observation = 'resolved_input_trigger; activation_success_not_implied' }, now)
-                    if playbackCompatible then
+                    if playbackCompatible and not resolvedMovementTriggers[name] then
                         recorder.flags.playback_scope_invalid = true
                         finish('unsupported_input_trigger_' .. name:lower(), now)
                         return

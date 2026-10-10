@@ -438,7 +438,7 @@ function Invoke-OptimizedMWRouteRecorder {
     Write-Host ('Private movement cohort: '+$session.manifest.movement_cohort.model+'; visual animations remain enabled.')
     Write-Host 'Recording waits for an outdoor first-person view, collision and hostile-policy readiness.'
     Write-Host 'F6 starts; F9 marks a numbered stage; F10 finishes and exits; F11 aborts and exits. Press these keys alone; no Ctrl or Shift.'
-    Write-Host 'Hold the fixed view for 45 seconds after Recording appears, press F9, then walk the outdoor route. No doors, menus, combat, jump or autorun toggles.'
+    Write-Host 'Hold the fixed view for 45 seconds after Recording appears, press F9, then walk the outdoor route. Autorun and gait toggles are supported; avoid doors, menus, combat and jump.'
     Write-Host 'Press F10 before 180 simulation seconds total (including the fixed view). This is route setup, not a performance capture.'
     if($PrepareOnly){Write-Host 'Prepared only; no game launched.';return $session}
     Assert-OptimizedMWRouteSessionInputs $session

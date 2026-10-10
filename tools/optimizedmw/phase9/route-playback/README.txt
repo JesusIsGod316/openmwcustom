@@ -66,7 +66,11 @@ balmora route identities. Canonical Esm3ExteriorCell:x:y IDs and matching intege
 grids identify named or unnamed outdoor cells. New existing acquisition must
 prove the native movement cohort at start and finish. Legacy Balmora without
 that metadata remains a scoped preview control.
-It rejects jump/attack inputs and lacks activation, doors or menu replay. Bare
+Supported AutoMove, AlwaysRun and ToggleSneak trigger records are audit evidence
+only; resolved movement/run/sneak controls and acquisition boundary snapshots
+drive the compiled timeline. Input toggles are never replayed as actions.
+It rejects jump/attack and equipment inputs and lacks activation, doors or menu
+replay. Bare
 F11 aborts. Unexpected pause, policy failure, observed combat, mismatched starting
 cell/position, or excessive path drift aborts. The host must preserve the recorder's
 private native F11 conflict parking and configuration isolation.

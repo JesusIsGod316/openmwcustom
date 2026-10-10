@@ -21,7 +21,8 @@ MAX_DURATION = 180.0
 MAX_WALL_DURATION = 300.0
 ALLOWED_ROUTES = {"balmora", "existing"}
 NATIVE_MOVEMENT_COHORT = {"model": "native_input_displacement_with_visual_animations", "private_override": True}
-ALLOWED_EVENTS = {"ready", "start", "finish", "control", "sample", "checkpoint", "pause", "cell", "policy"}
+SUPPORTED_MOVEMENT_TRIGGERS = {"AutoMove", "AlwaysRun", "ToggleSneak"}
+ALLOWED_EVENTS = {"ready", "start", "finish", "control", "sample", "checkpoint", "pause", "cell", "policy", "trigger"}
 
 
 class CompileError(ValueError):
@@ -181,6 +182,19 @@ def pose(value):
     return result
 
 
+def resolved_controls(values):
+    require(isinstance(values, dict)
+            and set(values) <= {"movement", "side_movement", "run", "sneak", "jump", "use", "yaw_change", "pitch_change"},
+            "Unknown or unavailable resolved control fields")
+    require(type(values.get("use")) in (int, float) and values["use"] == 0, "Use/attack action is unsupported")
+    require(values.get("jump") is False, "Jump action is unsupported by the current preview")
+    for key in ("yaw_change", "pitch_change"):
+        number(values.get(key, 0), key, -math.tau, math.tau)
+    return {"movement": number(values.get("movement"), "movement", -1, 1),
+            "side_movement": number(values.get("side_movement"), "side movement", -1, 1),
+            **{key: boolean(values.get(key), key) for key in ("run", "sneak", "jump")}, "use": 0}
+
+
 def lua(value):
     """Serialize data only; escape Lua strings without executable fragments."""
     if value is None:
@@ -273,7 +287,7 @@ def compile_route(capture, output, receipt):
     require(summary.get("duration_seconds") == finish["duration_wall"], "Summary/footer duration mismatch")
     start_pose = pose(start.get("checkpoint_pose"))
     pose(start.get("pose"))
-    controls, samples, markers, frame_times = [], [], [], {}
+    controls, samples, markers, trigger_audit, frame_times = [], [], [], [], {}
     started = False
     for row in rows:
         event = row["event"]
@@ -292,18 +306,11 @@ def compile_route(capture, output, receipt):
             frame_times[frame] = timestamp
         if event == "control":
             require(not controls or timestamp >= controls[-1]["t"], "Nonmonotonic control timeline")
-            values = row.get("controls", {})
-            require(set(values) <= {"movement", "side_movement", "run", "sneak", "jump", "use", "yaw_change", "pitch_change"}, "Unknown control fields")
-            require(type(values.get("use")) in (int, float) and values["use"] == 0, "Use/attack action is unsupported")
-            require(values.get("jump") is False, "Jump action is unsupported by the current preview")
+            values = resolved_controls(row.get("controls"))
             actions = row.get("actions", {})
             require(set(actions) <= {"forward", "backward", "left", "right", "run", "sneak", "use"}
                     and actions.get("use") is False, "Unsupported input action")
-            for key in ("yaw_change", "pitch_change"):
-                number(values.get(key, 0), key, -math.tau, math.tau)
-            controls.append({"t": timestamp, "movement": number(values.get("movement"), "movement", -1, 1),
-                             "side_movement": number(values.get("side_movement"), "side movement", -1, 1),
-                             **{key: boolean(values.get(key), key) for key in ("run", "sneak", "jump")}, "use": 0})
+            controls.append({"t": timestamp, **values})
         elif event == "sample":
             require(row.get("paused") is False, "Paused sample is unsupported")
             require(not samples or timestamp > samples[-1]["t"], "Nonmonotonic sampled timeline")
@@ -317,11 +324,42 @@ def compile_route(capture, output, receipt):
             require(row.get("paused") is False, "Paused/menu transitions are unsupported")
         elif event == "policy":
             require(row.get("policy_event") not in {"combat", "policy_failed", "suppress_failed"}, "Policy reports combat/failure")
+        elif event == "trigger":
+            require(isinstance(row.get("name"), str) and row["name"] in SUPPORTED_MOVEMENT_TRIGGERS,
+                    "Unsupported input trigger: " + str(row.get("name")))
+            trigger_time = number(row.get("simulation"), "trigger simulation timestamp", 0, duration)
+            trigger_frame = number(row.get("f"), "trigger frame", 1, 1000000)
+            require(type(trigger_frame) is int, "Trigger frame must be an integer")
+            require(not trigger_audit or (trigger_time >= trigger_audit[-1]["t"] and trigger_frame >= trigger_audit[-1]["f"]),
+                    "Nonmonotonic supported trigger audit")
+            # Trigger callbacks and onFrame observations can share a native frame
+            # number with different simulation timestamps. Do not merge their phases.
+            trigger_audit.append({"name": row["name"], "t": trigger_time, "f": trigger_frame,
+                                  "source_sequence": row["seq"], "wall_time": row["t"],
+                                  "observation": text(row.get("observation"), "trigger observation"),
+                                  "playback_replayed_as": "resolved_native_control_snapshot"})
     require(controls and samples and controls[0]["t"] == samples[0]["t"] == 0, "Timeline lacks start coverage")
     require(duration - samples[-1]["t"] <= 2, "Timeline lacks ending pose coverage")
     frames = sorted(frame_times)
     times = [frame_times[frame] for frame in frames]
     require(all(right >= left for left, right in zip(times, times[1:])), "Frame schedule is not monotonic")
+    if trigger_audit:
+        require(type(finish.get("frames")) is int and frames[-1] <= finish["frames"] <= 1000000
+                and all(frames[0] <= trigger["f"] <= finish["frames"] for trigger in trigger_audit),
+                "Supported trigger has no acquisition frame coverage")
+    resolved_boundaries = None
+    if trigger_audit or start.get("resolved_controls") is not None or finish.get("resolved_controls") is not None:
+        initial = resolved_controls(start.get("resolved_controls"))
+        final = resolved_controls(finish.get("resolved_controls"))
+        require(initial == {key: value for key, value in controls[0].items() if key != "t"},
+                "Initial resolved controls disagree with time-zero input")
+        terminal_added = final != {key: value for key, value in controls[-1].items() if key != "t"}
+        if terminal_added:
+            require(duration > controls[-1]["t"], "Conflicting resolved controls at acquisition end")
+            controls.append({"t": duration, **final})
+        resolved_boundaries = {"initial": initial, "final": final,
+                               "source": "START and FINISH acquisition-end resolved controls",
+                               "terminal_input_added": terminal_added}
     for marker in markers:
         frame = marker.pop("frame")
         require(type(frame) is int and frames[0] <= frame <= frames[-1], "Marker has no simulation frame coverage")
@@ -335,7 +373,8 @@ def compile_route(capture, output, receipt):
     require(len({marker["index"] for marker in markers}) == len(markers), "Duplicate marker index")
     timeline = {"schema": 1, "route_name": route_name, "duration": duration, "source_record_count": len(rows),
                 "movement_cohort": source_cohort, "movement_cohort_status": cohort_status,
-                "start_pose": start_pose, "controls": controls, "samples": samples, "markers": markers}
+                "start_pose": start_pose, "controls": controls, "samples": samples, "markers": markers,
+                "movement_trigger_audit": trigger_audit, "resolved_control_boundaries": resolved_boundaries}
     generated = ("-- Generated qualified route acquisition; preview only, not benchmark acceptance.\nreturn " + lua(timeline) + "\n").encode("utf-8")
     require(before == [identity(path) for path in paths], "Capture changed during compilation")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -348,10 +387,12 @@ def compile_route(capture, output, receipt):
               "route_name": route_name, "duration_simulation": duration, "inputs_before": before, "inputs_after": after,
               "movement_cohort": source_cohort, "movement_cohort_status": cohort_status,
               "checkpoint_save": checkpoint_save,
+              "movement_trigger_audit": trigger_audit, "resolved_control_boundaries": resolved_boundaries,
               "source_evidence_unchanged": True, "timeline": identity(output), "source_record_count": len(rows),
-              "control_count": len(controls), "sample_count": len(samples), "marker_count": len(markers),
+              "control_count": len(controls), "source_control_count": counts["control"],
+              "sample_count": len(samples), "marker_count": len(markers),
               "schedule": "relative simulation timestamps; wall times are evidence only",
-              "scope": "Selected exterior first-person motion preview. Source movement cohort is recorded or explicitly legacy/unrecorded. No activations, interior transitions, menus, additional camera layers, or performance qualification."}
+              "scope": "Selected exterior first-person motion preview. Source movement cohort is recorded or explicitly legacy/unrecorded. AutoMove/AlwaysRun/ToggleSneak are retained as audit evidence; only resolved movement/gait inputs are replayed. No activations, interior transitions, menus, additional camera layers, or performance qualification."}
     with receipt.open("x", encoding="utf-8") as stream:
         json.dump(result, stream, ensure_ascii=False, indent=2, allow_nan=False)
         stream.write("\n")

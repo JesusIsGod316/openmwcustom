@@ -1,5 +1,6 @@
 """Compiler integrity and unsupported-route admission checks; no game required."""
 from collections import Counter
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -70,6 +71,7 @@ class CompilerChecks(unittest.TestCase):
         counts = dict(Counter(row["event"] for row in self.rows))
         self.rows[-1]["expected_records"] = len(self.rows)
         self.rows[-1]["counts"] = {key: value for key, value in counts.items() if key != "finish"}
+        self.rows[-1]["frames"] = max((row.get("f", 0) for row in self.rows), default=0)
         (self.capture / "route.jsonl").write_text("\n".join(json.dumps(row) for row in self.rows) + "\n", encoding="utf-8")
         checkpoint = self.rows[1]["checkpoint_save"]
         copied = compiler.identity(self.capture / "Start.omwsave")
@@ -102,6 +104,14 @@ class CompilerChecks(unittest.TestCase):
             for key in ("pose", "checkpoint_pose"):
                 if key in row:
                     yield row[key]["cell"]
+
+    def movement_trigger(self, name="AutoMove", timestamp=0.1, frame=1):
+        return {"event": "trigger", "name": name, "simulation": timestamp, "f": frame,
+                "observation": "resolved_input_trigger; activation_success_not_implied"}
+
+    def resolved_boundary_fixture(self):
+        self.rows[1]["resolved_controls"] = copy.deepcopy(self.rows[4]["controls"])
+        self.rows[-1]["resolved_controls"] = copy.deepcopy(self.rows[7]["controls"])
 
     def test_valid_fixture_uses_simulation_and_interpolates_marker_frame(self):
         before = [compiler.identity(path) for path in self.capture.iterdir()]
@@ -315,6 +325,111 @@ class CompilerChecks(unittest.TestCase):
         self.rows.insert(-1, {"event": "activation"})
         self.write_fixture()
         with self.assertRaisesRegex(compiler.CompileError, "Unsupported action/transition"):
+            self.compile()
+
+    def test_supported_movement_toggles_preserve_audit_and_replay_only_resolved_inputs(self):
+        self.resolved_boundary_fixture()
+        self.rows[7]["controls"].update(movement=1, run=False)
+        gait_control = self.control(1.5, 4)
+        gait_control["controls"].update(movement=1, run=False, sneak=True)
+        self.rows[-1]["resolved_controls"].update(movement=0, run=False, sneak=True)
+        self.rows.insert(6, self.movement_trigger("AutoMove", 0.1, 1))
+        self.rows.insert(8, self.movement_trigger("AlwaysRun", 0.5, 2))
+        self.rows.insert(-2, self.movement_trigger("ToggleSneak", 1.25, 3))
+        self.rows.insert(-2, gait_control)
+        self.write_fixture()
+        before = [compiler.identity(path) for path in self.capture.iterdir()]
+        result = self.compile()
+        self.assertEqual([item["name"] for item in result["movement_trigger_audit"]], ["AutoMove", "AlwaysRun", "ToggleSneak"])
+        self.assertEqual([item["t"] for item in result["movement_trigger_audit"]], [0.1, 0.5, 1.25])
+        self.assertEqual(result["resolved_control_boundaries"]["initial"]["movement"], 0)
+        self.assertEqual(result["resolved_control_boundaries"]["final"]["movement"], 0)
+        self.assertIs(result["resolved_control_boundaries"]["final"]["sneak"], True)
+        self.assertIs(result["resolved_control_boundaries"]["terminal_input_added"], True)
+        self.assertEqual(result["source_control_count"], 3)
+        self.assertEqual(result["control_count"], 4)
+        output = (self.root / "timeline.lua").read_text()
+        self.assertIn("t=1.5,movement=1,side_movement=0,run=false,sneak=true", output)
+        self.assertIn("t=2,movement=0,side_movement=0,run=false,sneak=true", output)
+        self.assertEqual(before, [compiler.identity(path) for path in self.capture.iterdir()])
+
+    def test_only_exact_movement_trigger_names_admitted(self):
+        for name in ("Unknown", "Use", "TogglePOV", "Activate", "Jump", "ToggleWeapon", "ToggleSpell", "Inventory", "Journal", "GameMenu", "QuickSave", "QuickLoad", "automove"):
+            with self.subTest(name=name):
+                self.rows.insert(6, self.movement_trigger(name))
+                self.write_fixture()
+                with self.assertRaisesRegex(compiler.CompileError, "Unsupported input trigger"):
+                    self.compile()
+                self.rows.pop(6)
+
+    def test_supported_trigger_needs_initial_and_acquisition_end_resolved_controls(self):
+        self.rows.insert(6, self.movement_trigger())
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "unavailable resolved control fields"):
+            self.compile()
+
+    def test_supported_toggle_cannot_hide_combat_in_boundary_controls(self):
+        self.resolved_boundary_fixture()
+        self.rows[-1]["resolved_controls"]["use"] = 1
+        self.rows.insert(6, self.movement_trigger())
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "Use/attack"):
+            self.compile()
+
+    def test_initial_boundary_controls_must_match_first_sampled_input(self):
+        self.resolved_boundary_fixture()
+        self.rows[1]["resolved_controls"]["movement"] = 1
+        self.rows.insert(6, self.movement_trigger())
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "Initial resolved controls disagree"):
+            self.compile()
+
+    def test_supported_trigger_frame_and_time_are_bounded_without_exact_phase_join(self):
+        self.resolved_boundary_fixture()
+        trigger = self.movement_trigger(timestamp=0.1, frame=2)
+        self.rows.insert(6, trigger)
+        self.write_fixture()
+        result = self.compile()
+        self.assertEqual(result["movement_trigger_audit"][0]["t"], 0.1)
+        self.assertEqual(result["movement_trigger_audit"][0]["f"], 2)
+
+    def test_supported_trigger_nonfinite_or_out_of_bounds_time_refused(self):
+        for timestamp in (float("nan"), -0.01, 2.001):
+            with self.subTest(timestamp=timestamp):
+                self.rows.insert(6, self.movement_trigger(timestamp=timestamp))
+                self.write_fixture()
+                with self.assertRaises(compiler.CompileError):
+                    self.compile()
+                self.rows.pop(6)
+
+    def test_supported_trigger_frames_must_not_reverse(self):
+        self.resolved_boundary_fixture()
+        self.rows.insert(6, self.movement_trigger(timestamp=0.1, frame=2))
+        self.rows.insert(7, self.movement_trigger("AlwaysRun", timestamp=0.2, frame=1))
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "Nonmonotonic supported trigger audit"):
+            self.compile()
+
+    def test_supported_trigger_times_must_not_reverse(self):
+        self.resolved_boundary_fixture()
+        self.rows.insert(6, self.movement_trigger(timestamp=0.2, frame=1))
+        self.rows.insert(7, self.movement_trigger("AlwaysRun", timestamp=0.1, frame=2))
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "Nonmonotonic supported trigger audit"):
+            self.compile()
+
+    def test_supported_trigger_frames_need_native_acquisition_coverage(self):
+        self.resolved_boundary_fixture()
+        self.rows.insert(6, self.movement_trigger(frame=6))
+        self.write_fixture()
+        path = self.capture / "route.jsonl"
+        self.rows[-1]["frames"] = 5
+        path.write_text("\n".join(json.dumps(row) for row in self.rows) + "\n")
+        summary_path = self.capture / "SUMMARY.json"
+        summary = json.loads(summary_path.read_text())
+        summary["route_file"] = compiler.identity(path)
+        summary_path.write_text(json.dumps(summary))
+        with self.assertRaisesRegex(compiler.CompileError, "acquisition frame coverage"):
             self.compile()
 
     def test_third_person_camera_refused(self):

@@ -36,7 +36,10 @@ does not prove repeatable actor workload or qualify a performance comparison.
 Review SUMMARY.json and playback.jsonl before designing an automatic benchmark.
 Both explicit route identities support first-person outdoor movement, including
 unnamed exterior cells. Canonical cell grid IDs identify cells; display names
-do not. Jump, attack, activation, doors, menus and interiors are unsupported. The older incomplete Seyda Neen recording
+do not. Autorun and run/sneak toggles are retained as audit evidence; the resolved native
+movement and gait timeline drives playback without issuing the toggles again.
+Jump, attack, equipment switches, activation, doors, menus and interiors are
+unsupported. The older incomplete Seyda Neen recording
 remains incomplete and is not admitted by this launcher.
 
 Developer use:
