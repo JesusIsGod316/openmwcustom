@@ -82,6 +82,9 @@ class CompilerChecks(unittest.TestCase):
                    "route_file": compiler.identity(self.capture / "route.jsonl"),
                    "checkpoint_save": checkpoint,
                    "starting_save": {"route_copy": copied, "source": original, "metadata": checkpoint}}
+        manifest = json.loads((self.capture / "SESSION.json").read_text())
+        if "camera_layer_cohort" in manifest:
+            summary["camera_layer_cohort"] = copy.deepcopy(manifest["camera_layer_cohort"])
         (self.capture / "SUMMARY.json").write_text(json.dumps(summary), encoding="utf-8")
 
     def compile(self):
@@ -113,6 +116,135 @@ class CompilerChecks(unittest.TestCase):
         self.rows[1]["resolved_controls"] = copy.deepcopy(self.rows[4]["controls"])
         self.rows[-1]["resolved_controls"] = copy.deepcopy(self.rows[7]["controls"])
 
+    def additive_camera_fixture(self):
+        self.native_route()
+        cohort = dict(compiler.ADDITIVE_CAMERA_COHORT)
+        manifest_path = self.capture / "SESSION.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["camera_layer_cohort"] = cohort
+        manifest_path.write_text(json.dumps(manifest))
+        for boundary in (self.rows[0], self.rows[1], self.rows[-1]):
+            boundary["camera_layer_cohort"] = dict(cohort)
+        self.rows[0]["pose"] = fixture_pose()
+        self.rows[-1]["pose"] = fixture_pose()
+        for row in self.rows:
+            poses = [row] if "camera" in row else []
+            poses.extend(row[key] for key in ("pose", "checkpoint_pose") if key in row)
+            for value in poses:
+                value["camera"].update(extra_yaw=0.1, extra_pitch=-0.2, roll=0.3, extra_roll=-0.4,
+                                       first_person_offset={"x": 1, "y": -2, "z": 3})
+        self.write_fixture()
+
+    def test_explicit_matching_additive_camera_cohort_preserves_all_channels(self):
+        self.additive_camera_fixture()
+        before = [compiler.identity(path) for path in self.capture.iterdir()]
+        result = self.compile()
+        self.assertEqual(result["camera_layer_cohort"], compiler.ADDITIVE_CAMERA_COHORT)
+        self.assertEqual(result["camera_layer_cohort_status"], "recorded_additive")
+        output = (self.root / "timeline.lua").read_text()
+        self.assertIn('camera_layer_cohort={model="recorded_additive_first_person_v1"}', output)
+        self.assertIn('extra_roll=-0.4', output)
+        self.assertIn('first_person_offset={x=1,y=-2,z=3}', output)
+        self.assertEqual(before, [compiler.identity(path) for path in self.capture.iterdir()])
+        self.assertEqual(result["qualification"], "COMPILED_NOT_REPLAY_VALIDATED")
+
+    def test_each_additive_profile_boundary_is_mandatory(self):
+        self.additive_camera_fixture()
+        for boundary in (self.rows[0], self.rows[1], self.rows[-1]):
+            with self.subTest(event=boundary["event"]):
+                del boundary["camera_layer_cohort"]
+                self.write_fixture()
+                with self.assertRaisesRegex(compiler.CompileError, "Camera layer cohort must match"):
+                    self.compile()
+                boundary["camera_layer_cohort"] = dict(compiler.ADDITIVE_CAMERA_COHORT)
+        manifest_path = self.capture / "SESSION.json"
+        manifest = json.loads(manifest_path.read_text())
+        del manifest["camera_layer_cohort"]
+        manifest_path.write_text(json.dumps(manifest))
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "Camera layer cohort must match"):
+            self.compile()
+
+    def test_unknown_camera_profile_model_or_fields_refused(self):
+        self.additive_camera_fixture()
+        for profile in ({"model": "other"}, {**compiler.ADDITIVE_CAMERA_COHORT, "allow_any": True}):
+            with self.subTest(profile=profile):
+                self.rows[-1]["camera_layer_cohort"] = profile
+                self.write_fixture()
+                with self.assertRaisesRegex(compiler.CompileError, "Camera layer cohort must match"):
+                    self.compile()
+
+    def test_summary_camera_profile_cannot_be_missing_or_disagree(self):
+        self.additive_camera_fixture()
+        path = self.capture / "SUMMARY.json"
+        original = json.loads(path.read_text())
+        for profile in (None, {"model": "other"}, {**compiler.ADDITIVE_CAMERA_COHORT, "extra": True}):
+            with self.subTest(profile=profile):
+                summary = copy.deepcopy(original)
+                if profile is None:
+                    del summary["camera_layer_cohort"]
+                else:
+                    summary["camera_layer_cohort"] = profile
+                path.write_text(json.dumps(summary))
+                with self.assertRaisesRegex(compiler.CompileError, "Camera layer cohort must match.*SUMMARY"):
+                    self.compile()
+                self.assertFalse((self.root / "timeline.lua").exists())
+
+    def test_new_profile_requires_all_channels_on_every_boundary_and_sample(self):
+        self.additive_camera_fixture()
+        cameras = [self.rows[0]["pose"]["camera"], self.rows[1]["pose"]["camera"],
+                   self.rows[1]["checkpoint_pose"]["camera"], self.rows[5]["camera"],
+                   self.rows[6]["pose"]["camera"], self.rows[-1]["pose"]["camera"]]
+        for camera in cameras:
+            for key in (*compiler.CAMERA_LAYER_ANGLES, "first_person_offset"):
+                with self.subTest(key=key):
+                    saved = camera.pop(key)
+                    self.write_fixture()
+                    with self.assertRaises(compiler.CompileError):
+                        self.compile()
+                    camera[key] = saved
+
+    def test_additive_camera_channels_are_finite_bounded_and_not_coerced(self):
+        self.additive_camera_fixture()
+        camera = self.rows[5]["camera"]
+        for key in compiler.CAMERA_LAYER_ANGLES:
+            saved = camera[key]
+            for value in (float("nan"), float("inf"), compiler.math.pi + 0.0001, -compiler.math.pi - 0.0001, True, "0"):
+                with self.subTest(key=key, value=value):
+                    camera[key] = value
+                    self.write_fixture()
+                    with self.assertRaises(compiler.CompileError):
+                        self.compile()
+            camera[key] = saved
+        offset = camera["first_person_offset"]
+        for value in (1024.0001, -1024.0001, float("nan"), True, "0"):
+            offset["x"] = value
+            self.write_fixture()
+            with self.assertRaises(compiler.CompileError):
+                self.compile()
+        offset["x"] = 1
+        offset["w"] = 0
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "first-person offset"):
+            self.compile()
+
+    def test_legacy_camera_contract_does_not_silently_drop_new_nonzero_layers(self):
+        camera = self.rows[5]["camera"]
+        for key in ("extra_roll", "first_person_offset"):
+            camera[key] = 0.1 if key == "extra_roll" else {"x": 0, "y": 0, "z": 1}
+            self.write_fixture()
+            with self.assertRaises(compiler.CompileError):
+                self.compile()
+            del camera[key]
+
+    def test_additive_pose_missing_at_finish_refused_before_output(self):
+        self.additive_camera_fixture()
+        del self.rows[-1]["pose"]
+        self.write_fixture()
+        with self.assertRaisesRegex(compiler.CompileError, "Missing position pose"):
+            self.compile()
+        self.assertFalse((self.root / "timeline.lua").exists())
+
     def test_valid_fixture_uses_simulation_and_interpolates_marker_frame(self):
         before = [compiler.identity(path) for path in self.capture.iterdir()]
         result = self.compile()
@@ -126,6 +258,8 @@ class CompilerChecks(unittest.TestCase):
         self.assertEqual(result["qualification"], "COMPILED_NOT_REPLAY_VALIDATED")
         self.assertEqual(result["movement_cohort_status"], "legacy_unrecorded")
         self.assertIsNone(result["movement_cohort"])
+        self.assertEqual(result["camera_layer_cohort_status"], "legacy_zero_layers")
+        self.assertIsNone(result["camera_layer_cohort"])
         self.assertIn("grid_x=-2,grid_y=-2", output)
 
     def test_existing_native_cohort_accepts_named_and_unnamed_canonical_exteriors(self):

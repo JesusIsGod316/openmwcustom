@@ -21,6 +21,8 @@ MAX_DURATION = 180.0
 MAX_WALL_DURATION = 300.0
 ALLOWED_ROUTES = {"balmora", "existing"}
 NATIVE_MOVEMENT_COHORT = {"model": "native_input_displacement_with_visual_animations", "private_override": True}
+ADDITIVE_CAMERA_COHORT = {"model": "recorded_additive_first_person_v1"}
+CAMERA_LAYER_ANGLES = ("extra_yaw", "extra_pitch", "roll", "extra_roll")
 SUPPORTED_MOVEMENT_TRIGGERS = {"AutoMove", "AlwaysRun", "ToggleSneak"}
 ALLOWED_EVENTS = {"ready", "start", "finish", "control", "sample", "checkpoint", "pause", "cell", "policy", "trigger"}
 
@@ -163,21 +165,46 @@ def movement_cohort(route_name, start, finish, ready):
     return dict(NATIVE_MOVEMENT_COHORT), "recorded_native"
 
 
-def camera(value):
+def camera_layer_cohort(session, summary, ready, start, finish):
+    """Admit camera layers only with an explicit, matching acquisition contract."""
+    cohorts = [boundary.get("camera_layer_cohort") for boundary in (session, summary, ready, start, finish)]
+    if all(cohort is None for cohort in cohorts):
+        return None, "legacy_zero_layers"
+    require(all(type(cohort) is dict and cohort == ADDITIVE_CAMERA_COHORT for cohort in cohorts),
+            "Camera layer cohort must match SESSION/SUMMARY/READY/START/FINISH")
+    return dict(ADDITIVE_CAMERA_COHORT), "recorded_additive"
+
+
+def camera(value, layer_cohort=None):
     require(isinstance(value, dict), "Missing camera pose")
     require(type(value.get("mode")) is int and value["mode"] == 1, "Playback supports first-person camera mode only")
-    for key in ("extra_yaw", "extra_pitch", "roll"):
-        require(number(value.get(key, 0), f"camera {key}", -math.tau, math.tau) == 0,
-                "Playback does not support additional camera rotation layers")
-    return {"yaw": number(value.get("yaw"), "camera yaw", -math.tau, math.tau),
+    result = {"yaw": number(value.get("yaw"), "camera yaw", -math.tau, math.tau),
             "pitch": number(value.get("pitch"), "camera pitch", -math.pi / 2, math.pi / 2),
             "fov": number(value.get("fov"), "camera FOV", 0.01, math.pi - 0.01), "mode": 1}
+    if layer_cohort is not None:
+        require(layer_cohort == ADDITIVE_CAMERA_COHORT, "Unknown camera layer cohort")
+        for key in CAMERA_LAYER_ANGLES:
+            result[key] = number(value.get(key), f"camera {key}", -math.pi, math.pi)
+        offset = value.get("first_person_offset")
+        require(type(offset) is dict and set(offset) == set("xyz"), "Invalid camera first-person offset")
+        result["first_person_offset"] = {axis: number(offset[axis], "camera first-person offset " + axis, -1024, 1024)
+                                         for axis in "xyz"}
+    else:
+        for key in CAMERA_LAYER_ANGLES:
+            require(number(value.get(key, 0), f"camera {key}", -math.tau, math.tau) == 0,
+                    "Playback does not support additional camera rotation layers without a recorded cohort")
+        if "first_person_offset" in value:
+            offset = value["first_person_offset"]
+            require(type(offset) is dict and set(offset) == set("xyz")
+                    and all(number(offset[axis], "camera first-person offset " + axis, -1024, 1024) == 0 for axis in "xyz"),
+                    "Playback does not support first-person offsets without a recorded cohort")
+    return result
 
 
-def pose(value):
+def pose(value, layer_cohort=None):
     require(isinstance(value, dict) and isinstance(value.get("position"), dict), "Missing position pose")
     result = {"position": {axis: number(value["position"].get(axis), "position " + axis) for axis in "xyz"},
-              "camera": camera(value.get("camera"))}
+              "camera": camera(value.get("camera"), layer_cohort)}
     result.update(cell(value.get("cell")))
     return result
 
@@ -274,6 +301,10 @@ def compile_route(capture, output, receipt):
     policy_qualified(start.get("policy"), "start")
     policy_qualified(finish.get("policy"), "finish")
     source_cohort, cohort_status = movement_cohort(route_name, start, finish, rows[0])
+    camera_cohort, camera_cohort_status = camera_layer_cohort(session_manifest, summary, rows[0], start, finish)
+    if camera_cohort is not None:
+        pose(rows[0].get("pose"), camera_cohort)
+        pose(finish.get("pose"), camera_cohort)
     if session_manifest.get("movement_cohort") is not None:
         manifest_cohort = session_manifest["movement_cohort"]
         require(source_cohort is not None and isinstance(manifest_cohort, dict)
@@ -285,8 +316,8 @@ def compile_route(capture, output, receipt):
     duration = number(finish.get("duration_simulation"), "simulation duration", 0.01, MAX_DURATION)
     number(finish.get("duration_wall"), "wall duration", 0.01, MAX_WALL_DURATION)
     require(summary.get("duration_seconds") == finish["duration_wall"], "Summary/footer duration mismatch")
-    start_pose = pose(start.get("checkpoint_pose"))
-    pose(start.get("pose"))
+    start_pose = pose(start.get("checkpoint_pose"), camera_cohort)
+    pose(start.get("pose"), camera_cohort)
     controls, samples, markers, trigger_audit, frame_times = [], [], [], [], {}
     started = False
     for row in rows:
@@ -314,9 +345,9 @@ def compile_route(capture, output, receipt):
         elif event == "sample":
             require(row.get("paused") is False, "Paused sample is unsupported")
             require(not samples or timestamp > samples[-1]["t"], "Nonmonotonic sampled timeline")
-            samples.append({"t": timestamp, **pose(row)})
+            samples.append({"t": timestamp, **pose(row, camera_cohort)})
         elif event == "checkpoint":
-            pose(row.get("pose"))
+            pose(row.get("pose"), camera_cohort)
             markers.append({"frame": row.get("f"), "index": row.get("index")})
         elif event == "cell":
             cell(row.get("cell"))
@@ -373,6 +404,7 @@ def compile_route(capture, output, receipt):
     require(len({marker["index"] for marker in markers}) == len(markers), "Duplicate marker index")
     timeline = {"schema": 1, "route_name": route_name, "duration": duration, "source_record_count": len(rows),
                 "movement_cohort": source_cohort, "movement_cohort_status": cohort_status,
+                "camera_layer_cohort": camera_cohort, "camera_layer_cohort_status": camera_cohort_status,
                 "start_pose": start_pose, "controls": controls, "samples": samples, "markers": markers,
                 "movement_trigger_audit": trigger_audit, "resolved_control_boundaries": resolved_boundaries}
     generated = ("-- Generated qualified route acquisition; preview only, not benchmark acceptance.\nreturn " + lua(timeline) + "\n").encode("utf-8")
@@ -386,13 +418,14 @@ def compile_route(capture, output, receipt):
     result = {"schema": 1, "qualification": "COMPILED_NOT_REPLAY_VALIDATED", "source_session": session_id,
               "route_name": route_name, "duration_simulation": duration, "inputs_before": before, "inputs_after": after,
               "movement_cohort": source_cohort, "movement_cohort_status": cohort_status,
+              "camera_layer_cohort": camera_cohort, "camera_layer_cohort_status": camera_cohort_status,
               "checkpoint_save": checkpoint_save,
               "movement_trigger_audit": trigger_audit, "resolved_control_boundaries": resolved_boundaries,
               "source_evidence_unchanged": True, "timeline": identity(output), "source_record_count": len(rows),
               "control_count": len(controls), "source_control_count": counts["control"],
               "sample_count": len(samples), "marker_count": len(markers),
               "schedule": "relative simulation timestamps; wall times are evidence only",
-              "scope": "Selected exterior first-person motion preview. Source movement cohort is recorded or explicitly legacy/unrecorded. AutoMove/AlwaysRun/ToggleSneak are retained as audit evidence; only resolved movement/gait inputs are replayed. No activations, interior transitions, menus, additional camera layers, or performance qualification."}
+              "scope": "Selected exterior first-person motion preview. Additive camera channels require an explicit recorded cohort and are interpolated from sampled values; this does not prove exact rendered-camera or benchmark equivalence. Source movement cohort is recorded or explicitly legacy/unrecorded. AutoMove/AlwaysRun/ToggleSneak are retained as audit evidence; only resolved movement/gait inputs are replayed. No activations, interior transitions, menus, or performance qualification."}
     with receipt.open("x", encoding="utf-8") as stream:
         json.dump(result, stream, ensure_ascii=False, indent=2, allow_nan=False)
         stream.write("\n")

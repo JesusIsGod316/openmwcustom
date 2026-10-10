@@ -16,6 +16,13 @@ local common = require('scripts.optimizedmw_route_recorder.common')
 local options = common.validateOptions(require('scripts.optimizedmw_route_recorder.options'))
 assert(options.playback_compatible == nil or type(options.playback_compatible) == 'boolean', 'Invalid playback-compatible recording option')
 local playbackCompatible = options.playback_compatible == true
+local cameraLayerCohort = options.camera_layer_cohort
+if cameraLayerCohort ~= nil then
+    assert(playbackCompatible and type(cameraLayerCohort) == 'table'
+        and cameraLayerCohort.model == 'recorded_additive_first_person_v1', 'Invalid camera layer cohort')
+    for key in pairs(cameraLayerCohort) do assert(key == 'model', 'Unexpected camera layer cohort field') end
+end
+local cameraGuardFailure
 local maxWallSeconds = playbackCompatible and (options.max_wall_seconds or 300) or nil
 if playbackCompatible then
     assert(options.max_seconds <= 180, 'Playback-compatible recording exceeds the 180-second budget')
@@ -158,17 +165,78 @@ local function captureScope()
         native_input_replay_compatible = playbackCompatible and options.movement_cohort.model == 'native_input_displacement_with_visual_animations'
             and options.movement_cohort.private_override == true,
         supported_control_triggers = playbackCompatible and { 'AutoMove', 'AlwaysRun', 'ToggleSneak' } or nil,
+        camera_layer_cohort = cameraLayerCohort,
         unsupported_actions = playbackCompatible and 'activation, doors, jumps, attacks, menus, view changes, weapon/spell toggles' or nil }
+end
+local cameraAngleChannels = {
+    { field = 'extra_yaw', getter = 'getExtraYaw', setter = 'setExtraYaw' },
+    { field = 'extra_pitch', getter = 'getExtraPitch', setter = 'setExtraPitch' },
+    { field = 'roll', getter = 'getRoll', setter = 'setRoll' },
+    { field = 'extra_roll', getter = 'getExtraRoll', setter = 'setExtraRoll' },
+}
+local function cameraLayerGuard()
+    -- Public setters are required for eventual replay, but acquisition only reads.
+    -- Keep failure evidence serializable even when a getter returns NaN or throws.
+    local snapshot, failure = {}, nil
+    local function reject(field, reason)
+        if not failure then failure = { field = field, reason = reason, snapshot = snapshot,
+            angle_limit_radians = cameraLayerCohort and math.pi or 0.000001,
+            offset_limit_units = cameraLayerCohort and 1024 or nil } end
+    end
+    for _, channel in ipairs(cameraAngleChannels) do
+        if cameraLayerCohort or channel.field ~= 'extra_roll' then
+            if type(camera[channel.getter]) ~= 'function' then
+                snapshot[channel.field] = 'invalid:missing_getter'
+                reject(channel.field, 'missing_getter')
+            else
+                local ok, value = pcall(camera[channel.getter])
+                if not ok or not common.finite(value) then
+                    snapshot[channel.field] = ok and 'invalid:nonfinite' or 'invalid:getter_failed'
+                    reject(channel.field, ok and 'nonfinite' or 'getter_failed')
+                else
+                    snapshot[channel.field] = value
+                    if math.abs(value) > (cameraLayerCohort and math.pi or 0.000001) then
+                        reject(channel.field, 'out_of_bounds')
+                    end
+                end
+            end
+            if cameraLayerCohort and type(camera[channel.setter]) ~= 'function' then reject(channel.field, 'missing_setter') end
+        end
+    end
+    if cameraLayerCohort then
+        snapshot.first_person_offset = {}
+        if type(camera.getFirstPersonOffset) ~= 'function' then
+            snapshot.first_person_offset = 'invalid:missing_getter'
+            reject('first_person_offset', 'missing_getter')
+        else
+            local ok, offset = pcall(camera.getFirstPersonOffset)
+            for _, axis in ipairs({ 'x', 'y', 'z' }) do
+                local readable, value = false, nil
+                if ok then readable, value = pcall(function() return offset[axis] end) end
+                if not readable or not common.finite(value) then
+                    snapshot.first_person_offset[axis] = readable and 'invalid:nonfinite' or 'invalid:getter_failed'
+                    reject('first_person_offset.' .. axis, readable and 'nonfinite' or 'getter_failed')
+                else
+                    snapshot.first_person_offset[axis] = value
+                    if math.abs(value) > 1024 then reject('first_person_offset.' .. axis, 'out_of_bounds') end
+                end
+            end
+        end
+        if type(camera.setFirstPersonOffset) ~= 'function' then reject('first_person_offset', 'missing_setter') end
+    end
+    return snapshot, failure
 end
 local function scopeFailure()
     if not playbackCompatible then return nil end
     if not self.cell or not self.cell.isExterior then return 'exterior_required', 'Go outside before starting; this route must remain outdoors.' end
     if camera.getMode() ~= camera.MODE.FirstPerson then return 'first_person_required', 'Select first-person view before starting.' end
-    for _, value in ipairs({ camera.getExtraYaw(), camera.getExtraPitch(), camera.getRoll() }) do
-        if not common.finite(value) or math.abs(value) > 0.000001 then
-            return 'extra_camera_layer', 'Return to ordinary first-person view before starting.'
-        end
+    local _, failure = cameraLayerGuard()
+    if failure then
+        cameraGuardFailure = failure
+        return cameraLayerCohort and 'invalid_camera_layer' or 'extra_camera_layer',
+            'Camera ' .. failure.field .. ' is ' .. failure.reason .. '; this capture cannot be replayed safely.'
     end
+    cameraGuardFailure = nil
     local collision = physicalState().collision_enabled
     if collision ~= true then
         return collision == false and 'collision_disabled' or 'collision_state_unavailable',
@@ -209,6 +277,8 @@ local function pose()
         position = vector(self.position), rotation = { z = z, y = y, x = x }, cell = cellSnapshot(self.cell),
         camera = { position = vector(camera.getPosition()), yaw = camera.getYaw(), pitch = camera.getPitch(),
             extra_yaw = camera.getExtraYaw(), extra_pitch = camera.getExtraPitch(), roll = camera.getRoll(),
+            extra_roll = cameraLayerCohort and camera.getExtraRoll() or nil,
+            first_person_offset = cameraLayerCohort and vector(camera.getFirstPersonOffset()) or nil,
             mode = camera.getMode(), fov = camera.getFieldOfView() },
         weather = w and w.id or nil,
     }
@@ -267,7 +337,9 @@ local function finalize(reason, now)
         frames = frame, route_name = options.route_name, observer = observer, policy = policySummary(),
         private_lua_key_bindings = privateBindings,
         private_camera_setup = privateCamera,
-        movement_cohort = options.movement_cohort, capture_scope = captureScope(), physical_state = physicalState(),
+        movement_cohort = options.movement_cohort, camera_layer_cohort = cameraLayerCohort,
+        capture_scope = captureScope(), physical_state = physicalState(), camera_guard = cameraGuardFailure,
+        pose = cameraLayerCohort and not cameraGuardFailure and pose() or nil,
         resolved_controls = closing and closing.end_controls or controlSnapshot().controls,
         activation_coverage = activationCounts,
         acquisition_end_wall = closing and closing.end_wall - startWall or (startWall and now - startWall or 0),
@@ -277,7 +349,9 @@ local function finalize(reason, now)
         observation_settle_frames = closing and closing.frames or 0,
     })
     core.sendGlobalEvent('OptimizedMWRouteRecording', { active = false, session = options.session, t_wall = closing and closing.end_wall or now })
-    if reason == 'user_aborted' then message('Aborted. Exporting incomplete evidence; the game will close.')
+    if cameraGuardFailure then message('INVALID capture: camera ' .. cameraGuardFailure.field .. ' is '
+        .. cameraGuardFailure.reason .. '. Exporting the exact failure state; the game will close.')
+    elseif reason == 'user_aborted' then message('Aborted. Exporting incomplete evidence; the game will close.')
     else message('Recording closed; exporting. Please leave the game open until it exits.') end
 end
 local function finish(reason, now)
@@ -316,7 +390,8 @@ local function beginRecording(now)
         observer = observer, policy = policySummary(), policy_counts = policyCounts,
         private_lua_key_bindings = privateBindings,
         private_camera_setup = privateCamera,
-        movement_cohort = options.movement_cohort, capture_scope = captureScope(), physical_state = physicalState(),
+        movement_cohort = options.movement_cohort, camera_layer_cohort = cameraLayerCohort,
+        capture_scope = captureScope(), physical_state = physicalState(),
         resolved_controls = controlSnapshot().controls,
         checkpoint_save = checkpointSave, checkpoint_pose = checkpointPose }, relativeWall(now))
     bridge:set('last_immediate_sequence', recorder.seq)
@@ -434,7 +509,10 @@ local function onFrame()
     local now = core.getRealTime()
     if recorder.state == 'exporting' then
         if recorder:flush(32) then
-            message('Export complete.')
+            if cameraGuardFailure then
+                message('INVALID capture: camera ' .. cameraGuardFailure.field .. ' is '
+                    .. cameraGuardFailure.reason .. '. Export complete.')
+            else message('Export complete.') end
             if options.quit_on_finish or (options.smoke_autostart and options.smoke_quit) then core.quit() end
         end
         return
@@ -495,6 +573,15 @@ local function onFrame()
             finish('private_camera_setup_failed', now)
             return
         end
+        if cameraLayerCohort then
+            local _, failure = cameraLayerGuard()
+            if failure then
+                cameraGuardFailure = failure
+                recorder.flags.playback_scope_invalid = true
+                finish('camera_layer_preflight_failed', now)
+                return
+            end
+        end
         wallOrigin = now
         recorder:ready({ route_name = options.route_name, sample_hz = options.sample_hz,
             limits = { seconds = options.max_seconds, wall_seconds = maxWallSeconds,
@@ -504,7 +591,8 @@ local function onFrame()
             observer = observer, policy = policySummary(),
             private_lua_key_bindings = privateBindings,
             private_camera_setup = privateCamera,
-            movement_cohort = options.movement_cohort, capture_scope = captureScope(), physical_state = physicalState(),
+            movement_cohort = options.movement_cohort, camera_layer_cohort = cameraLayerCohort,
+            capture_scope = captureScope(), physical_state = physicalState(),
             control_phase = 'player_onFrame_after_earlier_content_handlers; native_pitch_yaw_readout_not_post_physics',
             capture_purpose = 'route_acquisition; dt_real_not_independent_benchmark_frame_measurement',
             pose = pose() }, 0)

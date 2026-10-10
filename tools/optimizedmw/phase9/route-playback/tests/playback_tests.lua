@@ -95,6 +95,53 @@ r=existingRoute();r.samples[1].grid_y=nil
 check(not pcall(pure.validate,r), 'partial exterior grid metadata rejected')
 r=route();r.samples[1].camera.extra_yaw=0.1
 check(not pcall(pure.validate,r), 'extra camera rotation layer remains unsupported')
+local function layeredRoute()
+    local value=route()
+    value.camera_layer_cohort={model='recorded_additive_first_person_v1'}
+    value.camera_layer_cohort_status='recorded_additive'
+    for i,s in ipairs(value.samples) do
+        s.camera.extra_yaw,s.camera.extra_pitch,s.camera.roll,s.camera.extra_roll=0.1*i,-0.2*i,0.3*i,-0.4*i
+        s.camera.first_person_offset={x=i,y=-2*i,z=3*i}
+    end
+    return value
+end
+local layeredLookup=pure.newSampler(layeredRoute())
+local _,layeredPose=layeredLookup(0.5)
+check(near(layeredPose.camera.extra_yaw,0.15) and near(layeredPose.camera.extra_pitch,-0.3)
+    and near(layeredPose.camera.roll,0.45) and near(layeredPose.camera.extra_roll,-0.6),
+    'explicit camera contract interpolates all four angles as separate sampled channels')
+check(near(layeredPose.camera.first_person_offset.x,1.5) and near(layeredPose.camera.first_person_offset.y,-3)
+    and near(layeredPose.camera.first_person_offset.z,4.5), 'first-person offset interpolates each component')
+check(near(math.abs(layeredPose.camera.yaw),math.pi), 'additive yaw does not alter main actor heading')
+local layeredCommand=pure.newCommandSampler(layeredRoute())
+local layeredEndpoint,layeredTime=layeredCommand(0.4,0.6)
+check(layeredTime==1 and near(layeredEndpoint.camera.extra_roll,-0.8), 'future camera command includes additive endpoint channels')
+for _,key in ipairs({'extra_yaw','extra_pitch','roll','extra_roll'}) do
+    r=layeredRoute();r.samples[1].camera[key]=nil
+    check(not pcall(pure.validate,r), 'new camera contract requires '..key)
+    r=layeredRoute();r.samples[1].camera[key]=math.pi+0.0001
+    check(not pcall(pure.validate,r), 'new camera contract bounds '..key)
+    r=layeredRoute();r.samples[1].camera[key]=0/0
+    check(not pcall(pure.validate,r), 'new camera contract rejects nonfinite '..key)
+end
+r=layeredRoute();r.samples[1].camera.first_person_offset=nil
+check(not pcall(pure.validate,r), 'new camera contract requires offset')
+r=layeredRoute();r.samples[1].camera.first_person_offset.x=1024.01
+check(not pcall(pure.validate,r), 'new camera contract bounds offset')
+r=layeredRoute();r.samples[1].camera.first_person_offset.x=0/0
+check(not pcall(pure.validate,r), 'new camera contract rejects nonfinite offset')
+r=layeredRoute();r.samples[1].camera.first_person_offset.w=0
+check(not pcall(pure.validate,r), 'new camera contract rejects extra offset component')
+r=layeredRoute();r.camera_layer_cohort.model='unknown'
+check(not pcall(pure.validate,r), 'unknown camera model cannot admit layers')
+r=layeredRoute();r.camera_layer_cohort.allow_any=true
+check(not pcall(pure.validate,r), 'unknown camera cohort fields cannot admit layers')
+r=layeredRoute();r.camera_layer_cohort_status='legacy_zero_layers'
+check(not pcall(pure.validate,r), 'camera profile cannot claim legacy status')
+r=route();r.samples[1].camera.extra_roll=0.1
+check(not pcall(pure.validate,r), 'legacy path cannot discard nonzero extra roll')
+r=route();r.samples[1].camera.first_person_offset={x=0,y=0,z=1}
+check(not pcall(pure.validate,r), 'legacy path cannot discard nonzero first-person offset')
 r=existingRoute();r.samples[1].exterior=false
 check(not pcall(pure.validate,r), 'existing route does not bypass the interior transition guard')
 local slow, fast = pure.newSampler(route()),pure.newSampler(route())
@@ -189,8 +236,17 @@ local function playerFixture(seedX, seedCell, fixtureOptions, fixtureRoute)
     local calls, messages, events, quit, flags = {},{}, {},false,{movement=false,combat=false,ui=false}
     local actor = { controls={}, ATTACK_TYPE={NoAttack=0},position=position,
         cell={id=seedCell or 'Esm3ExteriorCell:-2:-2',isExterior=true}, rotation={getYaw=function() return actorYaw end,getPitch=function() return actorPitch end} }
+    local layers={extra_yaw=0.01,extra_pitch=0.02,roll=0.03,extra_roll=0.04,first_person_offset={x=4,y=5,z=6}}
+    local layerWrites=0
     local fakeCamera={MODE={FirstPerson=1},getYaw=function() return yaw end,getPitch=function() return pitch end,
         setYaw=function(v) yaw=v end,setPitch=function(v) pitch=v end,setMode=function() end,setFieldOfView=function() end}
+    for key,suffix in pairs({extra_yaw='ExtraYaw',extra_pitch='ExtraPitch',roll='Roll',extra_roll='ExtraRoll'}) do
+        local field=key
+        fakeCamera['get'..suffix]=function() return layers[field] end
+        fakeCamera['set'..suffix]=function(v) layers[field]=v;layerWrites=layerWrites+1 end
+    end
+    fakeCamera.getFirstPersonOffset=function() return layers.first_person_offset end
+    fakeCamera.setFirstPersonOffset=function(v) layers.first_person_offset=v;layerWrites=layerWrites+1 end
     local fakeCore={getSimulationTime=function() return clock end,getRealTime=function() return clock end,
         isWorldPaused=function() return paused end,quit=function() quit=true end,
         sendGlobalEvent=function(name,data) events[#events+1]={name=name,data=data} end}
@@ -199,6 +255,7 @@ local function playerFixture(seedX, seedCell, fixtureOptions, fixtureRoute)
         overrideCombatControls=function(v) flags.combat=v end,
         overrideUiControls=function(v) flags.ui=v end}}
     local modules={['openmw.core']=fakeCore,['openmw.self']=actor,['openmw.camera']=fakeCamera,
+        ['openmw.util']={vector3=function(x,y,z) return {x=x,y=y,z=z} end},
         ['openmw.input']={KEY={F11=11}},['openmw.ui']={showMessage=function(v) messages[#messages+1]=v end},
         ['openmw.types']={Player={CONTROL_SWITCH={VanityMode=1},setControlSwitch=function() end},
             Actor={getRunSpeed=function() return 100 end,getWalkSpeed=function() return 50 end,
@@ -212,6 +269,7 @@ local function playerFixture(seedX, seedCell, fixtureOptions, fixtureRoute)
         ['scripts.optimizedmw_route_playback.timeline']=fixtureRoute,
         ['scripts.optimizedmw_route_recorder.common']={json=function(v) calls[#calls+1]=v; return v.event end}}
     for name,value in pairs(fixtureOptions) do modules['scripts.optimizedmw_route_playback.options'][name]=value end
+    if fixtureRoute.camera_layer_cohort then modules['scripts.optimizedmw_route_playback.options'].camera_layer_cohort=fixtureRoute.camera_layer_cohort end
     for name,value in pairs(modules) do package.loaded[name]=value end
     local beforePrint=print
     print=function() end
@@ -222,7 +280,8 @@ local function playerFixture(seedX, seedCell, fixtureOptions, fixtureRoute)
         handlers.engineHandlers.onFrame(dt)
         print=oldPrint
     end
-    return { actor=actor,flags=flags,calls=calls,events=events,
+    return { actor=actor,flags=flags,calls=calls,events=events,camera=fakeCamera,layers=layers,
+        layerWrites=function() return layerWrites end,
         tick=function(t,dt) clock=t; invoke(dt) end,
         step=function(dt,blocked)
             invoke(dt)
@@ -271,6 +330,7 @@ for i=1,4 do f.tick(3+i*0.3,0.3) end
 check(f.isQuit() and not f.flags.movement and not f.flags.combat and not f.flags.ui, 'completion releases overrides before quit')
 check(lastEvent(f,'finish').reason=='route_finished' and lastEvent(f,'finish').benchmark_qualified==false,
     'finished input replay does not claim benchmark acceptance')
+check(f.layerWrites()==0 and near(f.layers.extra_pitch,0.02), 'legacy Balmora never acquires or writes additive camera channels')
 f=playerFixture(200); ready(f); f.tick(0,1)
 check(f.actor.controls.movement==0 and not lastEvent(f,'start'), 'bad initial position cannot start playback')
 for i=1,7 do f.tick(i,1) end
@@ -374,4 +434,91 @@ f=playerFixture(0,nil,{guidance_enabled=true},guidedRoute()); ready(f); f.tick(0
 f.actor.position.x=40; f.tick(0.3,0.3)
 finish=guidedFinish(f,false)
 check(finish.reason=='stationary_pose_divergence', 'stationary source segment does not move the character to hide a mismatch')
+f=playerFixture(0,nil,nil,layeredRoute()); ready(f); f.tick(0,1)
+local cameraCheck=lastEvent(f,'check')
+check(cameraCheck.camera_layer_cohort_status=='recorded_additive' and cameraCheck.camera_layer_cohort.model=='recorded_additive_first_person_v1',
+    'PLAYER identifies its explicit camera contract on observations')
+check(near(f.layers.extra_yaw,0.2) and near(f.layers.extra_pitch,-0.4) and near(f.layers.roll,0.6)
+    and near(f.layers.extra_roll,-0.8) and near(f.layers.first_person_offset.z,6),
+    'PLAYER applies all recorded additive channels through public setters')
+check(near(f.actor.controls.yawChange,0.2), 'PLAYER keeps extra yaw separate from actor mechanics')
+check(cameraCheck.camera_layer_postwrite_errors.extra_pitch==0 and cameraCheck.first_person_offset_postwrite_error==0,
+    'PLAYER reports additive camera setter readback errors')
+f.layers.extra_pitch=1 -- represent earlier live mod work before this frame's last harness handler
+f.tick(0.1,0.1)
+check(f.layers.extra_pitch~=1, 'recorded profile replaces the earlier mod result instead of double-adding it')
+f.abort()
+for i=1,7 do f.tick(i,1) end
+check(lastEvent(f,'finish').reason=='user_aborted' and lastEvent(f,'finish').camera_layers_restored==true,
+    'abort releases owned additive camera state')
+check(near(f.layers.extra_yaw,0.01) and near(f.layers.extra_pitch,0.02) and near(f.layers.roll,0.03)
+    and near(f.layers.extra_roll,0.04) and f.layers.first_person_offset.x==4 and f.layers.first_person_offset.y==5
+    and f.layers.first_person_offset.z==6, 'release restores the original private values for every camera channel')
+f=playerFixture(0,nil,nil,layeredRoute());f.camera.setExtraRoll=nil;ready(f);f.tick(0,1)
+check(f.layerWrites()==0 and not f.flags.movement and not f.flags.combat,
+    'missing installed camera setter fails before acquiring overrides or making partial writes')
+for i=1,7 do f.tick(i,1) end
+check(lastEvent(f,'finish').reason=='playback_error', 'missing camera API terminates with explicit failed preview')
+f=playerFixture(0,nil,nil,layeredRoute());ready(f);f.tick(0,1)
+f.camera.setExtraPitch=function() error('injected partial camera setter failure') end
+f.tick(0.1,0.1)
+f.camera.setExtraPitch=function(v) f.layers.extra_pitch=v end
+for i=1,7 do f.tick(i,1) end
+check(lastEvent(f,'finish').reason=='playback_error' and near(f.layers.extra_yaw,0.01)
+    and near(f.layers.extra_pitch,0.02), 'partial write failure still restores owned camera channels')
+f=playerFixture(0,nil,nil,layeredRoute());ready(f)
+local originalSet=f.camera.setExtraYaw
+f.camera.setExtraYaw=function(v) originalSet(v+0.02) end
+f.tick(0,1)
+-- Setup applies camera fields but playing readback is the exact commanded frame gate.
+if not lastEvent(f,'error') then f.tick(0.1,0.1) end
+check(lastEvent(f,'error')~=nil, 'setter readback mismatch is detected rather than accepted as a successful camera command')
+f.camera.setExtraYaw=originalSet
+for i=1,7 do f.tick(i,1) end
+check(lastEvent(f,'finish').reason=='playback_error', 'readback mismatch keeps preview incomplete')
+f=playerFixture(0,nil,nil,layeredRoute());ready(f);f.tick(0,1);f.tick(2,2)
+local terminalCheck=lastEvent(f,'check')
+check(terminalCheck.expected_time==2 and terminalCheck.camera_layer_command_phase=='terminal_reference_endpoint; before_release'
+    and terminalCheck.command_camera_layers and terminalCheck.camera_layers_after_write
+    and terminalCheck.camera_layer_postwrite_errors and terminalCheck.first_person_offset_postwrite_error==0,
+    'successful layered route terminal check retains the commanded additive endpoint and readback proof')
+f.policy({session=string.rep('a',32),event='policy_stopped',ready=true,qualified=true,pending_disable=0})
+for i=1,4 do f.tick(2+i*0.3,0.3) end
+local layeredFinish=lastEvent(f,'finish')
+check(f.isQuit() and layeredFinish.reason=='route_finished' and layeredFinish.route_playback_finished
+    and layeredFinish.camera_layers_restored and layeredFinish.camera_layer_restoration_failed==false
+    and layeredFinish.maximum_camera_layer_postwrite_error==0 and layeredFinish.maximum_first_person_offset_postwrite_error==0,
+    'successful layered route exports complete camera diagnostics after terminal check and restoration')
+check(layeredFinish.benchmark_qualified==false and layeredFinish.qualification=='PREVIEW_NOT_BENCHMARK_VALIDATED',
+    'successful new camera profile remains a preview rather than a benchmark claim')
+check(near(f.layers.extra_pitch,0.02) and f.layers.first_person_offset.x==4,
+    'successful completion restores camera ownership as well as abort')
+f=playerFixture(0,nil,nil,layeredRoute());ready(f);f.tick(0,1)
+originalSet=f.camera.setExtraYaw
+f.camera.setExtraYaw=function(v) originalSet(v+0.02) end
+f.tick(0.1,0.1)
+check(lastEvent(f,'error')~=nil, 'every-frame readback catches a mismatch before the next throttled check')
+f.camera.setExtraYaw=originalSet
+for i=1,7 do f.tick(i,1) end
+check(lastEvent(f,'finish').reason=='playback_error', 'between-check mismatch never reports a successful layered route')
+local boundaryRoute=layeredRoute()
+for _,s in ipairs(boundaryRoute.samples) do s.camera.extra_yaw=math.pi end
+f=playerFixture(0,nil,nil,boundaryRoute);ready(f)
+originalSet=f.camera.setExtraYaw
+f.camera.setExtraYaw=function(v)
+    originalSet(v==math.pi and 3.1415927410125732 or v)
+end
+f.tick(0,1)
+check(not lastEvent(f,'error') and lastEvent(f,'check').camera_layers_after_write.extra_yaw>math.pi,
+    'actual native float rounding at pi is retained and allowed only in getter readback')
+check(lastEvent(f,'check').camera_layer_postwrite_errors.extra_yaw<0.000001,
+    'float rounding remains inside the strict command-to-getter mismatch budget')
+f.tick(2,2);f.policy({session=string.rep('a',32),event='policy_stopped',ready=true,qualified=true,pending_disable=0})
+for i=1,4 do f.tick(2+i*0.3,0.3) end
+check(lastEvent(f,'finish').reason=='route_finished' and lastEvent(f,'finish').camera_layers_restored,
+    'float-boundary getter readback can finish and restore a complete layered preview')
+r=layeredRoute();r.samples[1].camera.extra_yaw=3.1415927410125732
+check(not pcall(pure.validate,r), 'readback-only float slack never widens compiled source admission')
+r=layeredRoute();r.samples[1].camera.extra_yaw=math.pi+0.0000011
+check(not pcall(pure.validateCameraLayers,r.samples[1].camera,true), 'getter slack is bounded rather than a general camera guard bypass')
 print('Playback core and PLAYER mock checks passed: '..checks)

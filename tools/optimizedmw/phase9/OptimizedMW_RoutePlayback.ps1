@@ -38,8 +38,21 @@ function Read-OptimizedMWPlaybackCapture {
     if($source.PSObject.Properties['movement_cohort']){$cohort=$source.movement_cohort}
     if($null -ne $cohort -and ($cohort.private_override -isnot [bool] -or [string]$cohort.model -cnotin @('native_input_displacement_with_visual_animations','animation_displacement') -or ($cohort.private_override -ne ([string]$cohort.model -ceq 'native_input_displacement_with_visual_animations')))){throw 'Capture movement cohort metadata is invalid'}
     if([string]$source.route -ceq 'existing' -and ($null -eq $cohort -or [string]$cohort.model -cne 'native_input_displacement_with_visual_animations' -or -not $cohort.private_override)){throw 'Seyda Neen requires a fresh outdoor recording made with the matching native movement profile'}
+    $cameraCohort=$source.camera_layer_cohort;$summaryCamera=$status.camera_layer_cohort
+    if(-not (Test-OptimizedMWRouteCameraCohort $cameraCohort) -or -not (Test-OptimizedMWRouteCameraCohort $summaryCamera) -or
+        ($null -eq $cameraCohort) -ne ($null -eq $summaryCamera)){throw 'Capture camera layer cohort is invalid or differs between session and summary'}
     Assert-OptimizedMWPlaybackIdentities @($sessionIdentity,$summaryIdentity)
-    return [pscustomobject]@{directory=$capture;route=[string]$source.route;session=[string]$source.session;movement_cohort=$cohort;metadata_identities=@($sessionIdentity,$summaryIdentity)}
+    return [pscustomobject]@{directory=$capture;route=[string]$source.route;session=[string]$source.session;movement_cohort=$cohort;camera_layer_cohort=$cameraCohort;metadata_identities=@($sessionIdentity,$summaryIdentity)}
+}
+
+function Assert-OptimizedMWPlaybackCameraReceipt {
+    param($Source,$Receipt)
+    $sourceCamera=$Source.camera_layer_cohort;$compiledCamera=$Receipt.camera_layer_cohort
+    $expectedStatus=$(if($null -ne $sourceCamera){'recorded_additive'}else{'legacy_zero_layers'})
+    if(-not (Test-OptimizedMWRouteCameraCohort $sourceCamera) -or -not (Test-OptimizedMWRouteCameraCohort $compiledCamera) -or
+        ($null -eq $sourceCamera) -ne ($null -eq $compiledCamera) -or [string]$Receipt.camera_layer_cohort_status -cne $expectedStatus){
+        throw 'Compiled camera layer contract differs from the admitted source'
+    }
 }
 
 function New-OptimizedMWPlaybackSession {
@@ -79,6 +92,7 @@ function New-OptimizedMWPlaybackSession {
     $receipt=[IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json
     if($receipt.qualification -cne 'COMPILED_NOT_REPLAY_VALIDATED' -or -not $receipt.source_evidence_unchanged){throw 'Playback compiler receipt is unqualified'}
     if([string]$receipt.route_name -cne $RouteName){throw 'Compiled route differs from the selected source'}
+    Assert-OptimizedMWPlaybackCameraReceipt $source $receipt
     Assert-OptimizedMWPlaybackIdentities $source.metadata_identities
     Assert-OptimizedMWPlaybackIdentities $receipt.inputs_before
     $sourceStart=Get-OptimizedMWFrozenFile (Join-Path $capture 'Start.omwsave')
@@ -95,7 +109,8 @@ function New-OptimizedMWPlaybackSession {
     [IO.File]::WriteAllText($recorderOptions,$text,[Text.UTF8Encoding]::new($false))
     $options=Join-Path $data 'scripts\optimizedmw_route_playback\options.lua'
     $guided=$(if($Raw){'false'}else{'true'})
-    [IO.File]::WriteAllText($options,("return { enabled=true, session='"+$session.id+"', guidance_enabled="+$guided+", autostart_seconds=3, quit_on_finish=true, setup_timeout_seconds=90, position_tolerance=128, abort_position_error=2048, max_duration_seconds=195 }"),[Text.UTF8Encoding]::new($false))
+    $cameraOptions=$(if($null -ne $source.camera_layer_cohort){", camera_layer_cohort={model='recorded_additive_first_person_v1'}"}else{''})
+    [IO.File]::WriteAllText($options,("return { enabled=true, session='"+$session.id+"', guidance_enabled="+$guided+$cameraOptions+", autostart_seconds=3, quit_on_finish=true, setup_timeout_seconds=90, position_tolerance=128, abort_position_error=2048, max_duration_seconds=195 }"),[Text.UTF8Encoding]::new($false))
     [IO.File]::AppendAllText($session.runtime.config_path,"`ncontent=optimizedmw_route_playback.omwscripts`n",[Text.UTF8Encoding]::new($false))
     $session.arguments=@(Get-OptimizedMWFrozenArguments $session.runtime)+@('--load-savegame',('"'+$privateStart+'"'),'--skip-menu')
     $session.manifest.arguments=$session.arguments
@@ -107,6 +122,8 @@ function New-OptimizedMWPlaybackSession {
     $session.manifest | Add-Member -NotePropertyName movement_model -NotePropertyValue $(if($nativeMovement){'native_input_displacement_with_visual_animations'}elseif($Animation){'animation_displacement'}else{'frozen_animation_movement_setting'})
     $session.manifest | Add-Member -NotePropertyName private_movement_override -NotePropertyValue $(if($nativeMovement -or $Animation){[pscustomobject]@{section='Game';key='player movement ignores animation';value=$(if($nativeMovement){'true'}else{'false'});scope='private preview only; source cohort recorded separately'}}else{$null})
     $session.manifest | Add-Member -NotePropertyName source_movement_cohort -NotePropertyValue $source.movement_cohort
+    $session.manifest.camera_layer_cohort=$source.camera_layer_cohort
+    $session.manifest | Add-Member -NotePropertyName camera_layer_cohort_status -NotePropertyValue $receipt.camera_layer_cohort_status
     $session.manifest | Add-Member -NotePropertyName source_movement_cohort_matches -NotePropertyValue $(if($null -ne $source.movement_cohort){[bool]($nativeMovement -eq $sourceNative)}else{$null})
     $session.manifest.starting_location_mode='load_copied_captured_start_no_teleport'
     $session.manifest.frozen_configuration.mode='verified_baseline_inputs_before_playback_derivation'
@@ -128,7 +145,8 @@ function Export-OptimizedMWPlaybackLog {
     if($SessionId -cnotmatch '^[a-f0-9]{32}$'){throw 'Invalid playback session'}
     if(Test-Path -LiteralPath $OutputPath){throw 'Preserving existing playback evidence'}
     if((Get-OptimizedMWFrozenFile $LogPath).bytes -gt 67108864){throw 'Playback stdout exceeds 64 MiB observer budget'}
-    $failures=[Collections.Generic.List[string]]::new();$counts=@{};$seq=0L;$finish=$null;$started=$false;$closed=$false
+    $failures=[Collections.Generic.List[string]]::new();$counts=@{};$seq=0L;$finish=$null;$started=$false;$closed=$false;$cameraCohort=$null
+    $layerMaximum=0.0;$offsetMaximum=0.0
     $checks=[Collections.Generic.List[object]]::new();$collisionObservations=[Collections.Generic.List[object]]::new()
     $writer=[IO.StreamWriter]::new($OutputPath,$false,[Text.UTF8Encoding]::new($false))
     try{
@@ -142,6 +160,10 @@ function Export-OptimizedMWPlaybackLog {
             $seq++
             if($record.schema -ne 1 -or [string]$record.session -cne $SessionId -or $record.seq -ne $seq){$failures.Add('Mixed or discontinuous playback observations')}
             $event=[string]$record.event
+            if($seq -eq 1){$cameraCohort=$record.camera_layer_cohort}
+            if(-not (Test-OptimizedMWRouteCameraCohort $record.camera_layer_cohort) -or
+                ($null -eq $cameraCohort) -ne ($null -eq $record.camera_layer_cohort) -or
+                ($null -ne $cameraCohort -and [string]$record.camera_layer_cohort_status -cne 'recorded_additive')){$failures.Add('Playback camera layer contract missing or changed')}
             if($closed){$failures.Add('Observation follows playback footer')}
             if($seq -eq 1 -and $event -cne 'setup'){$failures.Add('Playback setup is not the first observation')}
             if($event -eq 'start'){$started=$true}
@@ -151,6 +173,22 @@ function Export-OptimizedMWPlaybackLog {
             if(-not $counts.ContainsKey($event)){$counts[$event]=0};$counts[$event]++
             if($event -eq 'check'){
                 if(-not (Test-OptimizedMWRouteNumber $record.position_error 0 1e8) -or $record.cell_matches -isnot [bool]){$failures.Add('Invalid playback position/cell check')}
+                if($null -ne $cameraCohort){
+                    if(-not (Test-OptimizedMWRouteCameraLayers $record.command_camera_layers) -or -not (Test-OptimizedMWRouteCameraLayers $record.camera_layers_after_write -Readback)){$failures.Add('Missing or invalid additive camera setter readback')}
+                    else{
+                        foreach($angle in @('extra_yaw','extra_pitch','roll','extra_roll')){
+                            $errorValue=$record.camera_layer_postwrite_errors.$angle
+                            $calculated=[Math]::Abs([double]$record.command_camera_layers.$angle-[double]$record.camera_layers_after_write.$angle)
+                            if(-not (Test-OptimizedMWRouteNumber $errorValue 0 0.00001) -or [Math]::Abs([double]$errorValue-$calculated) -gt 0.00000001){$failures.Add('Invalid additive camera angle error')}
+                            $layerMaximum=[Math]::Max($layerMaximum,$calculated)
+                        }
+                        $distanceSquared=0.0
+                        foreach($axis in @('x','y','z')){$delta=[double]$record.command_camera_layers.first_person_offset.$axis-[double]$record.camera_layers_after_write.first_person_offset.$axis;$distanceSquared+=$delta*$delta}
+                        $calculated=[Math]::Sqrt($distanceSquared);$errorValue=$record.first_person_offset_postwrite_error
+                        if(-not (Test-OptimizedMWRouteNumber $errorValue 0 0.001) -or [Math]::Abs([double]$errorValue-$calculated) -gt 0.00000001){$failures.Add('Invalid first-person offset setter error')}
+                        $offsetMaximum=[Math]::Max($offsetMaximum,$calculated)
+                    }
+                }
                 $checks.Add($record)
             }
             if($event -eq 'finish'){$finish=$record;$closed=$true}
@@ -180,10 +218,18 @@ function Export-OptimizedMWPlaybackLog {
             $finish.policy_observer_drained -isnot [bool] -or -not $finish.policy_observer_drained -or $finish.policy_drain_timed_out -isnot [bool] -or $finish.policy_drain_timed_out){$failures.Add('Final actor policy unavailable or unqualified')}
         if($finish.benchmark_qualified -isnot [bool] -or $finish.benchmark_qualified){$failures.Add('Preview incorrectly claims benchmark qualification')}
         if($finish.check_count -ne $checks.Count){$failures.Add('Playback check-count mismatch')}
+        if($null -ne $cameraCohort){
+            if($finish.camera_layers_restored -isnot [bool] -or -not $finish.camera_layers_restored -or
+                $finish.camera_layer_restoration_failed -isnot [bool] -or $finish.camera_layer_restoration_failed){$failures.Add('Owned additive camera state restoration unverified')}
+            if(-not (Test-OptimizedMWRouteNumber $finish.maximum_camera_layer_postwrite_error 0 0.00001) -or
+                [double]$finish.maximum_camera_layer_postwrite_error+0.00000001 -lt $layerMaximum -or
+                -not (Test-OptimizedMWRouteNumber $finish.maximum_first_person_offset_postwrite_error 0 0.001) -or
+                [double]$finish.maximum_first_person_offset_postwrite_error+0.00000001 -lt $offsetMaximum){$failures.Add('Additive camera maximum error footer mismatch')}
+        }
     }
     if(-not $finish){$protocol='unavailable'}
     return [pscustomobject][ordered]@{schema=1;session=$SessionId;playback_complete=($failures.Count -eq 0);input_replay_complete=($failures.Count -eq 0 -and $protocol -ceq 'raw_physics_input');playback_protocol=$protocol;qualification='PREVIEW_NOT_BENCHMARK_VALIDATED';
-        exit_code=$ExitCode;errors=@($failures | Select-Object -Unique);record_count=$seq;events=$counts;finish=$finish;
+        exit_code=$ExitCode;camera_layer_cohort=$cameraCohort;errors=@($failures | Select-Object -Unique);record_count=$seq;events=$counts;finish=$finish;
         playback_file=(Get-OptimizedMWFrozenFile $OutputPath);scope='Physical route preview; steering, reference-clock holds, path errors and cell mismatches require review before automated benchmarking.'}
 }
 

@@ -79,6 +79,18 @@ Keeping explicit parked bindings prevents the native loader restoring defaults.
 Original bindings are preserved. Preparation refuses occupied parking keys.
 F8 remains unchanged because a mod uses Shift+F8 for music.
 
+New outdoor recordings explicitly capture mod camera layers using the
+recorded_additive_first_person_v1 contract. Fatigue breathing, head bobbing and
+other finite extra yaw/pitch/roll and first-person offsets may remain active.
+All five public getter/setter pairs are checked before Ready. Recording reads
+those values without writing them or changing mod settings. Angles must stay
+within +/- pi radians; each offset axis must stay within +/- 1024 world units.
+Invalid values or unavailable APIs still stop the capture. SUMMARY.json gives
+finish_reason and camera_guard with the exact offending channel and safe snapshot.
+Normal first-person/exterior, collision, combat and duration guards still apply.
+The matching cohort is recorded in SESSION and READY/START/FINISH metadata.
+Historical recordings without it remain legacy controls and are not upgraded.
+
 The private combat policy uses RouteRecorder/encounter-policy.json to explicitly
 disable 32 creature records from the checked effective encounter-list closure.
 That includes rats, kwama foragers, scribs, parasol spiders, netches and their

@@ -167,18 +167,22 @@ function New-OptimizedMWRouteSession {
     [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($optionsPath))
     $boolean=$(if($SmokeRun){'true'}else{'false'})
     $compatible=$(if($PlaybackCompatible){'true'}else{'false'})
-    $movementCohort=$null;$movementOptions='';$maxSeconds=600;$maxWallSeconds=600
+    $movementCohort=$null;$movementOptions='';$cameraCohort=$null;$cameraOptions='';$maxSeconds=600;$maxWallSeconds=600
     if($PlaybackCompatible -or $NativeMovement){
         $movementCohort=[pscustomobject]@{model=$(if($NativeMovement){'native_input_displacement_with_visual_animations'}else{'animation_displacement'});private_override=[bool]$NativeMovement}
         $override=$(if($NativeMovement){'true'}else{'false'})
         Set-OptimizedMWRouteIniValue -Path $runtime.settings_path -Section 'Game' -Key 'player movement ignores animation' -Value $override
         $movementOptions=", movement_cohort={model='"+$movementCohort.model+"',private_override="+$override+'}'
     }
-    if($PlaybackCompatible){$maxSeconds=180;$maxWallSeconds=300}
+    if($PlaybackCompatible){
+        $maxSeconds=180;$maxWallSeconds=300
+        $cameraCohort=[pscustomobject]@{model='recorded_additive_first_person_v1'}
+        $cameraOptions=", camera_layer_cohort={model='recorded_additive_first_person_v1'}"
+    }
     $expectedCell=$(if($RouteName -eq 'balmora'){'Balmora'}else{'Seyda Neen'})
     # Admit the audited encounter-list closure, not only one observed spawn.
     # Lua still confirms the queued disable and rejects any observed combat.
-    $options="return { enabled=true, schema=1, session='$id', route_name='$RouteName', checkpoint_save_required=true, playback_compatible=$compatible$movementOptions, no_enemy_policy={enabled=true, discover_high_fight_creatures=true, creature_fight_threshold=90, hostile_reference_ids={}, hostile_record_ids={$hostileRecordsLua}}, smoke_autostart=$boolean, smoke_duration_seconds=$SmokeDuration, smoke_quit=$boolean, smoke_expected_cell='$expectedCell', quit_on_finish=true, require_ctrl_shift=false, key_start='F6', key_checkpoint='F9', key_finish='F10', key_abort='F11', max_seconds=$maxSeconds, max_wall_seconds=$maxWallSeconds, max_records=60000, max_bytes=16777216, sample_hz=20 }"
+    $options="return { enabled=true, schema=1, session='$id', route_name='$RouteName', checkpoint_save_required=true, playback_compatible=$compatible$movementOptions$cameraOptions, no_enemy_policy={enabled=true, discover_high_fight_creatures=true, creature_fight_threshold=90, hostile_reference_ids={}, hostile_record_ids={$hostileRecordsLua}}, smoke_autostart=$boolean, smoke_duration_seconds=$SmokeDuration, smoke_quit=$boolean, smoke_expected_cell='$expectedCell', quit_on_finish=true, require_ctrl_shift=false, key_start='F6', key_checkpoint='F9', key_finish='F10', key_abort='F11', max_seconds=$maxSeconds, max_wall_seconds=$maxWallSeconds, max_records=60000, max_bytes=16777216, sample_hz=20 }"
     [IO.File]::WriteAllText($optionsPath,$options,[Text.UTF8Encoding]::new($false))
     [IO.File]::AppendAllText($runtime.config_path,"`ncontent=$content`n",[Text.UTF8Encoding]::new($false))
     # Recording is route setup, not a performance capture. Preserve gameplay
@@ -218,6 +222,7 @@ function New-OptimizedMWRouteSession {
     $manifest | Add-Member -NotePropertyName validation_window -NotePropertyValue ([bool]$SmallValidationWindow)
     $manifest | Add-Member -NotePropertyName playback_compatible -NotePropertyValue ([bool]$PlaybackCompatible)
     $manifest | Add-Member -NotePropertyName movement_cohort -NotePropertyValue $movementCohort
+    $manifest | Add-Member -NotePropertyName camera_layer_cohort -NotePropertyValue $cameraCohort
     $manifest | Add-Member -NotePropertyName maximum_acquisition_simulation_seconds -NotePropertyValue $(if($PlaybackCompatible){$maxSeconds}else{$null})
     $manifest | Add-Member -NotePropertyName maximum_acquisition_wall_seconds -NotePropertyValue $maxWallSeconds
     $manifest | Add-Member -NotePropertyName frozen_configuration -NotePropertyValue $validatedFrozen.frozen_configuration
@@ -231,6 +236,26 @@ function Test-OptimizedMWRouteNumber {
     if($null -eq $Value -or $Value -is [string] -or $Value -is [bool]){return $false}
     try{$number=[double]$Value}catch{return $false}
     return -not [double]::IsNaN($number) -and -not [double]::IsInfinity($number) -and $number -ge $Minimum -and $number -le $Maximum
+}
+
+function Test-OptimizedMWRouteCameraCohort {
+    param($Cohort)
+    if($null -eq $Cohort){return $true}
+    return $Cohort -is [pscustomobject] -and @($Cohort.PSObject.Properties).Count -eq 1 -and
+        $Cohort.model -is [string] -and $Cohort.model -ceq 'recorded_additive_first_person_v1'
+}
+
+function Test-OptimizedMWRouteCameraLayers {
+    param($Camera,[switch]$Readback)
+    if($null -eq $Camera){return $false}
+    $angleLimit=[Math]::PI+$(if($Readback){0.000001}else{0})
+    foreach($angle in @('extra_yaw','extra_pitch','roll','extra_roll')){
+        if(-not (Test-OptimizedMWRouteNumber $Camera.$angle (-$angleLimit) $angleLimit)){return $false}
+    }
+    $offset=$Camera.first_person_offset
+    if($offset -isnot [pscustomobject] -or @($offset.PSObject.Properties).Count -ne 3){return $false}
+    foreach($axis in @('x','y','z')){if(-not (Test-OptimizedMWRouteNumber $offset.$axis -1024 1024)){return $false}}
+    return $true
 }
 
 function Test-OptimizedMWRouteFiniteTree {
@@ -272,7 +297,7 @@ function Export-OptimizedMWRouteLog {
     if($SessionId -notmatch '^[a-f0-9]{32}$'){throw 'Invalid route session identity'}
     $errors=[Collections.Generic.List[string]]::new();$events=[Collections.Generic.Dictionary[string,int]]::new()
     $seq=0L;$lastTime=-1.0;$lastSimulation=-1.0;$lastFrame=-1L;$started=$false;$finished=$false;$startTime=0.0;$finish=$null;$bytes=0L;$cellKnown=$false;$checkpointSave=$null
-    $durationWall=$null;$finishElapsedWall=$null;$observationSettleWall=$null
+    $durationWall=$null;$finishElapsedWall=$null;$observationSettleWall=$null;$cameraCohort=$null;$readySeen=$false
     $controlSequences=[Collections.Generic.HashSet[long]]::new()
     $writer=[IO.StreamWriter]::new($OutputPath,$false,[Text.UTF8Encoding]::new($false))
     try{
@@ -296,6 +321,21 @@ function Export-OptimizedMWRouteLog {
             if($event -notin @('ready','start','sample','control','checkpoint','activation','door','trigger','cell','pause','finish','policy','combat','error','checkpoint_save')){$errors.Add('Unknown record event')}
             if(-not $events.ContainsKey($event)){$events[$event]=0};$events[$event]++
             if($finished){$errors.Add('Record emitted after finish')}
+            if($event -eq 'ready'){
+                $readySeen=$true;$cameraCohort=$record.camera_layer_cohort
+                if(-not (Test-OptimizedMWRouteCameraCohort $cameraCohort)){$errors.Add('Invalid camera layer cohort')}
+            }
+            if($event -in @('start','finish')){
+                $other=$record.camera_layer_cohort
+                if(-not $readySeen -or -not (Test-OptimizedMWRouteCameraCohort $other) -or ($null -eq $other) -ne ($null -eq $cameraCohort)){$errors.Add('Camera layer boundary cohort mismatch')}
+            }
+            if($null -ne $cameraCohort){
+                $cameraPose=$null
+                if($event -in @('ready','checkpoint','finish')){$cameraPose=$record.pose}
+                elseif($event -eq 'start'){$cameraPose=$record.checkpoint_pose}
+                elseif($event -eq 'sample'){$cameraPose=$record}
+                if($event -in @('ready','start','sample','checkpoint','finish') -and -not (Test-OptimizedMWRouteCameraLayers $cameraPose.camera)){$errors.Add('Missing or invalid recorded camera layers')}
+            }
             switch($event){
                 'start'{if($started){$errors.Add('Duplicate route start')};$started=$true;$startTime=[double]$record.t;if($record.PSObject.Properties['checkpoint_save']){$checkpointSave=$record.checkpoint_save}}
                 'checkpoint_save'{if($record.PSObject.Properties['checkpoint_save']){$checkpointSave=$record.checkpoint_save}else{$checkpointSave=$record}}
@@ -399,7 +439,8 @@ function Export-OptimizedMWRouteLog {
     if($null -eq $ExitCode -or $ExitCode -ne 0){$errors.Add('Game did not exit normally')}
     return [pscustomobject][ordered]@{schema=1;session=$SessionId;complete=($errors.Count -eq 0);qualification=$(if($errors.Count -eq 0){'RECORDED_NOT_REPLAY_VALIDATED'}else{'INCOMPLETE'});
         record_count=$seq;events=$events;duration_seconds=$durationWall;duration_seconds_source='finish.duration_wall';
-        finish_elapsed_wall_seconds=$finishElapsedWall;observation_settle_wall_seconds=$observationSettleWall;errors=@($errors | Select-Object -Unique);
+        finish_elapsed_wall_seconds=$finishElapsedWall;observation_settle_wall_seconds=$observationSettleWall;
+        finish_reason=$(if($finish){[string]$finish.reason}else{$null});camera_layer_cohort=$cameraCohort;camera_guard=$(if($finish){$finish.camera_guard}else{$null});errors=@($errors | Select-Object -Unique);
         route_file=(Get-OptimizedMWFrozenFile $OutputPath);source_log=$LogPath;exit_code=$ExitCode;checkpoint_save=$checkpointSave;
         limitation='Recording integrity is distinct from exact replay, actor repeatability, candidate engagement, and runtime performance acceptance.'}
 }
@@ -466,6 +507,7 @@ function Invoke-OptimizedMWRouteRecorder {
     Write-Host 'Recording waits for an outdoor first-person view, collision and hostile-policy readiness.'
     Write-Host 'F6 starts; F9 marks a numbered stage; F10 finishes and exits; F11 aborts and exits. Press these keys alone; no Ctrl or Shift.'
     Write-Host 'Hold the fixed view for 45 seconds after Recording appears, press F9, then walk the outdoor route. Autorun and gait toggles are supported; avoid doors, menus, combat and jump.'
+    Write-Host 'Mod camera rotation and first-person offsets are recorded explicitly; normal fatigue sway and head bobbing are supported.'
     Write-Host 'Press F10 before 180 simulation seconds total (including the fixed view). This is route setup, not a performance capture.'
     if($PrepareOnly){Write-Host 'Prepared only; no game launched.';return $session}
     Assert-OptimizedMWRouteSessionInputs $session

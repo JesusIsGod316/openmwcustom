@@ -56,6 +56,8 @@ try{
     Check-Route ($native.manifest.playback_compatible -and $native.manifest.maximum_acquisition_simulation_seconds -eq 180 -and $native.manifest.movement_cohort.private_override -eq $true -and $native.manifest.movement_cohort.model -ceq 'native_input_displacement_with_visual_animations') 'Outdoor recording receipt does not identify its bounded native movement cohort'
     Check-Route ([IO.File]::ReadAllText($native.runtime.settings_path) -match 'player movement ignores animation = true' -and [IO.File]::ReadAllText($native.manifest.options.path) -match 'playback_compatible=true' -and [IO.File]::ReadAllText($native.manifest.options.path) -match 'max_seconds=180' -and [IO.File]::ReadAllText($native.manifest.options.path).Contains("movement_cohort={model='native_input_displacement_with_visual_animations',private_override=true}")) 'Private recording setting, Lua metadata and duration disagree'
     Check-Route ($native.arguments -notcontains '--script-run' -and $native.manifest.starting_location_mode -ceq 'load_saved_location') 'Outdoor guard preparation relocated the saved world'
+    Check-Route ($native.manifest.camera_layer_cohort.model -ceq 'recorded_additive_first_person_v1' -and [IO.File]::ReadAllText($native.manifest.options.path).Contains("camera_layer_cohort={model='recorded_additive_first_person_v1'}")) 'New recording lacks matching explicit camera layer options and session contract'
+    Check-Route ($existing.manifest.camera_layer_cohort -eq $null -and [IO.File]::ReadAllText($existing.manifest.options.path) -notmatch 'camera_layer_cohort') 'Legacy constructor silently acquired a new camera contract'
     Assert-OptimizedMWRouteSessionInputs $native;Check-Route $true 'Native derivative identities were captured before settings writes finished'
     $animation=New-OptimizedMWRouteSession -GameDirectory $game -FrozenDirectory $locked -PackageDirectory $package -RouteName existing -PlaybackCompatible
     Check-Route ($animation.manifest.movement_cohort.model -ceq 'animation_displacement' -and $animation.manifest.movement_cohort.private_override -eq $false -and [IO.File]::ReadAllText($animation.runtime.settings_path) -match 'player movement ignores animation = false') 'Explicit animation displacement control silently uses native movement'
@@ -134,6 +136,27 @@ try{
     Check-Route $summary.complete 'Valid route fixture rejected'
     Check-Route ($summary.record_count -eq 7 -and $summary.events.sample -eq 2 -and $summary.route_file.sha256 -match '^[a-f0-9]{64}$') 'Route count or checksum absent'
     Check-Route ($summary.duration_seconds -eq 1 -and $summary.finish_elapsed_wall_seconds -eq 1 -and $null -eq $summary.observation_settle_wall_seconds -and $summary.duration_seconds_source -ceq 'finish.duration_wall') 'Legacy footer duration was not preserved explicitly'
+    Check-Route ($summary.finish_reason -ceq 'user_finished' -and $null -eq $summary.camera_layer_cohort) 'Finish reason or legacy camera contract lost in summary'
+    $layerRows=@($records | ForEach-Object {($_ | ConvertTo-Json -Depth 16 -Compress | ConvertFrom-Json)})
+    $layerCamera=[pscustomobject]@{yaw=0;pitch=0;fov=60;extra_yaw=0.01;extra_pitch=0.02;roll=0;extra_roll=0.03;first_person_offset=[pscustomobject]@{x=0;y=0;z=6}}
+    $layerPose=[pscustomobject]@{camera=$layerCamera}
+    foreach($row in @($layerRows[0],$layerRows[1],$layerRows[6])){$row | Add-Member camera_layer_cohort ([pscustomobject]@{model='recorded_additive_first_person_v1'})}
+    $layerRows[0] | Add-Member pose $layerPose;$layerRows[1] | Add-Member checkpoint_pose $layerPose
+    $layerRows[4] | Add-Member pose $layerPose;$layerRows[6] | Add-Member pose $layerPose
+    foreach($row in @($layerRows[3],$layerRows[5])){$row.camera=$layerCamera}
+    Write-RouteFixture $layerRows;$layerSummary=Export-OptimizedMWRouteLog $log $out $sessionId 0
+    Check-Route ($layerSummary.complete -and $layerSummary.camera_layer_cohort.model -ceq 'recorded_additive_first_person_v1') 'Explicit finite camera layers rejected or lost by exporter'
+    $layerRows[1].PSObject.Properties.Remove('camera_layer_cohort');Write-RouteFixture $layerRows
+    Check-Route (-not (Export-OptimizedMWRouteLog $log $out $sessionId 0).complete) 'Missing START camera boundary contract accepted'
+    $layerRows[1] | Add-Member camera_layer_cohort ([pscustomobject]@{model='recorded_additive_first_person_v1'})
+    $layerCamera.extra_roll=4;Write-RouteFixture $layerRows
+    Check-Route (-not (Export-OptimizedMWRouteLog $log $out $sessionId 0).complete) 'Out-of-bounds recorded camera angle accepted'
+    $layerCamera.extra_roll=0.03;$layerCamera.first_person_offset.z=1025;Write-RouteFixture $layerRows
+    Check-Route (-not (Export-OptimizedMWRouteLog $log $out $sessionId 0).complete) 'Out-of-bounds recorded camera offset accepted'
+    $layerCamera.first_person_offset.z=6;$layerRows[6].reason='playback_scope_extra_camera_layer'
+    $layerRows[6] | Add-Member camera_guard ([pscustomobject]@{field='extra_roll';reason='angle_out_of_bounds';snapshot=[pscustomobject]@{extra_roll=4}})
+    Write-RouteFixture $layerRows;$guardSummary=Export-OptimizedMWRouteLog $log $out $sessionId 0
+    Check-Route (-not $guardSummary.complete -and $guardSummary.finish_reason -ceq 'playback_scope_extra_camera_layer' -and $guardSummary.camera_guard.field -ceq 'extra_roll') 'Invalid camera-stop evidence missing from summary'
     foreach($badDuration in @($null,-1,'1',[double]::NaN)){
         $records[6].duration_wall=$badDuration;Write-RouteFixture $records;$invalidDuration=Export-OptimizedMWRouteLog $log $out $sessionId 0
         Check-Route (-not $invalidDuration.complete) 'Missing or invalid footer wall duration accepted'

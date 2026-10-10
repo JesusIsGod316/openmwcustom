@@ -120,6 +120,7 @@ local interfaces = {
         storageData.override = value
     end },
 }
+local cameraLayers = { extra_yaw = 0, extra_pitch = 0, roll = 0, extra_roll = 0, first_person_offset = vec(0,0,0) }
 local api = {
     ['openmw.core'] = { getRealTime = function() return now end,
         getSimulationTime = function() return sim end, getGameTime = function() return game end,
@@ -133,8 +134,15 @@ local api = {
         rotation = { getAnglesZYX = function() return 0, 0, 0 end } },
     ['openmw.camera'] = { getPosition = function() return vec(1, 2, 100) end,
         getYaw = function() return 0 end, getPitch = function() return 0 end,
-        getExtraYaw = function() return 0 end, getExtraPitch = function() return 0 end,
-        getRoll = function() return 0 end, getMode = function() return cameraMode end,
+        getExtraYaw = function() return cameraLayers.extra_yaw end, getExtraPitch = function() return cameraLayers.extra_pitch end,
+        getRoll = function() return cameraLayers.roll end, getMode = function() return cameraMode end,
+        getExtraRoll = function() return cameraLayers.extra_roll end,
+        getFirstPersonOffset = function() return cameraLayers.first_person_offset end,
+        setExtraYaw = function() error('Recorder must not write camera layers') end,
+        setExtraPitch = function() error('Recorder must not write camera layers') end,
+        setRoll = function() error('Recorder must not write camera layers') end,
+        setExtraRoll = function() error('Recorder must not write camera layers') end,
+        setFirstPersonOffset = function() error('Recorder must not write camera layers') end,
         MODE = { FirstPerson = 1, ThirdPerson = 2, Vanity = 3 },
         setMode = function(mode, force)
             if playerRecording then writesDuringRecording = writesDuringRecording + 1; error('camera mode write during recording') end
@@ -404,7 +412,7 @@ api['openmw.types'].Actor = { isOnGround = function() return true end, isSwimmin
     getCurrentSpeed = function() return 0 end }
 package.loaded['openmw.debug'] = api['openmw.debug']
 package.loaded['openmw.types'] = api['openmw.types']
-local function compatibleFixture(exterior, mode, collision, cohort)
+local function compatibleFixture(exterior, mode, collision, cohort, cameraCohort)
     storageData = {}; playerRecording = false
     cdata.movement, cdata.sideMovement, cdata.jump, cdata.use = 0, 0, false, 0
     cdata.run, cdata.sneak = false, false
@@ -413,10 +421,13 @@ local function compatibleFixture(exterior, mode, collision, cohort)
     cameraMode, primaryCameraMode = mode or 1, mode or 1
     recorderCollision = collision
     nativeSwitches.vanitymode, refuseVanityWrite = true, false
+    cameraLayers.extra_yaw, cameraLayers.extra_pitch, cameraLayers.roll, cameraLayers.extra_roll = 0,0,0,0
+    cameraLayers.first_person_offset = vec(0,0,0)
     local configuration = opts()
     configuration.playback_compatible, configuration.max_seconds = true, 180
     configuration.max_wall_seconds = 300
     configuration.movement_cohort = cohort or { model = 'native_input_displacement_with_visual_animations', private_override = true }
+    configuration.camera_layer_cohort = cameraCohort
     package.loaded['scripts.optimizedmw_route_recorder.options'] = configuration
     local captured = {}
     print = function(line)
@@ -426,7 +437,7 @@ local function compatibleFixture(exterior, mode, collision, cohort)
     end
     local fixture = dofile(root .. '/scripts/optimizedmw_route_recorder/player.lua')
     local function policy(event, pending)
-        fixture.eventHandlers.OptimizedMWRoutePolicy({session=configuration.session,event=event or 'policy_ready',ready=true,
+        fixture.eventHandlers.OptimizedMWRoutePolicy({session=configuration.session,event=event or 'policy_ready',ready=true,enabled=true,
             qualified=true,failed=false,failure_count=0,pending_disable=pending or 0,combat_before_start=0,combat_during_recording=0})
     end
     local function step(delta, simulationDelta)
@@ -437,9 +448,9 @@ local function compatibleFixture(exterior, mode, collision, cohort)
         fixture.engineHandlers.onFrame(delta)
     end
     local function press(code) fixture.engineHandlers.onKeyPress({code=code}); step() end
-    local function ack()
+    local function ack(save)
         storageData.checkpoint_ack={request=storageData.checkpoint_request,ok=true,
-            save={directory='Gallus_Darkwind',filename='private-route.omwsave',description='new private checkpoint'}}
+            save=save or {directory='Gallus_Darkwind',filename='private-route.omwsave',description='new private checkpoint'}}
         step()
     end
     local function footer()
@@ -664,6 +675,100 @@ check(playerRecording and f.lines[2]:find('"native_input_replay_compatible":fals
 f.press(67); f.policy('policy_stopped',0); for _=1,5 do f.step() end
 check(f.footer():find('"model":"animation_displacement"',1,true) and f.footer():find('"private_override":false',1,true),
     'animation-movement control cohort survives through the final footer')
+local layerCohort={model='recorded_additive_first_person_v1'}
+local function layerFixture() return compatibleFixture(true,1,true,nil,layerCohort) end
+f=layerFixture(); f.press(63); f.ack()
+cameraLayers.extra_yaw,cameraLayers.extra_pitch,cameraLayers.roll,cameraLayers.extra_roll=0.01,0.02,0.03,0.004
+cameraLayers.first_person_offset=vec(4,5,6)
+cdata.movement=1; resolved.MoveForward=1; f.step(0.1)
+check(playerRecording and not f.footer() and cdata.movement==1,
+    'explicit additive camera cohort retains finite fatigue camera layers and ordinary resolved movement')
+f.press(66); f.press(67); f.policy('policy_stopped',0); for _=1,5 do f.step() end
+check(f.footer():find('"complete":true',1,true) and f.footer():find('"pose":',1,true),
+    'additive camera capture finishes with a complete final pose without camera writes')
+for _,event in ipairs({'ready','start','finish'}) do
+    local line
+    for _,record in ipairs(f.lines) do if record:find('"event":"'..event..'"',1,true) then line=record end end
+    check(line and line:find('"camera_layer_cohort":{"model":"recorded_additive_first_person_v1"}',1,true),
+        event..' explicitly echoes the selected additive camera cohort')
+    check(line and line:find('"extra_roll":',1,true) and line:find('"first_person_offset":',1,true),
+        event..' pose captures extra roll and first-person offset')
+end
+for _,event in ipairs({'sample','checkpoint','finish'}) do
+    local capturedLayers=false
+    for _,line in ipairs(f.lines) do
+        if line:find('"event":"'..event..'"',1,true) and line:find('"extra_pitch":0.02',1,true)
+            and line:find('"extra_roll":0.004',1,true) and line:find('"first_person_offset":{"x":4,"y":5,"z":6}',1,true) then capturedLayers=true end
+    end
+    check(capturedLayers, event..' retains finite breathing pitch, extra roll and offset together')
+end
+for _,bad in ipairs({{field='extra_pitch',value=math.pi+0.01},{field='extra_roll',value=math.huge},
+    {field='first_person_offset.x',value=1024.01},{field='first_person_offset.z',value=0/0}}) do
+    f=layerFixture(); f.press(63); f.ack()
+    local axis=bad.field:match('first_person_offset%.([xyz])')
+    if axis then cameraLayers.first_person_offset[axis]=bad.value else cameraLayers[bad.field]=bad.value end
+    f.step(); f.step()
+    check(f.footer() and f.footer():find('"complete":false',1,true) and f.footer():find('"reason":"playback_scope_invalid_camera_layer"',1,true)
+        and f.footer():find('"field":"'..bad.field..'"',1,true),
+        'invalid additive '..bad.field..' stops with a named exact camera-guard failure')
+    check(f.footer():find('"camera_guard":',1,true) and not f.footer():find('"pose":',1,true)
+        and (common.finite(bad.value) or f.footer():find('invalid:nonfinite',1,true)),
+        'invalid additive '..bad.field..' retains a JSON-safe failure snapshot')
+    check(displayedMessages[#displayedMessages].text:find('INVALID capture: camera '..bad.field,1,true),
+        'invalid additive '..bad.field..' explains the shutdown before export')
+end
+for _,missingApi in ipairs({'getExtraRoll','setExtraPitch','getFirstPersonOffset','setFirstPersonOffset'}) do
+    local savedApi=api['openmw.camera'][missingApi]; api['openmw.camera'][missingApi]=nil
+    f=layerFixture(); f.step()
+    api['openmw.camera'][missingApi]=savedApi
+    check(not playerRecording and not storageData.checkpoint_request and f.footer()
+        and f.footer():find('"reason":"camera_layer_preflight_failed"',1,true),
+        'missing additive API '..missingApi..' fails before READY or starting-save acquisition')
+    check(f.footer():find('"camera_guard":',1,true) and f.footer():find('missing_',1,true),
+        'missing additive API '..missingApi..' retains its safe preflight failure')
+end
+f=compatibleFixture(true,1,true); f.press(63); f.ack(); cameraLayers.extra_pitch=0.02; f.step(); f.step()
+check(f.footer():find('"reason":"playback_scope_extra_camera_layer"',1,true)
+    and f.footer():find('"field":"extra_pitch"',1,true) and f.footer():find('"extra_pitch":0.02',1,true),
+    'legacy no-cohort capture retains its strict zero-layer guard and exact failing state')
+rejects(function() compatibleFixture(true,1,true,nil,{model='unrecognized_camera_cohort'}) end,
+    'unknown additive camera cohort cannot relax the legacy guard')
+cameraLayers.extra_yaw,cameraLayers.extra_pitch,cameraLayers.roll,cameraLayers.extra_roll=0,0,0,0
+cameraLayers.first_person_offset=vec(0,0,0)
+local integrationDump=os.getenv('OPTIMIZEDMW_RECORDER_INTEGRATION_DUMP')
+if integrationDump and integrationDump~='' then
+    -- Emit the actual mocked PLAYER writer, not reconstructed JSON rows. These
+    -- files are for the host/compiler contract only and are not a playable save.
+    for _,path in ipairs({integrationDump,integrationDump..'.seed.json'}) do
+        local existing=io.open(path,'rb')
+        if existing then existing:close(); error('Refusing to overwrite an existing integration fixture: '..path) end
+    end
+    local priorCellId=cell.id
+    cell.id='Esm3ExteriorCell:'..cell.gridX..':'..cell.gridY
+    f=layerFixture(); f.press(63)
+    local checkpointSave={directory='Gallus_Darkwind',filename='private-route.omwsave',
+        description='OptimizedMW route existing '..f.configuration.session,
+        source='private_menu_new_save_slot',request=storageData.checkpoint_request}
+    f.ack(checkpointSave); f.step(0.1)
+    cameraLayers.extra_yaw,cameraLayers.extra_pitch,cameraLayers.roll,cameraLayers.extra_roll=0.01,0.02,0.03,0.004
+    cameraLayers.first_person_offset=vec(4,5,6)
+    cdata.movement=1; resolved.MoveForward=1; f.step(0.1); f.press(66)
+    cameraLayers.extra_pitch,cameraLayers.extra_roll=0.025,0.005
+    cameraLayers.first_person_offset=vec(6,7,8); f.step(0.1)
+    f.press(67); f.policy('policy_stopped',0); for _=1,5 do f.step() end
+    check(f.footer() and f.footer():find('"complete":true',1,true), 'actual mocked writer integration capture must finish completely')
+    check(f.lines[2]:find('"enabled":true',1,true) and f.footer():find('"enabled":true',1,true),
+        'actual mocked writer integration capture retains an enabled qualified actor policy at both boundaries')
+    local output=assert(io.open(integrationDump,'wb'))
+    for _,line in ipairs(f.lines) do assert(output:write(line..'\n')) end
+    assert(output:close())
+    local seed=assert(io.open(integrationDump..'.seed.json','wb'))
+    assert(seed:write(common.json({schema=1,session=f.configuration.session,route='existing',
+        movement_cohort=f.configuration.movement_cohort,camera_layer_cohort=f.configuration.camera_layer_cohort,
+        checkpoint_save=checkpointSave,scope='mocked_PLAYER_writer_host_compiler_contract_only_not_gameplay_or_playable_save'})..'\n'))
+    assert(seed:close())
+    cell.id=priorCellId
+end
 check(writesDuringRecording==0, 'compatible guards and metadata never write movement/camera/control defaults during acquisition')
 print=realPrint
 print('PASS route Lua recorder checks=' .. checks)

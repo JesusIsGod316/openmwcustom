@@ -32,6 +32,19 @@ function New-GuidedPlaybackFixtureRows {
     $rows[4].input_replay_finished=$false
     return $rows
 }
+function New-LayeredPlaybackFixtureRows {
+    $rows=New-GuidedPlaybackFixtureRows
+    foreach($row in $rows){$row.camera_layer_cohort=[ordered]@{model='recorded_additive_first_person_v1'};$row.camera_layer_cohort_status='recorded_additive'}
+    foreach($row in @($rows[2],$rows[3])){
+        $row.command_camera_layers=[ordered]@{extra_yaw=0.01;extra_pitch=0.02;roll=0;extra_roll=0.03;first_person_offset=[ordered]@{x=0;y=0;z=6}}
+        $row.camera_layers_after_write=[ordered]@{extra_yaw=0.01;extra_pitch=0.02;roll=0;extra_roll=0.03;first_person_offset=[ordered]@{x=0;y=0;z=6}}
+        $row.camera_layer_postwrite_errors=[ordered]@{extra_yaw=0;extra_pitch=0;roll=0;extra_roll=0}
+        $row.first_person_offset_postwrite_error=0
+    }
+    $rows[4].maximum_camera_layer_postwrite_error=0;$rows[4].maximum_first_person_offset_postwrite_error=0
+    $rows[4].camera_layers_restored=$true;$rows[4].camera_layer_restoration_failed=$false
+    return $rows
+}
 function Export-PlaybackFixture {
     param([object[]]$Rows,[Nullable[int]]$ExitCode=0,[string]$InjectedRaw='', [switch]$PreserveSequence)
     $id=[Guid]::NewGuid().ToString('N')
@@ -87,6 +100,27 @@ try{
     $sourceManifest.movement_cohort=[ordered]@{model='native_input_displacement_with_visual_animations';private_override=$true};Write-OptimizedMWRouteJson $manifestPath $sourceManifest
     $admitted=Read-OptimizedMWPlaybackCapture -Directory $captureFixture -ExpectedRoute existing
     Check-Playback ($admitted.route -ceq 'existing' -and $admitted.movement_cohort.private_override -eq $true) 'Fresh native Seyda route rejected'
+    Check-Playback ($null -eq $admitted.camera_layer_cohort) 'Old zero-layer capture silently changed camera cohort'
+    Assert-OptimizedMWPlaybackCameraReceipt $admitted ([pscustomobject]@{camera_layer_cohort=$null;camera_layer_cohort_status='legacy_zero_layers'})
+    Check-Playback $true 'Legacy compiler receipt rejected'
+    $cameraCohort=[ordered]@{model='recorded_additive_first_person_v1'}
+    $sourceManifest.camera_layer_cohort=$cameraCohort;Write-OptimizedMWRouteJson $manifestPath $sourceManifest
+    Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture} 'Missing summary camera cohort accepted'
+    $sourceSummary.camera_layer_cohort=$cameraCohort;Write-OptimizedMWRouteJson $summaryPath $sourceSummary
+    $cameraAdmitted=Read-OptimizedMWPlaybackCapture -Directory $captureFixture
+    Check-Playback ($cameraAdmitted.camera_layer_cohort.model -ceq 'recorded_additive_first_person_v1') 'Matching additive camera contract rejected'
+    Assert-OptimizedMWPlaybackCameraReceipt $cameraAdmitted ([pscustomobject]@{camera_layer_cohort=[pscustomobject]$cameraCohort;camera_layer_cohort_status='recorded_additive'})
+    Check-Playback $true 'Matching additive compiler receipt rejected'
+    foreach($badCohort in @([ordered]@{model='unknown'},[ordered]@{model='recorded_additive_first_person_v1';extra=$true},'recorded_additive_first_person_v1')){
+        $sourceManifest.camera_layer_cohort=$badCohort;Write-OptimizedMWRouteJson $manifestPath $sourceManifest
+        Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture} 'Invalid or expanded source camera contract accepted'
+    }
+    $sourceManifest.camera_layer_cohort=$cameraCohort;Write-OptimizedMWRouteJson $manifestPath $sourceManifest
+    Reject-Playback {Assert-OptimizedMWPlaybackCameraReceipt $cameraAdmitted ([pscustomobject]@{camera_layer_cohort=$null;camera_layer_cohort_status='legacy_zero_layers'})} 'Compiler silently discarded additive source contract'
+    Reject-Playback {Assert-OptimizedMWPlaybackCameraReceipt $admitted ([pscustomobject]@{camera_layer_cohort=[pscustomobject]$cameraCohort;camera_layer_cohort_status='recorded_additive'})} 'Compiler silently upgraded legacy source'
+    Reject-Playback {Assert-OptimizedMWPlaybackCameraReceipt $cameraAdmitted ([pscustomobject]@{camera_layer_cohort=[pscustomobject]$cameraCohort;camera_layer_cohort_status='legacy_zero_layers'})} 'Compiler camera cohort status mismatch accepted'
+    $sourceManifest.Remove('camera_layer_cohort');$sourceSummary.Remove('camera_layer_cohort')
+    Write-OptimizedMWRouteJson $manifestPath $sourceManifest;Write-OptimizedMWRouteJson $summaryPath $sourceSummary
     $sourceManifest.movement_cohort.private_override='true';Write-OptimizedMWRouteJson $manifestPath $sourceManifest
     Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture} 'String movement override flag accepted'
     $sourceManifest.movement_cohort.private_override=$false;Write-OptimizedMWRouteJson $manifestPath $sourceManifest
@@ -104,6 +138,29 @@ try{
     Reject-Playback {Read-OptimizedMWPlaybackCapture -Directory $captureFixture} 'Incomplete qualification admitted despite complete flag'
     . $hostPath -GameDir $fixture -Route existing -PrepareOnly -LibraryOnly
     Check-Playback ($playbackInvocation.Route -ceq 'existing') 'Dot-sourced recorder replaced selected playback route'
+
+    $layered=Export-PlaybackFixture (New-LayeredPlaybackFixtureRows)
+    Check-Playback ($layered.playback_complete -and $layered.camera_layer_cohort.model -ceq 'recorded_additive_first_person_v1') 'Qualified sampled additive camera playback rejected'
+    $rounded=New-LayeredPlaybackFixtureRows
+    $rounded[2].command_camera_layers.extra_pitch=[Math]::PI;$rounded[2].camera_layers_after_write.extra_pitch=3.1415927410125732
+    $rounded[2].camera_layer_postwrite_errors.extra_pitch=[Math]::Abs([Math]::PI-3.1415927410125732)
+    $rounded[4].maximum_camera_layer_postwrite_error=$rounded[2].camera_layer_postwrite_errors.extra_pitch
+    Check-Playback ((Export-PlaybackFixture $rounded).playback_complete) 'Native float rounding at pi was rejected as an invalid readback'
+    $rounded[2].command_camera_layers.extra_pitch=3.1415927410125732
+    $null=Check-IncompletePlayback $rounded 'Readback slack leaked into strict compiled command admission'
+    foreach($mutation in @('missing_contract','missing_readback','wrong_angle_error','wrong_offset_error','wrong_maximum','missing_restore','failed_restore')){
+        $rows=New-LayeredPlaybackFixtureRows
+        switch($mutation){
+            'missing_contract'{$rows[2].Remove('camera_layer_cohort')}
+            'missing_readback'{$rows[2].Remove('camera_layers_after_write')}
+            'wrong_angle_error'{$rows[2].camera_layers_after_write.extra_pitch=0.021}
+            'wrong_offset_error'{$rows[2].camera_layers_after_write.first_person_offset.z=6.0001}
+            'wrong_maximum'{$rows[4].maximum_camera_layer_postwrite_error=0.00002}
+            'missing_restore'{$rows[4].Remove('camera_layers_restored')}
+            'failed_restore'{$rows[4].camera_layer_restoration_failed=$true}
+        }
+        $null=Check-IncompletePlayback $rows ('Additive camera failure accepted: '+$mutation)
+    }
 
     # Derive the movement setting in a private copy and retain the original cohort.
     $baselineSettings=Join-Path $fixture 'frozen-baseline-settings.cfg'

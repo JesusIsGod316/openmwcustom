@@ -12,6 +12,21 @@ local guidance = require('scripts.optimizedmw_route_playback.guidance')
 local options = require('scripts.optimizedmw_route_playback.options')
 local timeline = require('scripts.optimizedmw_route_playback.timeline')
 local common = require('scripts.optimizedmw_route_recorder.common')
+local layeredCamera = sample.cameraLayers(timeline.camera_layer_cohort)
+local cameraLayerStatus = layeredCamera and 'recorded_additive' or 'legacy_zero_layers'
+local cameraUtil = layeredCamera and require('openmw.util') or nil
+local layerAngles = {'extra_yaw','extra_pitch','roll','extra_roll'}
+local layerGetters = {extra_yaw='getExtraYaw',extra_pitch='getExtraPitch',roll='getRoll',extra_roll='getExtraRoll'}
+local layerSetters = {extra_yaw='setExtraYaw',extra_pitch='setExtraPitch',roll='setRoll',extra_roll='setExtraRoll'}
+-- Lua 5.1 caps a function at 60 upvalues. Group the camera contract's state and
+-- callbacks so the existing frame state machine remains compatible.
+local cameraLayer = {active=layeredCamera,status=cameraLayerStatus,angles=layerAngles,
+    restored_failed=false,maximum_angle_error=0,maximum_offset_error=0}
+if layeredCamera then
+    assert(sample.cameraLayers(options.camera_layer_cohort), 'Missing playback camera layer cohort')
+else
+    assert(options.camera_layer_cohort == nil, 'Playback options/timeline camera cohort mismatch')
+end
 local debugAvailable, debugApi = pcall(require, 'openmw.debug')
 if not debugAvailable then debugApi = nil end
 assert(options.enabled == true and type(options.session) == 'string' and options.session:match('^[0-9a-f]+$') and #options.session == 32,
@@ -44,14 +59,96 @@ local lastCheck, markerIndex, sequence, checkCount, maximumError, cameraError = 
 local pitchError, cellMismatchCount, outsideToleranceCount = 0, 0, 0
 local postwriteYawError, postwritePitchError = 0, 0
 local overrides = false
+local initialCameraLayers, cameraLayersOwned = nil, false
 local function emit(event, payload)
     payload = payload or {}
     sequence = sequence + 1
     payload.schema, payload.session, payload.event, payload.seq = 1, options.session, event, sequence
     payload.playback_protocol = protocol
+    payload.camera_layer_cohort = timeline.camera_layer_cohort
+    payload.camera_layer_cohort_status = cameraLayerStatus
     payload.t_simulation = simOrigin and math.max(0, core.getSimulationTime() - simOrigin) or 0
     payload.t_wall = wallOrigin and math.max(0, core.getRealTime() - wallOrigin) or 0
     print('OMWPLAY|' .. common.json(payload))
+end
+local function cameraLayerSnapshot(readback)
+    local result = {}
+    for _, key in ipairs(layerAngles) do result[key] = camera[layerGetters[key]]() end
+    local offset = camera.getFirstPersonOffset()
+    result.first_person_offset = {x=offset.x,y=offset.y,z=offset.z}
+    return sample.validateCameraLayers(result,readback == true)
+end
+local function prepareCameraLayers()
+    if not layeredCamera or initialCameraLayers then return end
+    for _, key in ipairs(layerAngles) do
+        assert(type(camera[layerGetters[key]]) == 'function' and type(camera[layerSetters[key]]) == 'function',
+            'Required additive camera API unavailable: '..key)
+    end
+    assert(type(camera.getFirstPersonOffset) == 'function' and type(camera.setFirstPersonOffset) == 'function'
+        and type(cameraUtil.vector3) == 'function', 'Required first-person camera offset API unavailable')
+    -- Capture ownership before any override or camera write. Release restores
+    -- only these private camera channels, without touching player storage.
+    initialCameraLayers = cameraLayerSnapshot()
+end
+local function writeCameraLayers(value)
+    cameraLayersOwned = true -- a partial setter failure must still restore ownership
+    for _, key in ipairs(layerAngles) do camera[layerSetters[key]](value[key]) end
+    local offset = value.first_person_offset
+    camera.setFirstPersonOffset(cameraUtil.vector3(offset.x,offset.y,offset.z))
+    -- Verify every commanded frame, including setup, even when check output is
+    -- throttled. A silent setter mismatch must not pass between diagnostics.
+    local actual = cameraLayerSnapshot(true)
+    local errors, maximum = {}, 0
+    for _, key in ipairs(layerAngles) do
+        errors[key] = math.abs(value[key]-actual[key])
+        maximum = math.max(maximum,errors[key])
+    end
+    local offsetError = sample.distance(value.first_person_offset,actual.first_person_offset)
+    cameraLayer.maximum_angle_error = math.max(cameraLayer.maximum_angle_error,maximum)
+    cameraLayer.maximum_offset_error = math.max(cameraLayer.maximum_offset_error,offsetError)
+    cameraLayer.readback = {actual=actual,errors=errors,offset_error=offsetError}
+    assert(maximum <= 0.00001 and offsetError <= 0.001, 'Additive camera setter readback mismatch')
+end
+local function restoreCameraLayers()
+    if not cameraLayersOwned then return end
+    local errors = {}
+    for _, key in ipairs(layerAngles) do
+        local ok, failure = pcall(camera[layerSetters[key]],initialCameraLayers[key])
+        if not ok then errors[#errors+1] = key..': '..tostring(failure):sub(1,128) end
+    end
+    local offset = initialCameraLayers.first_person_offset
+    local ok, failure = pcall(function() camera.setFirstPersonOffset(cameraUtil.vector3(offset.x,offset.y,offset.z)) end)
+    if not ok then errors[#errors+1] = 'first_person_offset: '..tostring(failure):sub(1,128) end
+    if #errors == 0 then
+        local readOk, actual = pcall(cameraLayerSnapshot,true)
+        if not readOk then errors[#errors+1] = 'restoration readback: '..tostring(actual):sub(1,128)
+        else
+            for _, key in ipairs(layerAngles) do
+                if math.abs(initialCameraLayers[key]-actual[key]) > 0.00001 then errors[#errors+1] = key..': restoration readback mismatch' end
+            end
+            if sample.distance(initialCameraLayers.first_person_offset,actual.first_person_offset) > 0.001 then
+                errors[#errors+1] = 'first_person_offset: restoration readback mismatch'
+            end
+        end
+    end
+    if #errors > 0 then
+        cameraLayer.restored_failed = true
+        emit('error',{message='Private camera layer restoration failed',camera_restore_errors=errors})
+    else
+        cameraLayersOwned = false
+        cameraLayer.restored = true
+    end
+end
+cameraLayer.prepare, cameraLayer.snapshot = prepareCameraLayers, cameraLayerSnapshot
+function cameraLayer.annotate(observation,commandCamera)
+    if not cameraLayer.active then return end
+    local readback = cameraLayer.readback
+    observation.command_camera_layers = {}
+    for _, key in ipairs(layerAngles) do observation.command_camera_layers[key] = commandCamera[key] end
+    observation.command_camera_layers.first_person_offset = commandCamera.first_person_offset
+    observation.camera_layers_after_write, observation.camera_layer_postwrite_errors = readback.actual, readback.errors
+    observation.first_person_offset_postwrite_error = readback.offset_error
+    observation.camera_layer_observation_scope = 'sampled additive channels after setters; not final rendered bone camera'
 end
 local function zero()
     self.controls.movement, self.controls.sideMovement = 0, 0
@@ -67,12 +164,14 @@ local function release()
         I.Controls.overrideUiControls(false)
         overrides = false
     end
+    restoreCameraLayers()
 end
 local function cameraPose(pose)
     camera.setMode(camera.MODE.FirstPerson, true)
     camera.setYaw(pose.camera.yaw)
     camera.setPitch(pose.camera.pitch)
     camera.setFieldOfView(pose.camera.fov)
+    if layeredCamera then writeCameraLayers(pose.camera) end
     -- Absolute camera setters do not rotate the actor. Native mechanics consumes
     -- these actor-angle deltas; they are never accumulated from recorded FPS.
     self.controls.yawChange = sample.angleDelta(pose.camera.yaw, self.rotation:getYaw())
@@ -142,10 +241,7 @@ local function inspect(expected, t, deferEmission)
     elseif error > abortTolerance then close('position_divergence') end
     return observation
 end
-local function frame(dt)
-    local now = core.getRealTime()
-    if state == 'finished' then return end
-    if state == 'closing' then
+local function drainClosing(now)
         zero()
         closeFrames = closeFrames + 1
         local drained = stopAcknowledged and (policy.pending_disable or 0) == 0
@@ -161,6 +257,7 @@ local function frame(dt)
                     finalReason = finalPhysics.collision_enabled == false and 'collision_disabled' or 'collision_state_unavailable' end
             end
             release()
+            if cameraLayer.restored_failed and finalReason == 'route_finished' then finalReason = 'camera_restore_failed' end
             state = 'finished'
             if not finishPrinted then
                 finishPrinted = true
@@ -172,6 +269,10 @@ local function frame(dt)
                     maximum_camera_pitch_error = pitchError, cell_mismatch_check_count = cellMismatchCount,
                     maximum_camera_postwrite_yaw_error = postwriteYawError,
                     maximum_camera_postwrite_pitch_error = postwritePitchError,
+                    maximum_camera_layer_postwrite_error = cameraLayer.maximum_angle_error,
+                    maximum_first_person_offset_postwrite_error = cameraLayer.maximum_offset_error,
+                    camera_layers_restored = cameraLayer.active and cameraLayer.restored == true,
+                    camera_layer_restoration_failed = cameraLayer.restored_failed,
                     outside_position_tolerance_check_count = outsideToleranceCount,
                     reference_time = lastReference, source_elapsed = simOrigin and core.getSimulationTime() - simOrigin or 0,
                     reference_hold_count = guideClock and guideClock.hold_count or 0,
@@ -184,10 +285,14 @@ local function frame(dt)
             end
             if options.quit_on_finish then core.quit() end
         end
-        return
-    end
+end
+local function frame(dt)
+    local now = core.getRealTime()
+    if state == 'finished' then return end
+    if state == 'closing' then drainClosing(now); return end
     if not setupOrigin then
         setupOrigin = now
+        cameraLayer.prepare()
         assert(I.Controls and I.Controls.overrideMovementControls and I.Controls.overrideCombatControls and I.Controls.overrideUiControls,
             'Controls override interface unavailable')
         I.Controls.overrideMovementControls(true)
@@ -265,7 +370,15 @@ local function frame(dt)
     lastReference = math.min(reference, timeline.duration)
     if reference >= timeline.duration then
         local _, expected = lookup(timeline.duration)
-        inspect(expected, timeline.duration)
+        if cameraLayer.active then
+            local terminal = inspect(expected,timeline.duration,true)
+            if state == 'playing' then
+                cameraPose(expected)
+                cameraLayer.annotate(terminal,expected.camera)
+                terminal.camera_layer_command_phase = 'terminal_reference_endpoint; before_release'
+            end
+            emit('check',terminal)
+        else inspect(expected, timeline.duration) end
         if state == 'playing' and guided and not guidance.finalPoseAccepted(currentPosition(), expected.position) then close('final_pose_mismatch') end
         if state == 'playing' then close('route_finished') end
         return
@@ -324,6 +437,7 @@ local function frame(dt)
         observation.actor_yaw_after_write, observation.actor_pitch_after_write = self.rotation:getYaw(), self.rotation:getPitch()
         observation.camera_postwrite_yaw_error = math.abs(sample.angleDelta(command.camera.yaw, camera.getYaw()))
         observation.camera_postwrite_pitch_error = math.abs(command.camera.pitch - camera.getPitch())
+        cameraLayer.annotate(observation,command.camera)
         observation.postwrite_readback_phase = 'camera_setter_readback; actor_delta_not_yet_consumed_by_mechanics'
         postwriteYawError = math.max(postwriteYawError, observation.camera_postwrite_yaw_error)
         postwritePitchError = math.max(postwritePitchError, observation.camera_postwrite_pitch_error)

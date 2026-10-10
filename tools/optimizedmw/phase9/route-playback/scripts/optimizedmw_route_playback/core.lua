@@ -26,6 +26,30 @@ local function nativeCohort(cohort)
         and cohort.private_override == true, 'Invalid native movement cohort')
     for key in pairs(cohort) do assert(key == 'model' or key == 'private_override', 'Unknown movement cohort field') end
 end
+function M.cameraLayers(cohort)
+    if cohort == nil then return false end
+    assert(type(cohort) == 'table' and cohort.model == 'recorded_additive_first_person_v1', 'Invalid camera layer cohort')
+    for key in pairs(cohort) do assert(key == 'model', 'Unknown camera layer cohort field') end
+    return true
+end
+local layerAngles = {'extra_yaw','extra_pitch','roll','extra_roll'}
+function M.validateCameraLayers(camera, readback)
+    assert(type(camera) == 'table', 'Missing additive camera state')
+    assert(readback == nil or type(readback) == 'boolean', 'Invalid camera validation phase')
+    -- Native setters/getters use float angles; strict source values at pi can
+    -- round a few ulps outward. This slack belongs only to actual readbacks.
+    local angleLimit = math.pi + (readback == true and 0.000001 or 0)
+    for _, key in ipairs(layerAngles) do
+        assert(finite(camera[key]) and math.abs(camera[key]) <= angleLimit, 'Invalid additive camera '..key)
+    end
+    local offset = camera.first_person_offset
+    assert(type(offset) == 'table', 'Missing first-person camera offset')
+    for key in pairs(offset) do assert(key == 'x' or key == 'y' or key == 'z', 'Unknown first-person camera offset field') end
+    for _, key in ipairs({'x','y','z'}) do
+        assert(finite(offset[key]) and math.abs(offset[key]) <= 1024, 'Invalid first-person camera offset '..key)
+    end
+    return camera
+end
 function M.distance(a, b)
     local x, y, z = a.x - b.x, a.y - b.y, a.z - b.z
     return math.sqrt(x*x + y*y + z*z)
@@ -48,6 +72,11 @@ function M.validate(timeline)
         assert(timeline.movement_cohort_status == (timeline.movement_cohort and 'recorded_native' or 'legacy_unrecorded'),
             'Movement cohort status disagrees with metadata')
     end
+    local layered = M.cameraLayers(timeline.camera_layer_cohort)
+    if timeline.camera_layer_cohort_status ~= nil then
+        assert(timeline.camera_layer_cohort_status == (layered and 'recorded_additive' or 'legacy_zero_layers'),
+            'Camera layer cohort status disagrees with metadata')
+    end
     local duration = timeline.duration
     assert(finite(duration) and duration > 0 and duration <= 180, 'Playback duration out of bounds')
     validateRows(timeline.controls, duration, function(c)
@@ -66,8 +95,17 @@ function M.validate(timeline)
             'Preview requires finite first-person camera samples')
         assert(math.abs(s.camera.yaw) <= 2 * math.pi and math.abs(s.camera.pitch) <= math.pi/2,
             'Preview camera angles out of bounds')
-        for _, key in ipairs({'extra_yaw','extra_pitch','roll'}) do
-            assert(s.camera[key] == nil or s.camera[key] == 0, 'Preview does not support additional camera layers')
+        if layered then M.validateCameraLayers(s.camera)
+        else
+            for _, key in ipairs(layerAngles) do
+                assert(s.camera[key] == nil or s.camera[key] == 0, 'Preview does not support additional camera layers without a recorded cohort')
+            end
+            if s.camera.first_person_offset ~= nil then
+                local offset = s.camera.first_person_offset
+                assert(type(offset) == 'table' and offset.x == 0 and offset.y == 0 and offset.z == 0,
+                    'Preview does not support first-person offsets without a recorded cohort')
+                for key in pairs(offset) do assert(key == 'x' or key == 'y' or key == 'z', 'Unknown first-person camera offset field') end
+            end
         end
     end)
     assert(timeline.controls[1].t == 0 and timeline.samples[1].t == 0, 'Playback requires a time-zero input and pose')
@@ -83,13 +121,23 @@ local function poseAt(timeline, poseIndex, t)
     local a, b = timeline.samples[poseIndex], timeline.samples[math.min(poseIndex + 1, #timeline.samples)]
     local alpha = b.t > a.t and math.max(0, math.min(1, (t - a.t) / (b.t - a.t))) or 0
     local function mix(x, y) return x + (y - x) * alpha end
-    return {
+    local result = {
         position = { x = mix(a.position.x, b.position.x), y = mix(a.position.y, b.position.y), z = mix(a.position.z, b.position.z) },
         cell_id = a.cell_id, cell_name = a.cell_name, exterior = a.exterior, grid_x = a.grid_x, grid_y = a.grid_y,
         camera = { yaw = a.camera.yaw + M.angleDelta(b.camera.yaw, a.camera.yaw) * alpha,
             pitch = mix(a.camera.pitch, b.camera.pitch), fov = mix(a.camera.fov, b.camera.fov), mode = a.camera.mode },
         source_index = poseIndex, source_interval = b.t - a.t,
     }
+    if timeline.camera_layer_cohort ~= nil then
+        -- These are sampled additive values, separate from the main heading
+        -- that controls actor movement. Linear interpolation never writes physics.
+        for _, key in ipairs(layerAngles) do result.camera[key] = mix(a.camera[key], b.camera[key]) end
+        result.camera.first_person_offset = {}
+        for _, key in ipairs({'x','y','z'}) do
+            result.camera.first_person_offset[key] = mix(a.camera.first_person_offset[key], b.camera.first_person_offset[key])
+        end
+    end
+    return result
 end
 function M.newSampler(timeline)
     M.validate(timeline)

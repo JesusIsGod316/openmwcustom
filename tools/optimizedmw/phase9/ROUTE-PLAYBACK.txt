@@ -30,6 +30,16 @@ errors and live collision state are recorded at 5 Hz using OMWPLAY JSON records.
 The initial fixed view and recorded stationary segments remain stationary.
 Starting mismatch, combat, policy failure, large drift or a blocked path aborts.
 
+New recordings carry recorded_additive_first_person_v1 camera metadata.
+Playback interpolates extra yaw/pitch, roll, extra roll and first-person offset
+separately from actor heading, then applies their matching public setters after
+earlier mod camera handlers. Sampled setter readbacks and restoration of owned
+camera state are checked; missing APIs, mismatched contracts or failed writes
+abort instead of reporting completion. The sampled 20 Hz route does not prove
+exact rendered-frame or full-body bone-camera equivalence. Legacy recordings
+without this camera contract retain the zero-additive-layer control path;
+the saved Balmora preview remains compatible and is not silently upgraded.
+
 This is a guided route preview, not a performance benchmark. Its steering and
 reference-clock holds change the original timed-input workload. Reaching the end
 does not prove repeatable actor workload or qualify a performance comparison.
