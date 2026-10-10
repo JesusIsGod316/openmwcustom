@@ -521,10 +521,15 @@ local function onFrame()
         if command == 'start' then start(now)
         elseif command == 'finish' then finish('user_finished', now)
         elseif command == 'abort' then finish('user_aborted', now)
-        elseif command == 'checkpoint' and recorder.state == 'recording' then
-            checkpoint = checkpoint + 1
-            push('checkpoint', { index = checkpoint, f = frame, pose = pose() }, now)
-            message('Stage marker ' .. checkpoint .. ' recorded.')
+        elseif command == 'checkpoint' then
+            if recorder.state == 'recording' then
+                checkpoint = checkpoint + 1
+                push('checkpoint', { index = checkpoint, f = frame, pose = pose() }, now)
+                message('Stage marker ' .. checkpoint .. ' recorded.')
+            elseif recorder.state == 'ready' then
+                message('Not recording. Press ' .. keyLabel('key_start', 'F6') .. ' to start first; '
+                    .. keyLabel('key_checkpoint', 'F9') .. ' adds a stage marker after recording starts.')
+            end
         end
     end
     if recorder.state ~= 'recording' then return end

@@ -40,6 +40,8 @@ Once Recording appears, hold the usual fixed view for 45 seconds.
 
 F9 - Add a numbered stage marker. Press F9 when beginning your walk after the
 fixed view, then use further markers for route sections if useful. F9 does not
+start recording. If you press it while ready, the recorder reminds you to press
+F6 first and keeps the game open so you can start correctly. F9 does not
 quicksave, pause, load, restart the recording or reset its clock. Walk the route
 without doors, menus, jump or combat. Autorun and run/sneak toggles are captured
 through their resolved movement/gait states; toggles themselves are not reissued

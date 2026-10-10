@@ -449,7 +449,31 @@ local function compatibleFixture(exterior, mode, collision, cohort)
     step(); step(2.1)
     return {player=fixture,configuration=configuration,lines=captured,policy=policy,step=step,press=press,ack=ack,footer=footer}
 end
-local f=compatibleFixture(false,1,true)
+local f=compatibleFixture(true,1,true)
+local beforeReadyMarkerQuit=quitCount
+f.press(66)
+check(displayedMessages[#displayedMessages].text:find('Not recording. Press F6 to start first',1,true),
+    'ready F9 explains that F6 must start recording before stage markers')
+check(not playerRecording and #f.lines==1 and f.lines[1]:find('"event":"ready"',1,true) and not f.footer()
+    and quitCount==beforeReadyMarkerQuit,
+    'ready F9 neither starts nor finishes recording and never closes the game')
+check(not storageData.checkpoint_request and not storageData.override,
+    'ready F9 creates no private save request and leaves ordinary movement free')
+f.press(63); f.ack()
+f.press(66)
+check(playerRecording and not f.footer() and quitCount==beforeReadyMarkerQuit
+    and displayedMessages[#displayedMessages].text:find('Stage marker 1 recorded.',1,true),
+    'F6 followed by F9 visibly marks the recording without stopping it')
+f.press(67); f.policy('policy_stopped',0)
+for _=1,5 do f.step() end
+local readyRecoveryMarker=false
+for _,line in ipairs(f.lines) do
+    if line:find('"event":"checkpoint"',1,true) and line:find('"index":1',1,true) then readyRecoveryMarker=true end
+end
+check(readyRecoveryMarker and f.footer():find('"complete":true',1,true),
+    'the first marker survives a completed acquisition after the ready-state reminder')
+
+f=compatibleFixture(false,1,true)
 f.press(63)
 check(not storageData.checkpoint_request and not storageData.override and not playerRecording and #f.lines==1,
     'interior F6 rejection leaves compatible recorder ready and ordinary movement free')
