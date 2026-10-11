@@ -341,7 +341,8 @@ def run_matrix(plan_path, output):
             if 'OptimizedMW automatic benchmark: master_volume=0' not in text:
                 raise ValueError('Engine did not confirm actual muted settings')
             quality = route_quality(receipt,profile)
-            requested = {entry['key']:entry['value'] for entry in settings if entry['section']=='Cells'}
+            requested = {entry['key']:entry['value'] for entry in settings
+                         if entry['section'] in ('Cells', 'Optimizations')}
             engaged = engagement(profile,requested,case.get('asset_mask',0))
             metrics = analyze(profile)
             benchmark_desktop.save(directory/'ANALYSIS.json',metrics)

@@ -90,6 +90,52 @@ class Benchmarks(unittest.TestCase):
         self.assertEqual(spike['relative_spikes'],1)
         self.assertEqual(spike['relative_excess_ms'],4)
 
+    def test_matrix_requires_requested_indirect_work_across_settings_categories(self):
+        for avoided in (0, 11):
+            with self.subTest(avoided=avoided), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); game = root/'game'; game.mkdir()
+                for name in ('openmw.exe', 'BUILD-IDENTITY.json', 'symbols.pdb'):
+                    (game/name).write_bytes(b'offline test input; never executed')
+                catalog = root/'catalog.json'
+                catalog.write_text(json.dumps({'routes':[{'id':'Balmora', 'inputs':[],
+                    'pinned_acquisition':str(root/'unused_route')}]}))
+                plan = root/'plan.json'
+                plan.write_text(json.dumps({'game_directory':str(game), 'route_catalog':str(catalog),
+                    'symbols':str(game/'symbols.pdb'), 'powershell':'not-executed',
+                    'cases':[{'id':'IndirectReuse', 'route':'Balmora', 'architecture_mask':32,
+                        'settings':[{'section':'Optimizations', 'key':'indirect command reuse', 'value':'true'}]}]}))
+                profile = root/'profile'; profile.mkdir()
+                (profile/'openmw.log').write_text('OptimizedMW automatic benchmark: master_volume=0\n'
+                    f'OptimizedMW indirect command reuse: uploads=1 uploaded_bytes=60 command_uploads_avoided={avoided}\n')
+                archive = root/'capture.zip'; archive.write_bytes(b'fixture evidence; not a real game capture')
+                output = root/'output'
+
+                def fixture_launcher(executable, arguments, working, desktop_path, deadline):
+                    self.assertEqual(executable, 'not-executed')
+                    desktop_path.mkdir()
+                    matrix.benchmark_desktop.save(desktop_path/'DESKTOP-RECEIPT.json', {
+                        'timed_out':False, 'exit_code':0, 'owned_render_window_observed':True,
+                        'input_desktop_unchanged':True, 'input_desktop_owned_visible_windows':[]})
+                    matrix.benchmark_desktop.save(desktop_path.parent/'RUN.json', {
+                        'exit_code':0, 'launch_failure':None, 'settings_restore_verified':True,
+                        'environment_restore_verified':True, 'profile_directory':str(profile),
+                        'zip':matrix.identity(archive)})
+                    return 0
+
+                with patch.object(matrix.benchmark_desktop, 'launch', side_effect=fixture_launcher) as launch, \
+                        patch.object(matrix, 'route_quality', return_value={'fixture_only':True}), \
+                        patch.object(matrix, 'analyze', return_value={'fixture_only':True}):
+                    if avoided:
+                        matrix.run_matrix(plan, output)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'Candidate was inert'):
+                            matrix.run_matrix(plan, output)
+                    launch.assert_called_once()
+                state = matrix.read_json(output/'MATRIX.json')
+                positive = state['runs'][0]['engagement']['positive_work']
+                self.assertEqual(positive, {'indirect_command_reuse':bool(avoided)})
+                self.assertEqual(state['state'], 'completed' if avoided else 'failed')
+
     def test_pins_detect_same_length_changes(self):
         with tempfile.TemporaryDirectory() as temporary:
             path=Path(temporary)/'input';path.write_bytes(b'ab')
