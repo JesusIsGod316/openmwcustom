@@ -37,9 +37,22 @@ def interval_work(profile, windows):
             raise ValueError('Reset Lua protected-call work sequence')
         previous = frame, totals
     log = (root/'openmw.log').read_text(encoding='utf-8-sig')
-    matches = re.findall(r'OptimizedMW protected work capture: producer_rows=(\d+)(?=\s|$)', log)
-    if not matches or int(matches[-1]) != len(rows):
+    footers = [line for line in log.splitlines()
+               if 'OptimizedMW protected work capture:' in line]
+    if len(footers) != 1:
+        raise ValueError('Missing or ambiguous Lua protected-call producer footer')
+    tokens = re.findall(r'\bproducer_rows=([^\s]+)', footers[0])
+    if len(tokens) != 1 or not re.fullmatch(r'[0-9a-fA-F]+', tokens[0]):
+        raise ValueError('Invalid Lua protected-call producer row token')
+    token = tokens[0]
+    bases = [base for base in (10, 16) if (base == 16 or token.isdecimal())
+             and int(token, base) == len(rows)]
+    if not bases:
         raise ValueError('Missing or truncated Lua protected-call producer rows')
+    footer = {'token': token, 'independent_csv_rows': len(rows), 'parsed_rows': len(rows),
+              'base': bases[0] if len(bases) == 1 else None,
+              'encoding': ('decimal' if bases[0] == 10 else 'unprefixed_hex')
+              if len(bases) == 1 else 'decimal_or_hex_equivalent', 'unique_footer': True}
     epochs = {}
     with (root/'v3-frame.csv').open(newline='', encoding='utf-8-sig') as stream:
         for row in csv.DictReader(stream):
@@ -84,6 +97,7 @@ def interval_work(profile, windows):
         for key in TOTALS:
             entry['counts'][key] += int(row[key])-int(before[key])
     return {'schema': 1, 'rows': len(rows), 'enabled': int(rows[-1]['enabled']) == 1,
+            'producer_footer': footer,
             'excluded_pairs': excluded, 'phases': phases,
             'scope': 'Completed Lua-manager work observed at approximate route intervals',
-            'limit': 'Loading/UI intervals excluded here but preserved in raw evidence. Reused closure counts do not measure saved milliseconds or identify VM/GC cost.'}
+            'limit': 'Producer decimal/hex encoding is constrained to independently counted contiguous CSV rows, not guessed. Loading/UI intervals excluded here but preserved in raw evidence. Reused closure counts do not measure saved milliseconds or identify VM/GC cost.'}

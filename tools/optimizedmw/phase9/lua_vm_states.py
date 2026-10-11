@@ -19,6 +19,7 @@ LIMITS = (
     'One process-global sampler has no public acceptance or external ownership query; observed callbacks qualify activity.',
     'This explicit Deep sampler changes hook dispatch and Windows timer resolution; stopping flushes JIT traces.',
     'No sampled GC state does not exclude an unsampled short collection pause.',
+    'Completion-log decimal/hex encoding is constrained by independent CSV row parity; ambiguous differing totals are rejected.',
 )
 
 
@@ -29,7 +30,55 @@ def _integer(value, label):
 
 
 def _fields(line):
-    return dict(re.findall(r'([a-z_]+)=(\d+)', line))
+    fields = {}
+    for key, value in re.findall(r'\b([a-z_]+)=([^\s]+)', line):
+        if key in fields:
+            raise ValueError('Duplicate VM-state completion metadata field: ' + key)
+        fields[key] = value
+    return fields
+
+
+def _completion(final, produced, row_count, last):
+    token = produced.get('producer_rows')
+    if token is None or not re.fullmatch(r'[0-9a-fA-F]+', token):
+        raise ValueError('Invalid VM-state producer row token')
+    bases = [base for base in (10, 16) if (base == 16 or token.isdecimal())
+             and int(token, base) == row_count]
+    if not bases:
+        raise ValueError('Missing or tail-truncated VM-state rows')
+    candidates, errors = [], []
+    for base in bases:
+        def integer(value, label):
+            if value is None or not re.fullmatch(r'[0-9a-fA-F]+', value) or (base == 10 and not value.isdecimal()):
+                raise ValueError('Invalid VM-state completion integer: ' + label)
+            return int(value, base)
+        try:
+            callbacks = integer(final.get('final_callbacks'), 'final_callbacks')
+            states = {key: integer(final.get(key), key) for key in STATES}
+            if integer(produced.get('callback_deliveries'), 'callback_deliveries') != callbacks:
+                raise ValueError('Inconsistent VM-state final callback totals')
+            if callbacks == 0 or sum(states.values()) == 0:
+                raise ValueError('No observed VM-state callbacks; attempted start is not acceptance')
+            if last['callbacks_total'] > callbacks or any(last[key + '_total'] > states[key] for key in STATES):
+                raise ValueError('VM-state CSV totals exceed final shutdown summary')
+            candidates.append((base, callbacks, states))
+        except ValueError as error:
+            errors.append(error)
+    if not candidates:
+        raise errors[0]
+    _, callbacks, states = candidates[0]
+    if any(other_callbacks != callbacks or other_states != states
+           for _, other_callbacks, other_states in candidates[1:]):
+        raise ValueError('Ambiguous decimal/hex VM-state completion totals')
+    base = candidates[0][0] if len(candidates) == 1 else None
+    receipt = {'producer_rows_token': token, 'independent_csv_rows': row_count,
+               'parsed_rows': row_count, 'base': base,
+               'encoding': ('decimal' if base == 10 else 'unprefixed_hex') if base else 'decimal_or_hex_equivalent',
+               'unique_footer': True, 'same_base_for_completion_fields': True,
+               'final_callbacks_token': final['final_callbacks'],
+               'callback_deliveries_token': produced['callback_deliveries'],
+               'final_counts_checked_against_csv': True}
+    return callbacks, states, receipt
 
 
 def qualify_vm_states(profile, windows=None):
@@ -67,14 +116,6 @@ def qualify_vm_states(profile, windows=None):
             raise ValueError('Missing VM-state timing/observer caveat metadata')
     if start.get('interval_ms') != '1' or start.get('acceptance_requires_callbacks') != '1':
         raise ValueError('Unqualified VM-state sampling mode')
-    final_callbacks = _integer(final.get('final_callbacks'), 'final_callbacks')
-    final_states = {key: _integer(final.get(key), key) for key in STATES}
-    producer_rows = _integer(produced.get('producer_rows'), 'producer_rows')
-    if _integer(produced.get('callback_deliveries'), 'callback_deliveries') != final_callbacks:
-        raise ValueError('Inconsistent VM-state final callback totals')
-    if final_callbacks == 0 or sum(final_states.values()) == 0:
-        raise ValueError('No observed VM-state callbacks; attempted start is not acceptance')
-
     text = path.read_text(encoding='utf-8-sig')
     if '# p9_capture_transport=bounded_mpsc_v1' not in text:
         raise ValueError('Missing bounded VM-state transport footer')
@@ -102,11 +143,10 @@ def qualify_vm_states(profile, windows=None):
             raise ValueError('Repeated/reversed VM-state delivery observations')
         rows.append(values)
         previous = values
-    if not rows or len(rows) != producer_rows:
+    if not rows:
         raise ValueError('Missing or tail-truncated VM-state rows')
-    if rows[-1]['callbacks_total'] > final_callbacks or any(
-            rows[-1][key + '_total'] > final_states[key] for key in STATES):
-        raise ValueError('VM-state CSV totals exceed final shutdown summary')
+    final_callbacks, final_states, footer = _completion(final, produced, len(rows), rows[-1])
+    producer_rows = len(rows)
 
     deliveries = sum(row['callback_deliveries'] for row in rows)
     observed = {key: sum(row[key] for row in rows) for key in STATES}
@@ -117,6 +157,7 @@ def qualify_vm_states(profile, windows=None):
         'scope': 'statistical_vm_states_delivered_during_lua_updates',
         'exact_per_spike_attribution': False, 'exact_gc_elapsed_time': False,
         'limits': list(LIMITS), 'rows': len(rows), 'producer_rows': producer_rows,
+        'completion_numeric_encoding': footer,
         'callback_deliveries': deliveries, 'delivered_states': observed,
         'delivered_sample_percent': {key: value * 100 / sum(observed.values())
                                      for key, value in observed.items()},

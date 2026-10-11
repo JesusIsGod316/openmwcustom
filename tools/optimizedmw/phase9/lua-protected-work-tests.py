@@ -58,6 +58,45 @@ class ProtectedWork(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Reset'):
                 work.interval_work(root, windows)
 
+    def test_hex_letters_footer_is_constrained_to_exact_csv_rows(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); windows = self.make(root, list(range(26)))
+            (root/'openmw.log').write_text('OptimizedMW protected work capture: producer_rows=1a\n')
+            result = work.interval_work(root, windows)
+            self.assertEqual(result['producer_footer']['base'], 16)
+            self.assertEqual(result['producer_footer']['parsed_rows'], 26)
+            self.assertEqual(result['producer_footer']['encoding'], 'unprefixed_hex')
+
+    def test_digit_only_footer_base_is_decided_by_csv_parity(self):
+        for length, base in ((10, 10), (16, 16)):
+            with self.subTest(length=length), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); windows = self.make(root, list(range(length)))
+                (root/'openmw.log').write_text('OptimizedMW protected work capture: producer_rows=10\n')
+                self.assertEqual(work.interval_work(root, windows)['producer_footer']['base'], base)
+
+    def test_equivalent_single_digit_base_is_reported_honestly(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); windows = self.make(root, list(range(9)))
+            receipt = work.interval_work(root, windows)['producer_footer']
+            self.assertIsNone(receipt['base'])
+            self.assertEqual(receipt['encoding'], 'decimal_or_hex_equivalent')
+
+    def test_hex_tail_truncation_and_partial_token_are_rejected(self):
+        for token in ('1a', '19acZ', '0x19ac', '19ac=1'):
+            with self.subTest(token=token), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); windows = self.make(root, list(range(25)))
+                (root/'openmw.log').write_text('OptimizedMW protected work capture: producer_rows='+token+'\n')
+                with self.assertRaises(ValueError):
+                    work.interval_work(root, windows)
+
+    def test_duplicate_footer_and_duplicate_row_field_are_rejected(self):
+        for suffix in ('\nOptimizedMW protected work capture: producer_rows=4', ' producer_rows=4'):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); windows = self.make(root, list(range(4)))
+                (root/'openmw.log').write_text('OptimizedMW protected work capture: producer_rows=4'+suffix+'\n')
+                with self.assertRaisesRegex(ValueError, 'ambiguous|token'):
+                    work.interval_work(root, windows)
+
 
 if __name__ == '__main__':
     unittest.main()
