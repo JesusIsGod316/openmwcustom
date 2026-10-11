@@ -2963,6 +2963,10 @@ void OMW::Engine::go()
             << " dispatches=" << C::dispatches.load() << " fallbacks=" << C::fallbacks.load()
             << " busy_slots=" << C::busySlots.load() << " unknown_shaders=" << C::unknownShaders.load()
             << " admission_declines=" << C::admissionDeclines.load()
+            << " nested_geometry=" << C::nestedGeometry.load() << " nested_built=" << C::nestedBuilt.load()
+            << " nested_branch_declines=" << C::nestedBranchDeclines.load()
+            << " install_source_declines=" << C::installSourceDeclines.load()
+            << " install_command_shape_declines=" << C::installCommandShapeDeclines.load()
             << " live_owned_bytes=" << C::liveBytes.load();
         Log(Debug::Info) << std::dec << "OptimizedMW indirect command reuse: uploads=" << C::commandUploads.load()
             << " uploaded_bytes=" << C::commandUploadBytes.load() << " command_uploads_avoided=" << C::commandUploadsAvoided.load();

@@ -1,4 +1,6 @@
 #include <components/sceneutil/gpuindirectpackets.hpp>
+#include <osg/NodeCallback>
+#include <osg/Switch>
 #include <osgViewer/Viewer>
 #include <array>
 #include <iostream>
@@ -99,6 +101,18 @@ osg::ref_ptr<osg::Geometry> geometry()
     return result;
 }
 
+osg::ref_ptr<osg::Group> nestedRoot(osg::Geometry* geometry)
+{
+    osg::ref_ptr<osg::Geode> geode = new osg::Geode;
+    geode->addDrawable(geometry);
+    osg::ref_ptr<osg::MatrixTransform> transform = new osg::MatrixTransform;
+    transform->setMatrix(osg::Matrix::translate(.05, .03, 0));
+    transform->addChild(geode);
+    osg::ref_ptr<osg::Group> root = new osg::Group;
+    root->addChild(transform);
+    return root;
+}
+
 osg::ref_ptr<osg::Program> fixtureProgram(bool certified)
 {
     // The fixture exercises the contract consumer with small producer sources.
@@ -132,9 +146,11 @@ int main(int argc, char** argv) try
     const auto initialBytes = Packet::Counters::liveBytes.load();
     auto original = geometry();
     osg::ref_ptr<osg::Geometry> control = new osg::Geometry(*original, osg::CopyOp::SHALLOW_COPY);
-    osg::ref_ptr<osg::Group> group = new osg::Group;
-    group->addChild(original);
+    auto group = nestedRoot(original);
+    auto controlRoot = nestedRoot(control);
     require(!Packet::install(*original, false, true), "disabled indirect allocated callback");
+    require(Packet::installCertifiedSubtrees(*group, 1024, false, true) == 0,
+        "disabled nested installation allocated callbacks");
     Resource::SpeculativeBudget ledger;
     Packet::sample = &sample; Packet::ledger = &ledger;
     require(!Packet::install(*original, true, true), "unknown pressure admitted indirect allocation");
@@ -145,11 +161,40 @@ int main(int argc, char** argv) try
     sampleValue.memory.commitValid = true; sampleValue.memory.commitAvailable = 16ull * 1024 * 1024 * 1024;
     sampleValue.decision.limits.physicalReserve = 4ull * 1024 * 1024 * 1024;
     sampleValue.decision.limits.commitReserve = 1024ull * 1024 * 1024;
-    require(Packet::install(*original, true, true), "eligible production indirect callback not installed");
+    require(SceneUtil::PersistentOpaquePackets::sourceAncestryCertified(*group),
+        "fixture must certify untouched original ancestry before installation");
+    auto* transform = static_cast<osg::MatrixTransform*>(group->getChild(0));
+    transform->setReferenceFrame(osg::Transform::ABSOLUTE_RF);
+    require(Packet::installCertifiedSubtrees(*group, 1024, true, true) == 0 && !original->getDrawCallback(),
+        "absolute transform admitted nested callbacks");
+    transform->setReferenceFrame(osg::Transform::RELATIVE_RF);
+    group->getOrCreateStateSet()->setMode(GL_BLEND, osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE);
+    require(Packet::installCertifiedSubtrees(*group, 1024, true, true) == 0 && !original->getDrawCallback(),
+        "transparent ancestor admitted nested callbacks");
+    group->setStateSet(nullptr);
+    group->setDataVariance(osg::Object::DYNAMIC);
+    require(Packet::installCertifiedSubtrees(*group, 1024, true, true) == 0 && !original->getDrawCallback(),
+        "dynamic ancestry admitted nested callbacks");
+    group->setDataVariance(osg::Object::STATIC);
+    group->setCullCallback(new osg::NodeCallback);
+    require(Packet::installCertifiedSubtrees(*group, 1024, true, true) == 0 && !original->getDrawCallback(),
+        "custom ancestry callback admitted nested geometry");
+    group->setCullCallback(nullptr);
+    osg::ref_ptr<osg::Switch> customRoot = new osg::Switch;
+    customRoot->addChild(original);
+    require(Packet::installCertifiedSubtrees(*customRoot, 1024, true, true) == 0 && !original->getDrawCallback(),
+        "custom group semantics were reinterpreted as certified ancestry");
+    customRoot = nullptr;
+    require(Packet::installCertifiedSubtrees(*group, 2, true, true) == 0 && !original->getDrawCallback(),
+        "node capacity limit did not preserve ordinary geometry");
+    require(Packet::installCertifiedSubtrees(*group, 1024, true, true) == 1,
+        "eligible nested production indirect callback not installed");
     const auto* draw = dynamic_cast<const Packet::Draw*>(original->getDrawCallback());
     require(draw, "candidate is not the production callback");
-    auto packet = SceneUtil::PersistentOpaquePackets::build(*group, true);
-    require(dynamic_cast<SceneUtil::PersistentOpaquePackets::Group*>(packet.get()), "MDI and persistent packets did not stack");
+    const auto builtPackets = SceneUtil::PersistentOpaquePackets::Counters::built.load();
+    auto packet = SceneUtil::PersistentOpaquePackets::buildCertifiedSubtrees(*group, 1024, true, true);
+    require(SceneUtil::PersistentOpaquePackets::Counters::built.load() > builtPackets,
+        "nested MDI and persistent packets did not stack");
 
     osgViewer::Viewer viewer;
     viewer.setThreadingModel(osgViewer::Viewer::SingleThreaded);
@@ -169,11 +214,11 @@ int main(int argc, char** argv) try
     osg::ref_ptr<Pixels> pixels = new Pixels;
     pixels->previous = previous;
     camera->setPreDrawCallback(previous); camera->setFinalDrawCallback(pixels);
-    viewer.setSceneData(control); viewer.realize();
+    viewer.setSceneData(controlRoot); viewer.realize();
     require(viewer.isRealized(), "fixture context did not realize");
     auto compare = [&] {
         pixels->inspect = nullptr;
-        viewer.setSceneData(control); viewer.frame(); const auto reference = pixels->data;
+        viewer.setSceneData(controlRoot); viewer.frame(); const auto reference = pixels->data;
         pixels->inspect = draw->testPrimitive();
         viewer.setSceneData(packet); viewer.frame();
         require(pixels->data == reference, "MDI/GPU visibility changed exact RGBA output");
@@ -222,9 +267,10 @@ int main(int argc, char** argv) try
     // Changing the material producer invalidates the installed aggregate. Build
     // a fresh exact original callback and packet after the producer mutation.
     original->setDrawCallback(nullptr);
-    require(Packet::install(*original, true, true), "PBR contract candidate did not install");
+    group = nestedRoot(original);
+    require(Packet::installCertifiedSubtrees(*group, 1024, true, true) == 1, "nested PBR contract candidate did not install");
     draw = dynamic_cast<const Packet::Draw*>(original->getDrawCallback());
-    packet = SceneUtil::PersistentOpaquePackets::build(*group, true);
+    packet = SceneUtil::PersistentOpaquePackets::buildCertifiedSubtrees(*group, 1024, true, true);
     compare();
     const auto dispatched = Packet::Counters::dispatches.load();
     require(dispatched >= 8, "certified PBR projection did not reach GPU");
@@ -302,12 +348,36 @@ int main(int argc, char** argv) try
     unsupported->getOrCreateStateSet()->setRenderingHint(osg::StateSet::TRANSPARENT_BIN);
     require(!Packet::install(*unsupported, true, true), "sorted geometry was incorrectly admitted");
     unsupported->getStateSet()->setRenderingHint(osg::StateSet::OPAQUE_BIN);
+    // Both CPU and GPU variants cluster a single long primitive. A primitive-
+    // set count of one does not explain zero paging installations.
+    auto single = geometry();
+    single->removePrimitiveSet(0, single->getNumPrimitiveSets());
+    osg::ref_ptr<osg::DrawElementsUShort> longPrimitive = new osg::DrawElementsUShort(GL_TRIANGLES);
+    for (unsigned i = 0; i < 1025; ++i)
+        for (unsigned short vertex = 0; vertex < 3; ++vertex) longPrimitive->push_back(vertex);
+    single->addPrimitiveSet(longPrimitive);
+    osg::ref_ptr<osg::Geometry> singleControl = new osg::Geometry(*single, osg::CopyOp::SHALLOW_COPY);
+    auto singleRoot = nestedRoot(single);
+    auto singleControlRoot = nestedRoot(singleControl);
+    require(Packet::installCertifiedSubtrees(*singleRoot, 1024, true, false) == 1,
+        "CPU indirect must support one long primitive under retained Geode/transform ancestry");
+    const auto* singleDraw = dynamic_cast<const Packet::Draw*>(single->getDrawCallback());
+    require(singleDraw, "single primitive is not the real production callback");
+    pixels->inspect = nullptr; viewer.setSceneData(singleControlRoot); viewer.frame(); const auto singlePixels = pixels->data;
+    pixels->inspect = singleDraw->testPrimitive(); viewer.setSceneData(singleRoot); viewer.frame();
+    require(pixels->data == singlePixels && pixels->commands.size() == 2,
+        "single long primitive clustering changed exact nested draw pixels or command count");
+    std::cout << "INDIRECT_NESTED_PROOF cpu_single_primitive_commands=2 exact_pixels=1 original_ancestry=1"
+        " transform_preserved=1 opacity_dynamic_capacity_fallback=1 nested_built=" << Packet::Counters::nestedBuilt.load() << '\n';
+    viewer.setSceneData(nullptr); pixels->inspect = nullptr; single->setDrawCallback(nullptr);
     sampleValue.decision.state = Resource::OpenGlPressure::Critical;
     require(!Packet::install(*unsupported, true, true), "critical pressure admitted candidate allocation");
     viewer.setSceneData(nullptr);
     auto* renderer = dynamic_cast<osgViewer::Renderer*>(camera->getRenderer());
     for (unsigned i = 0; i < 2; ++i) renderer->getSceneView(i)->setSceneData(nullptr);
-    packet = nullptr; original->setDrawCallback(nullptr);
+    // Recursive packet construction replaces children in the private root.
+    // Release that owner as well as the returned root before checking quotas.
+    packet = nullptr; group = nullptr; original->setDrawCallback(nullptr);
     context->makeCurrent();
     context->getState()->get<Packet::SyncRetirement>()->flushAllDeletedGLObjects();
     require(Packet::Counters::liveBytes.load() == initialBytes && ledger.stats().estimatedOwnerBytes == 0,

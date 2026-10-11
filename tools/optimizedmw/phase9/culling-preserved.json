@@ -43,7 +43,7 @@
   "sha256": {
     "apps/openmw/mwrender/occlusionculling.cpp": "e92c9023598376e4cd864af07ad1888c0c4502a38405f0c908a174e2a5e24ad8",
     "apps/openmw/mwrender/occlusionculling.hpp": "3e4039257ed9585677afd4d8db527b1d015246bdb8dcd63e08054debf554f624",
-    "apps/openmw/mwrender/objectpaging.cpp": "03069f38853bddcb6fdb241e76028714c885823d7237543953b11bc44d230a0c",
+    "apps/openmw/mwrender/objectpaging.cpp": "1d247e5ebd5a054d1a6ef5a00b3004cc7c1c7aa47375be901c99b134ecf041eb",
     "apps/openmw/mwrender/groundcover.cpp": "10e1f1de1a38fcd34288ac98df09d20eb6e596ce9f42b8abb9d5bd6f2982bddd",
     "apps/openmw/mwrender/objects.cpp": "9bf5045f1c8c4323b2cc286c2912b5fef73ff813f5e472929ec4be79829f7935",
     "components/sceneutil/occlusionculling.cpp": "1aa1ebea417b9b4eff232d78fbf29b78cae92b68e23e0f8ba8b5ac1b46f6c19f",
@@ -59,5 +59,10 @@
     "base": "3a8a3b06ff8b7e812a99ee3cc5153b42696db003",
     "implementation": "4dff1788350cd829a4b95ac0d51105a85597715a",
     "scope": "Source review limits ObjectPaging changes to forwarding the independently default-off lod retain source indices setting at its two existing L1 cook calls. Eligibility, active/distant ownership, source epochs, main-camera selection, pixel error, shadows, picking, required readiness, admission and ordinary fallback policies are unchanged. Native real-corpus miss/hit checks compare exact reduced indices and unchanged source array/VBO/EBO identities. The production active paging-chain fixture uses the actual loader, optimizer, OpenMW ICO and reduced draws and checks invalidation, exact resource completion, shader changes and original picking/shadow paths. This source audit is separate from live-route adoption and gameplay/performance promotion."
+  },
+  "nested_indirect_checkpoint": {
+    "base": "b46dbea321f2b0662aa3442685a3a1f7e8b03c59",
+    "scope": "Source review connects original-before-CopyOp certified private ordinary paging geometry under retained Geodes and relative transforms to the existing default-off G16/G32 callback. The existing ordinary opaque packets/G4 gate, whole-population ancestry proof, source and shader certificates, command shape, quotas/fences and ordinary mutation fallback remain. The call is after original shadow certification and before retained packet row capture. It excludes asset-owned LOD/HLOD and post-optimized L1 paths. No MSOC, chunk membership, quality/error thresholds, RefnumSet, source epoch, required readiness, allocation floors or source-control selection changes.",
+    "validation": "NATIVE_COMPILE_AND_ACTUAL_NESTED_GPU_PIXEL_OWNERSHIP_CHECKS_PASSED; natural paging engagement and game performance pending. Source seal is not runtime or performance acceptance."
   }
 }

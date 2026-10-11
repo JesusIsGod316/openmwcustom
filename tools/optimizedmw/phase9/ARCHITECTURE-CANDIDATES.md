@@ -115,6 +115,15 @@ Check actual staged chains/bytes, reuse, admission/busy/fallback counts, supplie
 
 ### G16: opaque multi-draw indirect and bounded command ownership
 
+Ordinary paging coverage also requires `[Cells] ordinary opaque packets = true`.
+The original source ancestry is certified before CopyOp; the private optimized
+ordinary graph may retain material-bearing Geodes and relative transforms.
+The bounded nested installer preserves those ancestors and runs after original
+shadow certification, before packet rows capture their callbacks. Unknown or
+mutable ancestry keeps normal drawing. Asset-owned LOD/HLOD partitions remain a
+separate path. Actual `nested_geometry`, `nested_built`, `draws` and `commands`
+must show production use before an indirect performance comparison.
+
 Eligible static opaque indexed triangles use a bounded indirect command representation while ordinary OSG material/state ownership remains in place. Long supported primitives can be divided into fixed-size command clusters without changing their index order. The applied program must carry the exact shipped-source certificate, or use fixed function; custom lookalikes and side-effect programs are not accepted through a substring heuristic. Command slots are reused after actual completion; unknown programs, changed sources, unsupported GL support or busy capacity fall back.
 
 Every draw rechecks the current original material and OSG's already applied blend, alpha-test and stencil-test modes, including inherited override/protected resolution. In-place transparency/sorted material changes or an enabled unsupported mode use original primitive boundaries. These three const cache lookups add no driver queries or allocations; they rely on the existing OSG state owner and do not certify external code that changes raw GL state without updating OSG. The native fixture requires exact pixel parity and positive original fallback for these mutations, then proves indirect drawing resumes after restoring opaque state.

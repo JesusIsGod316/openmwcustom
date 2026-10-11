@@ -2371,7 +2371,15 @@ namespace MWRender
             // Shadow certification consumed the ordinary optimized control above.
             if (ordinaryPackets && !assetControls.contains(mergeGroup) && !postOptimizedLodOnly
                 && ordinaryPacketSources.contains(mergeGroup) && ordinaryPacketSources.at(mergeGroup))
+            {
+                // Strong optimization can retain material-bearing Geodes and
+                // relative transforms. The flat direct-child installer misses
+                // their geometry. Only this original-certified private ordinary
+                // population may attach callbacks recursively, after the shadow
+                // control has been consumed and before packet rows capture them.
+                SceneUtil::GpuIndirectPackets::installCertifiedSubtrees(*mergeGroup);
                 wrappedMergeNode = SceneUtil::PersistentOpaquePackets::buildCertifiedSubtrees(*mergeGroup,1024,true,true);
+            }
             // Only the original-before-CopyOp certified private asset partitions
             // may recursively attach P1 across retained material-bearing Geodes.
             if (assetControls.contains(mergeGroup))

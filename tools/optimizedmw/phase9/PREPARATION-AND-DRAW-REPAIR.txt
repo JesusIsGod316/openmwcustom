@@ -100,3 +100,37 @@ settings, mod loadout, route, cap, cache starting state and symbols. Keep game
 tests muted on the unswitched private desktop, use the Phase 9 process guard,
 and defer launches during a reserved manual Engine Expansions test. Native
 fixtures prove their bounded workloads; user route validation governs promotion.
+
+Follow-up: indirect installation on ordinary retained material subtrees
+
+The f00 engine's Balmora gate submitted 1,037,105 ordinary packet rows but
+recorded zero indirect builds or draws. Its flat installer inspected only
+Geometry children directly under a merge group. The ordinary packet installer
+also reaches geometry under retained Geodes and relative MatrixTransforms.
+This is a source integration gap; it does not alone prove the reason for every
+zero-installation run.
+
+The follow-up connects the original-before-CopyOp certified private ordinary
+population to a bounded recursive indirect installer. It runs after original
+shadow certification and before packet rows capture their draw callbacks.
+The existing G4/G16 or G4/G16/G32 switches, ordinary opaque packets setting,
+shader certificates, mutation fallback, command fences and budget limits remain
+required. Asset-owned LOD/HLOD partitions are not included in this extension.
+Unknown/dynamic/callback-managed containers, absolute/nonfinite transforms and
+transparent ancestry preserve their original path. No geometry is reparented
+by the indirect installer and no new culling policy is introduced.
+
+Native checks cover actual nested Geode/transform drawing, exact control pixels,
+opacity/dynamic/custom-node/node-capacity refusals and the existing producer,
+shader/view, SSBO and retirement cases. They also check a CPU indirect draw
+with one long primitive divided into two commands: both CPU and GPU variants
+already cluster long primitives, so a primitive-set count of one is not an
+explanation for all zero-build results. Natural route engagement and performance
+must be qualified independently after compilation. The actual private-desktop
+native checks passed with exact pixels and retired owner budgets in both upload
+policies (12 uploads for control; one upload and 11 avoided for reuse). A first
+fixture cleanup check retained its newly recursive private root; releasing that
+test owner before quota inspection repaired the test. The failed receipt is
+preserved separately and is not counted as a passing check. Installation counters expose
+nested leaves reached, callbacks built, ancestor refusals and source/command-
+shape refusals without a new per-frame diagnostic stream.

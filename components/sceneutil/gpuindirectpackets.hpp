@@ -48,6 +48,8 @@ namespace SceneUtil::GpuIndirectPackets
         inline static std::atomic_uint64_t fallbacks{ 0 }, busySlots{ 0 }, unknownShaders{ 0 }, liveBytes{ 0 };
         inline static std::atomic_uint64_t liveOwners{ 0 }, admissionDeclines{ 0 };
         inline static std::atomic_uint64_t commandUploads{0}, commandUploadBytes{0}, commandUploadsAvoided{0};
+        inline static std::atomic_uint64_t nestedGeometry{0}, nestedBuilt{0}, nestedBranchDeclines{0};
+        inline static std::atomic_uint64_t installSourceDeclines{0}, installCommandShapeDeclines{0};
     };
     // Configure before paging workers start. Each produced primitive captures
     // its cohort, so no live draw changes policy underneath pending commands.
@@ -203,25 +205,28 @@ void main() {
 
     inline bool install(osg::Geometry& original, bool requested = indirectEnabled(), bool gpu = visibilityEnabled())
     {
-        if (!requested || !PersistentOpaquePackets::eligible(original) || original.getDrawCallback()
-            || !original.getUseVertexBufferObjects() || original.getUseDisplayList()) return false;
+        if (!requested) return false;
+        const auto sourceDecline = [] { ++Counters::installSourceDeclines; return false; };
+        if (!PersistentOpaquePackets::eligible(original) || original.getDrawCallback()
+            || !original.getUseVertexBufferObjects() || original.getUseDisplayList()) return sourceDecline();
         const auto* vertices = dynamic_cast<const osg::Vec3Array*>(original.getVertexArray());
-        if (!vertices || vertices->empty()) return false;
+        if (!vertices || vertices->empty()) return sourceDecline();
         // Per-primitive-set attributes depend on original draw boundaries.
         osg::Geometry::ArrayList arrays; original.getArrayList(arrays);
         for (const auto& array : arrays)
-            if (array && array->getBinding() == osg::Array::BIND_PER_PRIMITIVE_SET) return false;
+            if (array && array->getBinding() == osg::Array::BIND_PER_PRIMITIVE_SET) return sourceDecline();
         constexpr std::size_t MaximumIndices = 196608, ClusterIndices = 3072, MaximumCommands = 128;
         std::size_t totalIndices = 0, totalCommands = 0;
         for (const auto& primitive : original.getPrimitiveSetList())
         {
             if (!primitive || !primitive->getDrawElements() || primitive->getMode() != GL_TRIANGLES
                 || primitive->getNumInstances() != 0 || primitive->getNumIndices() % 3
-                || primitive->getNumIndices() > MaximumIndices - totalIndices) return false;
+                || primitive->getNumIndices() > MaximumIndices - totalIndices) return sourceDecline();
             totalIndices += primitive->getNumIndices();
             totalCommands += (primitive->getNumIndices() + ClusterIndices - 1) / ClusterIndices;
         }
-        if (totalCommands < 2 || totalCommands > MaximumCommands) return false;
+        if (totalCommands < 2 || totalCommands > MaximumCommands)
+        { ++Counters::installCommandShapeDeclines; return false; }
         const std::uint64_t charge = totalIndices * sizeof(unsigned) * 5 + totalCommands * 3 * sizeof(osg::Vec4) * 5
             + totalCommands * sizeof(osg::DrawElementsIndirectCommand) * 9 + sizeof(Draw) + sizeof(Primitive)
             + original.getNumPrimitiveSets() * (sizeof(PersistentOpaquePackets::PrimitiveRevision) + sizeof(void*) * 2)
@@ -288,6 +293,47 @@ void main() {
         {
             return false;
         }
+    }
+
+    // The paging caller must certify the ORIGINAL ancestry before CopyOp and
+    // pass only its private optimized graph. Preserve material/transform nodes;
+    // attach the same revision-checked callback to eligible geometry leaves.
+    // Controller-stripped clones alone are not a source certificate.
+    inline unsigned installCertifiedSubtrees(osg::Node& original, unsigned maximumNodes = 1024,
+        bool requested = indirectEnabled(), bool gpu = visibilityEnabled())
+    {
+        if (!requested) return 0;
+        unsigned nodes = 0, installed = 0;
+        const auto visit = [&](const auto& self, osg::Node& node, unsigned depth) -> void {
+            const auto* state = node.getStateSet();
+            if (++nodes > maximumNodes || depth > 16 || node.getDataVariance() == osg::Object::DYNAMIC
+                || node.getUpdateCallback() || node.getEventCallback() || node.getCullCallback()
+                || node.getComputeBoundingSphereCallback() || !PersistentOpaquePackets::opaque(state)
+                || (state && state->getEventCallback()))
+            { ++Counters::nestedBranchDeclines; return; }
+            if (auto* geometry = node.asGeometry())
+            {
+                ++Counters::nestedGeometry;
+                if (install(*geometry, true, gpu)) { ++installed; ++Counters::nestedBuilt; }
+                return;
+            }
+            auto* group = node.asGroup();
+            if (!group || (typeid(node) != typeid(osg::Group) && typeid(node) != typeid(osg::Geode)
+                && typeid(node) != typeid(osg::MatrixTransform)))
+            { ++Counters::nestedBranchDeclines; return; }
+            if (const auto* transform = dynamic_cast<const osg::MatrixTransform*>(&node))
+            {
+                if (transform->getReferenceFrame() != osg::Transform::RELATIVE_RF)
+                { ++Counters::nestedBranchDeclines; return; }
+                for (unsigned row = 0; row < 4; ++row) for (unsigned column = 0; column < 4; ++column)
+                    if (!std::isfinite(transform->getMatrix()(row, column)))
+                    { ++Counters::nestedBranchDeclines; return; }
+            }
+            for (unsigned i = 0; i < group->getNumChildren() && nodes < maximumNodes; ++i)
+                self(self, *group->getChild(i), depth + 1);
+        };
+        visit(visit, original, 0);
+        return installed;
     }
 }
 #endif
