@@ -21,6 +21,14 @@ def runtime_fixture(game):
 
 
 class Benchmarks(unittest.TestCase):
+    def test_memory_diagnostics_are_explicit_and_typed(self):
+        self.assertEqual(matrix.memory_diagnostic_arguments({}),[])
+        self.assertEqual(matrix.memory_diagnostic_arguments({'memory_diagnostics':False}),[])
+        self.assertEqual(matrix.memory_diagnostic_arguments({'memory_diagnostics':True}),['-MemoryDiagnostics'])
+        for value in ('false','true',None,1):
+            with self.assertRaisesRegex(ValueError,'JSON boolean'):
+                matrix.memory_diagnostic_arguments({'memory_diagnostics':value})
+
     def test_build_c_flags_require_real_measured_work(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -32,6 +32,7 @@ param(
     [string]$AutomatedResultFile='',
     [string]$AutomatedDerivedCacheDirectory='',
     [switch]$AllowExternalLuaStorageChanges,
+    [switch]$MemoryDiagnostics,
     [ValidateRange(180,900)][int]$AutomatedDeadlineSeconds=420
 )
 $ErrorActionPreference = 'Stop'
@@ -50,6 +51,7 @@ $OpenmwCfgPath = Join-Path $UserOpenMW 'openmw.cfg'
 . (Join-Path $GameDir 'OptimizedMW_AttackPresets.ps1')
 . (Join-Path $GameDir 'OptimizedMW_NumericMenu.ps1')
 . (Join-Path $GameDir 'OptimizedMW_MemoryProfile.ps1')
+. (Join-Path $GameDir 'OptimizedMW_MemoryJournal.ps1')
 . (Join-Path $GameDir 'OptimizedMW_SettingNames.ps1')
 $ProfilesRoot = Join-Path $UserOpenMW 'OptimizedMW-Phase9-Profiles'
 $frozenRuntime=$null
@@ -360,6 +362,7 @@ $runManifest=$null
 $process=$null
 $owned=$null
 $ownedOutputComplete=$false
+$memoryJournal=$null
 $exitCode=$null
 $start=[DateTimeOffset]::UtcNow
 @("experiment=$Experiment","phase9_capture_state=initializing","dlss_runtime_available=false") |
@@ -760,9 +763,18 @@ try{
     if($mode.Trace -eq '1' -or $mode.Temporal -eq '1'){
         $env:OPENMW_V36_GPU_PASS_FILE=Join-Path $ProfileDir 'p9-gpu-passes.csv'
     }
+    if($MemoryDiagnostics){
+        $env:OPENMW_RUNTIME_DIAGNOSTICS='standard'
+        $env:OPENMW_RUNTIME_DIAGNOSTICS_FILE=Join-Path $ProfileDir 'runtime-memory.jsonl'
+        'memory_diagnostics=allocation_only_not_performance' | Add-Content -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt') -Encoding Ascii
+    }
     $runManifest=New-Phase9RunManifest -GameDir $GameDir -ProfileDir $ProfileDir -Mode $mode -Candidate $candidateProfile `
         -SettingsPath $SettingsPath -OpenmwCfgPath $OpenmwCfgPath -SavePath $SavePath -RouteLabel $RouteLabel -FrameCapLabel $FrameCapLabel -Cohort $Cohort -HitchCombination $hitchCombination
     if($frozenRuntime){$runManifest=Add-OptimizedMWFrozenManifest $runManifest $frozenRuntime}
+    $runManifest | Add-Member -NotePropertyName memory_diagnostics -NotePropertyValue ([ordered]@{
+        requested=[bool]$MemoryDiagnostics;observer_scope=$(if($MemoryDiagnostics){'ALLOCATION_DIAGNOSTIC_NOT_PERFORMANCE'}else{'BASIC_PROCESS_MEMORY'});
+        streamed_process_samples=$true;system_samples=[bool]$MemoryDiagnostics;sample_period_ms=1000
+    })
     if($automatedSession){
         Assert-OptimizedMWRouteSessionInputs $automatedSession
         Assert-OptimizedMWPlaybackIdentities $automatedSession.manifest.playback_inputs
@@ -778,10 +790,7 @@ try{
     Write-Host 'Hold the fixed view ~45 sec, then walk the same 2-3 minute route across the same cell boundaries. Quit normally.'
     Write-Host ''
 
-    $memoryCsv=Join-Path $ProfileDir 'process-memory.csv'
-    $memoryLines=[System.Collections.Generic.List[string]]::new(8192)
-    [void]$memoryLines.Add('epoch_ms,elapsed_s,working_set_mb,private_mb,virtual_mb,cpu_total_s')
-    $memoryDropped=0
+    $memoryJournal=Start-OptimizedMWMemoryJournal -Directory $ProfileDir -IncludeSystem:$MemoryDiagnostics
     $start=[DateTimeOffset]::UtcNow
     $systemTraceLink=New-Phase9SystemTraceLink -GameDir $GameDir -ProfileDir $ProfileDir -Executable $Exe -ExecutableSha256 $exeHash
     if($SystemTrace -and (-not $systemTraceLink -or $systemTraceLink.capture_id -ne $quickSession.trace_state.capture_id)){
@@ -805,12 +814,7 @@ try{
     Save-Phase9RunManifest $runManifest $ProfileDir
     @("game_process_id=$gameProcessId","game_creation_utc=$gameCreationUtc") | Add-Content -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt') -Encoding Ascii
     while(-not $process.HasExited){
-        try{
-            $process.Refresh()
-            $now=[DateTimeOffset]::UtcNow
-            $line='{0},{1:F3},{2:F1},{3:F1},{4:F1},{5:F3}' -f $now.ToUnixTimeMilliseconds(),($now-$start).TotalSeconds,($process.WorkingSet64/1MB),($process.PrivateMemorySize64/1MB),($process.VirtualMemorySize64/1MB),$process.TotalProcessorTime.TotalSeconds
-            if($memoryLines.Count -lt 8192){[void]$memoryLines.Add($line)}else{$memoryDropped++}
-        }catch{}
+        Add-OptimizedMWMemorySample -Journal $memoryJournal -Process $process -Now ([DateTimeOffset]::UtcNow) -Start $start
         if($automatedSession -and ([DateTimeOffset]::UtcNow-$start).TotalSeconds -gt $AutomatedDeadlineSeconds){
             $process.Kill();$process.WaitForExit();throw 'Owned automatic route exceeded its deadline'
         }
@@ -837,8 +841,6 @@ try{
         if(-not $protectedReview.accepted){throw 'Original-input monitor rejected protected-file changes; completed route evidence retained'}
         if(-not $protectedReview.unchanged){Write-Host 'Completed private run retained with approved external Lua-storage updates; see protected_input_review.' -ForegroundColor Yellow}
     }
-    [IO.File]::WriteAllLines($memoryCsv,$memoryLines,[Text.Encoding]::ASCII)
-    "memory_samples_dropped=$memoryDropped" | Add-Content -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt') -Encoding Ascii
     "exit_code=$exitCode" | Add-Content -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt') -Encoding Ascii
 
     if($exitCode -ne 0){
@@ -869,6 +871,12 @@ finally{
     # Never change the shared settings back while the launched game still uses them.
     if($null -ne $process){
         try{if(-not $process.HasExited){$process.WaitForExit()};$exitCode=$process.ExitCode}catch{}
+    }
+    if($null -ne $memoryJournal){
+        try{
+            Stop-OptimizedMWMemoryJournal -Journal $memoryJournal -NormalFinish ($null -eq $launchFailure -and $exitCode -eq 0)
+            "memory_samples_dropped=$($memoryJournal.Dropped)" | Add-Content -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt') -Encoding Ascii
+        }catch{Write-Warning ('Memory journal finalization failed: '+$_)}
     }
     if($quickSession){
         try{Stop-OptimizedMWQuickSession -Context $quickSession}catch{Write-Warning ('Recorder stop request failed: '+$_)}

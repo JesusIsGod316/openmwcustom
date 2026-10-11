@@ -391,6 +391,13 @@ def temporal_arguments(case):
     return ['-AutomatedTemporalMode', mode] if mode != 'Off' else []
 
 
+def memory_diagnostic_arguments(case):
+    value=case.get('memory_diagnostics',False)
+    if not isinstance(value,bool):
+        raise ValueError('memory_diagnostics must be a JSON boolean')
+    return ['-MemoryDiagnostics'] if value else []
+
+
 def run_matrix(plan_path, output):
     plan = read_json(plan_path); output = Path(output).resolve()
     if output.exists():
@@ -413,7 +420,9 @@ def run_matrix(plan_path, output):
     for route in routes.values():
         pins += route['inputs']
     verify(pins)
-    state = {'schema':1,'scope':'OFFSCREEN_MUTED_GUIDED_ROUTE_COMPARISON','pins':pins,'runs':[],
+    diagnostic_arguments=[memory_diagnostic_arguments(case) for case in plan['cases']]
+    allocation_diagnostic = any(diagnostic_arguments)
+    state = {'schema':1,'scope':('OFFSCREEN_MUTED_ALLOCATION_DIAGNOSTIC' if allocation_diagnostic else 'OFFSCREEN_MUTED_GUIDED_ROUTE_COMPARISON'),'pins':pins,'runs':[],
              'performance_status':'CALIBRATION_REQUIRED','state':'running'}
     benchmark_desktop.save(output/'MATRIX.json',state)
     current_case = None
@@ -442,6 +451,7 @@ def run_matrix(plan_path, output):
                     '-ArchitectureMask',str(case.get('architecture_mask',0)),
                     '-AssetMask',str(case.get('asset_mask',0)),'-TraceLevel',case.get('depth','Normal'),'-Candidate','CONTROL']
             args += temporal_arguments(case)
+            args += diagnostic_arguments[index]
             if allow_external_lua:
                 args.append('-AllowExternalLuaStorageChanges')
             print(json.dumps({'case':case['id'],'route':case['route'],'state':'started'}),flush=True)
@@ -477,7 +487,8 @@ def run_matrix(plan_path, output):
         state['state']='completed'
         # Calibration must be reviewed across repeats before accepting numerical
         # A/B results. Deep rows are never pooled with ordinary performance.
-        state['performance_status']='RAW_COMPARISONS_PENDING_REPEATABILITY_REVIEW'
+        state['performance_status']=('ALLOCATION_DIAGNOSTIC_NOT_PERFORMANCE' if allocation_diagnostic
+                                     else 'RAW_COMPARISONS_PENDING_REPEATABILITY_REVIEW')
     except BaseException as error:
         state['state']='failed'; state['error']=str(error)
         if current_case:
