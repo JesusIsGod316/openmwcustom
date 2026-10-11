@@ -25,6 +25,27 @@ keeps that strong control. Collision, picking, shadows and secondary views
 retain original geometry. Selection alone does not establish runtime use.
 
 ADDITIONAL INDEPENDENT CONTROLS
+[Cells] preload priority promotion = false
+Move an already admitted, still-queued cell job into the near-future lane and
+enqueue new near-future jobs there. Preserve existing urgent/front jobs, FIFO
+within each lane, the same capacity/owner and four-start background fairness.
+No additional workers or changes to a running producer's memory policy.
+Queue-start counts prove scheduling engagement, not CPU readiness/adoption.
+[Cells] paging score value reuse = false
+Requires actual paging vertex-cache optimization work. Reuse exact float
+power-function results within a single preparation job. Triangle scoring,
+tie order and index output remain the control contract. Large valences keep
+ordinary computation. This targets preparation cost, not draw-call count.
+[Optimizations] indirect projection proof reuse = false
+Requires the indirect pipeline. Reuse the successful full projection-family
+proof inside that same draw's held source-reader scope and exact State/Program.
+The initial full source/import check and actual consumed projection remain.
+[Optimizations] indirect early admission fallback = false
+Requires the indirect pipeline. When the existing cached admission sample
+refuses new private storage, draw live ordinary geometry before optional proof.
+Contended inspections also use the ordinary path without waiting. Existing
+owners retain their proof/fence rules; budgets and memory floors are unchanged.
+
 [Cells] lod retain source indices = false
 Requires the L1 lane. Share immutable source primitives while cooking;
 only actual reduced outputs receive new indices/EBOs. Cache-hit admission

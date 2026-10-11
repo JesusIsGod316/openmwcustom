@@ -78,7 +78,7 @@ namespace Resource
         struct IndirectWorkRecord
         {
             unsigned snapshotFrame;
-            std::array<std::uint64_t, 9> values;
+            std::array<std::uint64_t, 20> values;
         };
     public:
         BenchmarkCapture()
@@ -90,7 +90,7 @@ namespace Resource
             mCameras.reserve(32);
         }
         ~BenchmarkCapture() { finish(false); }
-        void captureIndirectWork(unsigned frame, const std::array<std::uint64_t, 9>& values)
+        void captureIndirectWork(unsigned frame, const std::array<std::uint64_t, 20>& values)
         {
             if (Debug::DeferredCapture::enabled()) mIndirectWork.push({frame, values});
         }
@@ -167,7 +167,10 @@ namespace Resource
                     resources << '\n';
                 }
                 indirect << "snapshot_frame,indirect_draws,commands,gpu_dispatches,command_uploads,command_uploads_avoided,"
-                    "capability_draws,gpu_function_resolutions_avoided,opportunity_original_draws,requested_dispatches_avoided\n";
+                    "capability_draws,gpu_function_resolutions_avoided,opportunity_original_draws,requested_dispatches_avoided,"
+                    "projection_proof_reuses,early_admission_fallbacks,early_busy_fallbacks,paging_score_table_runs,"
+                    "paging_pow_reuses,paging_pow_computations,paging_uncached_pow_computations,"
+                    "preload_priority_submitted,preload_priority_promoted,preload_priority_started,preload_priority_fairness\n";
                 for (const auto& record : mIndirectWork)
                 {
                     indirect << record.snapshotFrame;
@@ -188,6 +191,7 @@ namespace Resource
                        << "\nterminal_render_frames_not_read=8\nresource_sample_interval=60"
                        << "\noutput_ok=" << (render.good() && resources.good() && indirect.good())
                        << "\nindirect_work_scope=cumulative_all_views_observed_after_main_frame_not_render_origin_attribution"
+                       << "\npreload_priority_scope=cumulative_queue_admissions_and_starts_not_cpu_ready_or_origin_frame"
                        << "\nproxy_visits_are_cull_visits_not_driver_draws=1\n";
             }
             catch (...) { /* Missing status explicitly means incomplete capture. */ }

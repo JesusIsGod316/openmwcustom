@@ -62,6 +62,12 @@ namespace SceneUtil
     class WorkQueue : public osg::Referenced
     {
     public:
+        enum class Priority : unsigned char { Background, NearFuture, Urgent };
+        static constexpr unsigned MaximumNearFutureBurst = 4;
+        struct PriorityStats
+        {
+            inline static std::atomic_uint64_t submitted{0}, promoted{0}, consumed{0}, fairness{0};
+        };
         WorkQueue(std::size_t workerThreads);
         ~WorkQueue();
 
@@ -72,7 +78,12 @@ namespace SceneUtil
         /// Add a new work item to the back of the queue.
         /// @par The work item's waitTillDone() method may be used by the caller to wait until the work is complete.
         /// @param front If true, add item to the front of the queue. If false (default), add to the back.
-        void addWorkItem(osg::ref_ptr<WorkItem> item, bool front = false);
+        void addWorkItem(osg::ref_ptr<WorkItem> item, bool front = false,
+            Priority priority = Priority::Background);
+
+        // Reorder the same still-queued admission. No new owner/reservation,
+        // waiting, or preemption of a running producer.
+        bool promoteWorkItem(const WorkItem* item);
 
         /// Get the next work item from the front of the queue. If the queue is empty, waits until a new item is added.
         /// If the workqueue is in the process of being destroyed, may return nullptr.
@@ -89,8 +100,10 @@ namespace SceneUtil
         {
             osg::ref_ptr<WorkItem> mItem;
             WorkTraceMetadata mTrace;
+            Priority mPriority = Priority::Background;
         };
         std::deque<QueueEntry> mQueue;
+        unsigned mNearFutureBurst = 0;
 
         mutable std::mutex mMutex;
         std::condition_variable mCondition;

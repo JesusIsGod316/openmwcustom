@@ -2000,6 +2000,8 @@ void OMW::Engine::prepareEngine()
         Resource::UploadPool::sampleOwner=mResourceSystem.get();
         Resource::UploadPool::ledger=mResourceSystem->speculativeBudget();
     }
+    SceneUtil::reusePagingScoreValues.store(Settings::cells().mOptimizedMWPagingScoreValues,
+        std::memory_order_relaxed);
     if (SceneUtil::GpuIndirectPackets::indirectEnabled() && !mUseVulkanRenderer)
     {
         SceneUtil::GpuIndirectPackets::reuseIndirectCommands.store(Settings::cells().mOptimizedMWIndirectCommandReuse,
@@ -2008,6 +2010,10 @@ void OMW::Engine::prepareEngine()
             Settings::cells().mOptimizedMWIndirectContextCapabilityReuse, std::memory_order_relaxed);
         SceneUtil::GpuIndirectPackets::filterVisibilityOpportunity.store(
             Settings::cells().mOptimizedMWGpuVisibilityOpportunityFilter, std::memory_order_relaxed);
+        SceneUtil::GpuIndirectPackets::reuseProjectionProof.store(
+            Settings::cells().mOptimizedMWIndirectProjectionProofReuse, std::memory_order_relaxed);
+        SceneUtil::GpuIndirectPackets::earlyAdmissionFallback.store(
+            Settings::cells().mOptimizedMWIndirectEarlyAdmissionFallback, std::memory_order_relaxed);
         SceneUtil::GpuIndirectPackets::sample=&Resource::ResourceSystem::speculativeSample;
         SceneUtil::GpuIndirectPackets::sampleOwner=mResourceSystem.get();
         SceneUtil::GpuIndirectPackets::ledger=mResourceSystem->speculativeBudget();
@@ -2628,7 +2634,16 @@ void OMW::Engine::go()
                     C::dispatches.load(std::memory_order_relaxed), C::commandUploads.load(std::memory_order_relaxed),
                     C::commandUploadsAvoided.load(std::memory_order_relaxed), C::capabilityDraws.load(std::memory_order_relaxed),
                     C::gpuResolutionsAvoided.load(std::memory_order_relaxed), C::visibilityOriginalDraws.load(std::memory_order_relaxed),
-                    C::visibilityDispatchesAvoided.load(std::memory_order_relaxed)});
+                    C::visibilityDispatchesAvoided.load(std::memory_order_relaxed), C::projectionProofReuses.load(std::memory_order_relaxed),
+                    C::earlyAdmissionFallbacks.load(std::memory_order_relaxed), C::earlyBusyFallbacks.load(std::memory_order_relaxed),
+                    SceneUtil::ExactPagingWorkCounters::scoreTableRuns.load(std::memory_order_relaxed),
+                    SceneUtil::ExactPagingWorkCounters::scoreTableHits.load(std::memory_order_relaxed),
+                    SceneUtil::ExactPagingWorkCounters::scoreTableComputations.load(std::memory_order_relaxed),
+                    SceneUtil::ExactPagingWorkCounters::scoreTableUncached.load(std::memory_order_relaxed),
+                    SceneUtil::WorkQueue::PriorityStats::submitted.load(std::memory_order_relaxed),
+                    SceneUtil::WorkQueue::PriorityStats::promoted.load(std::memory_order_relaxed),
+                    SceneUtil::WorkQueue::PriorityStats::consumed.load(std::memory_order_relaxed),
+                    SceneUtil::WorkQueue::PriorityStats::fairness.load(std::memory_order_relaxed)});
         }
         if (!cleanCapture && stats.is_open())
         {
@@ -2989,6 +3004,11 @@ void OMW::Engine::go()
         Log(Debug::Info) << "OptimizedMW gpu visibility opportunity: original_draws=" << C::visibilityOriginalDraws.load()
             << " requested_dispatches_avoided=" << C::visibilityDispatchesAvoided.load()
             << " scope=strict_whole_bound_containment_no_private_submission";
+        Log(Debug::Info) << "OptimizedMW indirect projection proof reuse: reuses=" << C::projectionProofReuses.load()
+            << " scope=same_draw_same_state_program_held_producer";
+        Log(Debug::Info) << "OptimizedMW indirect early admission fallback: new_owner_refusals=" << C::earlyAdmissionFallbacks.load()
+            << " contended_inspections=" << C::earlyBusyFallbacks.load()
+            << " scope=live_ordinary_geometry_no_budget_change";
     }
     if (SceneUtil::FrozenRigDeformation::enabled())
     {
@@ -3004,6 +3024,24 @@ void OMW::Engine::go()
             << " triangles=" << C::triangles.load() << " score_updates=" << C::scoreUpdates.load()
             << " score_reuses=" << C::scoreReuses.load() << " heap_comparisons=" << C::heapComparisons.load()
             << " unchanged_heap_updates=" << C::unchangedHeapUpdates.load();
+    }
+    if (SceneUtil::reusePagingScoreValues.load(std::memory_order_relaxed))
+    {
+        using C=SceneUtil::ExactPagingWorkCounters;
+        Log(Debug::Info) << "OptimizedMW paging score value reuse: runs=" << C::scoreTableRuns.load()
+            << " pow_reuses=" << C::scoreTableHits.load()
+            << " pow_computations=" << C::scoreTableComputations.load()
+            << " uncached_pow_computations=" << C::scoreTableUncached.load()
+            << " scope=run_local_exact_float_inputs";
+    }
+
+    if (Settings::cells().mOptimizedMWPreloadPriorityPromotion)
+    {
+        using C = SceneUtil::WorkQueue::PriorityStats;
+        Log(Debug::Info) << "OptimizedMW preload priority promotion: submitted=" << C::submitted.load()
+            << " promoted=" << C::promoted.load() << " started=" << C::consumed.load()
+            << " fairness=" << C::fairness.load() << " burst_limit=" << SceneUtil::WorkQueue::MaximumNearFutureBurst
+            << " scope=queue_admission_and_start_not_cpu_ready";
     }
 
     // Save user settings

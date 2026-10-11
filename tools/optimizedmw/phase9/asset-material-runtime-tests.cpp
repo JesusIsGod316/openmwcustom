@@ -460,7 +460,7 @@ namespace
 }
 int main(int argc,char** argv) try
 {
-    require(argc>=3 && argc<=8 && std::string_view(argv[1])=="--shader-dir",
+    require(argc>=3 && argc<=10 && std::string_view(argv[1])=="--shader-dir",
         "usage: p9-asset-material-runtime --shader-dir exact-shader-tree [--reverse-z] [--indirect-cpu|--indirect-gpu] [--clustered] [--reuse-capabilities] [--filter-opportunities]");
     bool reversed=false,indirect=false,gpu=false,clustered=false;
     for(int i=3;i<argc;++i)
@@ -471,6 +471,8 @@ int main(int argc,char** argv) try
         else if(option=="--indirect-cpu" || option=="--indirect-gpu") {indirect=true;gpu=option=="--indirect-gpu";}
         else if(option=="--reuse-capabilities") SceneUtil::GpuIndirectPackets::reuseContextCapabilities=true;
         else if(option=="--filter-opportunities") SceneUtil::GpuIndirectPackets::filterVisibilityOpportunity=true;
+        else if(option=="--reuse-projection-proof") SceneUtil::GpuIndirectPackets::reuseProjectionProof=true;
+        else if(option=="--early-admission-fallback") SceneUtil::GpuIndirectPackets::earlyAdmissionFallback=true;
         else require(false,"unrecognized actual material fixture option");
     }
     SceneUtil::AutoDepth::setReversed(reversed);
@@ -484,7 +486,18 @@ int main(int argc,char** argv) try
     Settings::SettingsFileParser parser;parser.loadSettingsFile(std::filesystem::path(P9_SOURCE)/"files/settings-default.cfg",Settings::Manager::mDefaultSettings);
     Settings::StaticValues::initDefaults();Settings::Manager::mUserSettings=Settings::Manager::mDefaultSettings;Settings::StaticValues::init();
     Fixture fixture(std::filesystem::u8path(argv[2]),clustered);
-    if(indirect) {indirectCases(fixture,gpu);return 0;}
+    if(indirect)
+    {
+        indirectCases(fixture,gpu);
+        if (gpu && SceneUtil::GpuIndirectPackets::reuseProjectionProof.load())
+            require(SceneUtil::GpuIndirectPackets::Counters::projectionProofReuses.load() > 0,
+                "actual stock/PBR material performed no same-draw projection proof reuse");
+        std::cout << "ACTUAL_OBJECT_CONSUMPTION_PROOF projection_reuses="
+                  << SceneUtil::GpuIndirectPackets::Counters::projectionProofReuses.load()
+                  << " early_new_owner_refusals=" << SceneUtil::GpuIndirectPackets::Counters::earlyAdmissionFallbacks.load()
+                  << " exact_material_pixels=1 gl_error=0\n";
+        return 0;
+    }
     admission(fixture);cases(fixture,false);cases(fixture,true);
     std::cout<<"ASSET_MATERIAL_PROJECTION reversed="<<reversed<<" arbitrary_projection_refused=1 clipcontrol_refused="<<reversed<<" gl_error=0\n";
     std::cout<<"ASSET_MATERIAL_RUNTIME {\"l1\":true,\"h1\":true,\"source_mutation\":true,\"derived_mutation\":true,\"cull_fallback\":true,\"draw_fallback\":true,\"control_preserved\":true,\"gl_error\":0}\n";

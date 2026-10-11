@@ -1292,7 +1292,11 @@ namespace MWWorld
             }
             else
             {
-            // already preloaded, nothing to do other than updating the timestamp
+            // Keep the existing admission; optional near-future promotion only
+            // changes still-queued work and never requeues a running producer.
+            if (nearFuture && Settings::cells().mOptimizedMWPreloadPriorityPromotion
+                && found->second.mWorkItem && !found->second.mWorkItem->isDone())
+                mWorkQueue->promoteWorkItem(found->second.mWorkItem);
             found->second.mTimeStamp = timestamp;
             if (mColdRetention) mColdRetention->request(&cell, timestamp, nearFuture);
             return;
@@ -1358,7 +1362,9 @@ namespace MWWorld
                     && !mAnimationTicket->cancelled() ? mAnimationTicket.get() : nullptr);
         }
         catch (const Resource::SpeculativeDeferred&) { return; }
-        mWorkQueue->addWorkItem(item);
+        mWorkQueue->addWorkItem(item, false,
+            nearFuture && Settings::cells().mOptimizedMWPreloadPriorityPromotion
+                ? SceneUtil::WorkQueue::Priority::NearFuture : SceneUtil::WorkQueue::Priority::Background);
 
         mPreloadCells.emplace(&cell, PreloadEntry(timestamp, item));
         if (mColdRetention) mColdRetention->request(&cell, timestamp, nearFuture);

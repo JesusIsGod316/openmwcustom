@@ -1,6 +1,7 @@
 """Cumulative draw-work observations within qualified benchmark intervals.
 
-These snapshots include all participating views. Their frame is the main-thread
+These snapshots include all participating views and, in the extended format,
+completed paging-work counters. Their frame is the main-thread
 observation point, never the origin frame of an asynchronous draw or GPU query.
 """
 import bisect
@@ -11,6 +12,13 @@ from pathlib import Path
 COUNTERS = ('indirect_draws', 'commands', 'gpu_dispatches', 'command_uploads',
             'command_uploads_avoided', 'capability_draws', 'gpu_function_resolutions_avoided',
             'opportunity_original_draws', 'requested_dispatches_avoided')
+CONSUMPTION_COUNTERS = ('projection_proof_reuses', 'early_admission_fallbacks', 'early_busy_fallbacks',
+                        'paging_score_table_runs', 'paging_pow_reuses', 'paging_pow_computations',
+                        'paging_uncached_pow_computations')
+EXTENDED_COUNTERS = (*COUNTERS, *CONSUMPTION_COUNTERS)
+PREPARATION_COUNTERS = ('preload_priority_submitted', 'preload_priority_promoted',
+                        'preload_priority_started', 'preload_priority_fairness')
+PREPARATION_EXTENDED_COUNTERS = (*EXTENDED_COUNTERS, *PREPARATION_COUNTERS)
 
 
 def interval_work(profile, windows):
@@ -39,10 +47,16 @@ def interval_work(profile, windows):
     snapshots = []
     with (profile/'p9-indirect-work.csv').open(newline='', encoding='utf-8-sig') as stream:
         reader = csv.DictReader(stream)
-        if reader.fieldnames != ['snapshot_frame', *COUNTERS]:
+        if reader.fieldnames == ['snapshot_frame', *COUNTERS]:
+            counters = COUNTERS
+        elif reader.fieldnames == ['snapshot_frame', *EXTENDED_COUNTERS]:
+            counters = EXTENDED_COUNTERS
+        elif reader.fieldnames == ['snapshot_frame', *PREPARATION_EXTENDED_COUNTERS]:
+            counters = PREPARATION_EXTENDED_COUNTERS
+        else:
             raise ValueError('Unknown indirect-work snapshot header')
         for row in reader:
-            frame = int(row['snapshot_frame']); values = tuple(int(row[key]) for key in COUNTERS)
+            frame = int(row['snapshot_frame']); values = tuple(int(row[key]) for key in counters)
             if any(value < 0 for value in values):
                 raise ValueError('Negative indirect-work count')
             if snapshots:
@@ -64,7 +78,7 @@ def interval_work(profile, windows):
             return None
         return 'fixed_view' if windows.get('movement') and epoch < windows['movement'] - 1000 else 'moving'
 
-    phases = {name: {'counts': dict.fromkeys(COUNTERS, 0), 'observation_pairs': 0,
+    phases = {name: {'counts': dict.fromkeys(counters, 0), 'observation_pairs': 0,
                      'observed_epoch_start_ms': None, 'observed_epoch_end_ms': None,
                      'maximum_observation_gap_ms': 0.0} for name in ('fixed_view', 'moving')}
     excluded = 0
@@ -89,14 +103,17 @@ def interval_work(profile, windows):
         entry['observed_epoch_end_ms'] = end
         entry['observation_pairs'] += 1
         entry['maximum_observation_gap_ms'] = max(entry['maximum_observation_gap_ms'], end - start)
-        for key, value, previous in zip(COUNTERS, current, before):
+        for key, value, previous in zip(counters, current, before):
             entry['counts'][key] += value - previous
     if not any(value['observation_pairs'] for value in phases.values()):
         raise ValueError('No qualified indirect-work observation intervals')
-    return {'schema': 1, 'scope': 'cumulative_all_views_at_main_thread_observation_points',
-            'limit': 'Same logged phase margins and context exclusions as pacing; asynchronous work is not assigned an exact render origin frame',
+    return {'schema': 3 if counters == PREPARATION_EXTENDED_COUNTERS else 2 if counters == EXTENDED_COUNTERS else 1,
+            'scope': 'cumulative_all_views_at_main_thread_observation_points',
+            'counter_columns': list(counters),
+            'limit': 'Same logged phase margins/context exclusions as pacing; asynchronous draw origins and earlier paging execution within a completed work item are not assigned to exact observation frames',
             'snapshots': len(snapshots), 'excluded_pairs': excluded, 'phases': phases}
 
 
 def positive_counts(work, key):
-    return any(phase['counts'][key] > 0 for phase in work['phases'].values())
+    # A legacy capture cannot positively qualify a newer mechanism.
+    return any(phase['counts'].get(key, 0) > 0 for phase in work['phases'].values())

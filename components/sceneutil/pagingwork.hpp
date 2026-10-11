@@ -12,7 +12,12 @@ namespace SceneUtil
     {
         inline static std::atomic_uint64_t runs{0}, triangles{0}, scoreUpdates{0}, scoreReuses{0};
         inline static std::atomic_uint64_t heapComparisons{0}, unchangedHeapUpdates{0};
+        inline static std::atomic_uint64_t scoreTableRuns{0}, scoreTableHits{0};
+        inline static std::atomic_uint64_t scoreTableComputations{0}, scoreTableUncached{0};
     };
+    // Configured once before paging workers start; independent of triangle
+    // rescoring/heap reduction and never enabled by changing a draw policy.
+    inline std::atomic_bool reusePagingScoreValues{false};
     class PagingWorkCancelled final : public std::exception
     {
     public:

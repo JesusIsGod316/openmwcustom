@@ -1,11 +1,14 @@
 #include <components/sceneutil/gpuindirectpackets.hpp>
 #include <osg/NodeCallback>
+#include <osg/BufferIndexBinding>
 #include <osg/Switch>
 #include <osgViewer/Viewer>
 #include <array>
+#include <future>
 #include <iostream>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 
 namespace Packet = SceneUtil::GpuIndirectPackets;
 namespace Contract = Shader::IndirectProjection;
@@ -45,6 +48,7 @@ struct Pixels final : osg::Camera::DrawCallback
     mutable std::vector<osg::DrawElementsIndirectCommand> commands;
     const Packet::Primitive* inspect = nullptr;
     const GlState* previous = nullptr;
+    GLuint expectedExternalProgram = 0;
     void operator()(osg::RenderInfo& info) const override
     {
         glReadPixels(0, 0, 32, 32, GL_RGBA, GL_UNSIGNED_BYTE, data.data());
@@ -74,9 +78,53 @@ struct Pixels final : osg::Camera::DrawCallback
         glGetIntegerv(GL_CURRENT_PROGRAM, &program);
         glGetIntegerv(GL_DRAW_INDIRECT_BUFFER_BINDING, &indirect);
         const auto* pcp = info.getState()->getLastAppliedProgramObject();
-        require(static_cast<GLuint>(program) == (pcp ? pcp->getHandle() : 0), "OSG consumer program/cache differs");
+        require(static_cast<GLuint>(program) == (expectedExternalProgram ? expectedExternalProgram : (pcp ? pcp->getHandle() : 0)),
+            "actual consumer program was not preserved");
         require(indirect == 0, "indirect binding/cache was not restored");
         require(ext && glGetError() == GL_NO_ERROR, "GL error in indirect fixture");
+        if (expectedExternalProgram) ext->glUseProgram(pcp ? pcp->getHandle() : 0);
+    }
+};
+
+struct ExternalConsumer final : osg::Drawable::DrawCallback
+{
+    osg::ref_ptr<osg::Drawable::DrawCallback> delegate;
+    GLuint program = 0;
+    bool discard = false;
+    bool feedback = false;
+    mutable std::array<float, 9 * 4> captured{};
+    void drawImplementation(osg::RenderInfo& info, const osg::Drawable* drawable) const override
+    {
+        auto* ext = info.getState()->get<osg::GLExtensions>();
+        if (program) ext->glUseProgram(program); // Deliberately do not change OSG's cache.
+        if (discard) glEnable(GL_RASTERIZER_DISCARD);
+        GLuint buffer = 0;
+        if (feedback)
+        {
+            ext->glGenBuffers(1, &buffer);
+            ext->glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, buffer);
+            ext->glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, sizeof(captured), nullptr, GL_STREAM_READ);
+            ext->glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, buffer);
+            ext->glBeginTransformFeedback(GL_TRIANGLES);
+        }
+        if (delegate) delegate->drawImplementation(info, drawable);
+        else drawable->drawImplementation(info);
+        if (feedback)
+        {
+            ext->glEndTransformFeedback();
+            ext->glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(captured), captured.data());
+            ext->glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, 0);
+            ext->glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, 0);
+            ext->glDeleteBuffers(1, &buffer);
+        }
+        if (discard) glDisable(GL_RASTERIZER_DISCARD);
+        if (program)
+        {
+            GLint actual = 0; glGetIntegerv(GL_CURRENT_PROGRAM, &actual);
+            require(static_cast<GLuint>(actual) == program, "private draw changed the external observer program");
+            const auto* cached = info.getState()->getLastAppliedProgramObject();
+            ext->glUseProgram(cached ? cached->getHandle() : 0);
+        }
     }
 };
 
@@ -143,18 +191,22 @@ osg::ref_ptr<osg::Program> fixtureProgram(bool certified)
 
 int main(int argc, char** argv) try
 {
-    bool reuse = false, capabilities = false, opportunity = false;
+    bool reuse = false, capabilities = false, opportunity = false, proofReuse = false, earlyAdmission = false;
     for (int i = 1; i < argc; ++i)
     {
         const std::string_view option = argv[i];
         if (option == "--reuse-commands") reuse = true;
         else if (option == "--reuse-capabilities") capabilities = true;
         else if (option == "--filter-opportunities") opportunity = true;
+        else if (option == "--reuse-projection-proof") proofReuse = true;
+        else if (option == "--early-admission-fallback") earlyAdmission = true;
         else require(false, "unknown indirect fixture option");
     }
     Packet::reuseIndirectCommands.store(reuse);
     Packet::reuseContextCapabilities.store(capabilities);
     Packet::filterVisibilityOpportunity.store(opportunity);
+    Packet::reuseProjectionProof.store(proofReuse);
+    Packet::earlyAdmissionFallback.store(earlyAdmission);
     const osg::BoundingBoxf inside(-.5f, -.5f, -.5f, .5f, .5f, .5f);
     require(Packet::wholeBoundInside(inside, osg::Matrixf::identity()), "strict inside bound was declined");
     require(Packet::wholeBoundInside(inside, osg::Matrixf::scale(-1, 1, -1)), "mirrored/reverse depth inside bound was declined");
@@ -246,10 +298,10 @@ int main(int argc, char** argv) try
     camera->setPreDrawCallback(previous); camera->setFinalDrawCallback(pixels);
     viewer.setSceneData(controlRoot); viewer.realize();
     require(viewer.isRealized(), "fixture context did not realize");
-    auto compare = [&] {
+    auto compare = [&](bool inspectCommands = true) {
         pixels->inspect = nullptr;
         viewer.setSceneData(controlRoot); viewer.frame(); const auto reference = pixels->data;
-        pixels->inspect = draw->testPrimitive();
+        pixels->inspect = inspectCommands ? draw->testPrimitive() : nullptr;
         viewer.setSceneData(packet); viewer.frame();
         require(pixels->data == reference, "MDI/GPU visibility changed exact RGBA output");
     };
@@ -322,6 +374,90 @@ int main(int argc, char** argv) try
     require(Packet::installCertifiedSubtrees(*group, 1024, true, true) == 1, "nested PBR contract candidate did not install");
     draw = dynamic_cast<const Packet::Draw*>(original->getDrawCallback());
     packet = SceneUtil::PersistentOpaquePackets::buildCertifiedSubtrees(*group, 1024, true, true);
+    // First draw in this new storage owner: cached admission refusal must
+    // preserve live source pixels, then recover when the same sample is healthy.
+    const auto healthySample = sampleValue;
+    sampleValue.decision.state = Resource::OpenGlPressure::Critical;
+    const auto admissionBefore = Packet::Counters::earlyAdmissionFallbacks.load();
+    const auto refusedDraws = Packet::Counters::draws.load();
+    const auto refusedProofs = Packet::Counters::actualProducerProofChecks.load();
+    compare(false);
+    require(Packet::Counters::draws.load() == refusedDraws, "refused new owner still submitted private commands");
+    require(earlyAdmission
+            ? (Packet::Counters::earlyAdmissionFallbacks.load() == admissionBefore + 1
+                && Packet::Counters::actualProducerProofChecks.load() == refusedProofs)
+            : (Packet::Counters::earlyAdmissionFallbacks.load() == admissionBefore
+                && Packet::Counters::actualProducerProofChecks.load() > refusedProofs),
+        "early admission did not remove the actual optional producer proof or control changed");
+    sampleValue = healthySample;
+
+    // The proof is local to one actual reader/State/Program. A disabled or
+    // failed nested scope may not accidentally borrow its predecessor.
+    auto* proofState = context->getState();
+    osg::ref_ptr<osg::State> otherProofState = new osg::State;
+    osg::ref_ptr<osg::Program> otherProofProgram = new osg::Program;
+    {
+        Packet::ProjectionProofScope outsideReader(proofState, program, true);
+        require(!Packet::ProjectionProofScope::current(proofState, program), "unowned reader created projection proof");
+    }
+    {
+        Contract::ProducerReadScope reader;
+        require(reader && Packet::commandProgramSafe(program, *proofState), "actual baseline producer proof unavailable");
+        Packet::ProjectionProofScope outer(proofState, program, true);
+        require(Packet::ProjectionProofScope::current(proofState, program)
+                && !Packet::ProjectionProofScope::current(otherProofState, program)
+                && !Packet::ProjectionProofScope::current(proofState, otherProofProgram),
+            "projection proof escaped its exact State or Program");
+        try
+        {
+            Packet::ProjectionProofScope nested(proofState, program, false);
+            require(!Packet::ProjectionProofScope::current(proofState, program), "disabled nested proof borrowed outer scope");
+            throw 7;
+        }
+        catch (int)
+        { require(Packet::ProjectionProofScope::current(proofState, program), "exception lost the outer proof scope"); }
+    }
+    require(!Packet::ProjectionProofScope::current(proofState, program), "projection proof survived reader/draw retirement");
+    const auto recoveredProofs = Packet::Counters::actualProducerProofChecks.load();
+    const auto recoveredReuses = Packet::Counters::projectionProofReuses.load();
+    compare();
+    require(Packet::Counters::draws.load() > refusedDraws, "healthy admission failed to recover actual indirect work");
+    require(Packet::Counters::actualProducerProofChecks.load() == recoveredProofs + (proofReuse ? 1 : 2)
+            && Packet::Counters::projectionProofReuses.load() == recoveredReuses + (proofReuse ? 1 : 0),
+        "same-draw candidate did not remove exactly the duplicate full projection proof");
+    sampleValue.decision.state = Resource::OpenGlPressure::Critical;
+    const auto existingDraws = Packet::Counters::draws.load();
+    const auto existingAdmission = Packet::Counters::earlyAdmissionFallbacks.load();
+    compare();
+    require(Packet::Counters::draws.load() > existingDraws
+            && Packet::Counters::earlyAdmissionFallbacks.load() == existingAdmission,
+        "early admission evicted or refused already owned current-context storage");
+    sampleValue = healthySample;
+
+    // This is actual cross-thread mutex contention, not a mocked return value.
+    // Readback inspection is omitted for this comparison because its fixture
+    // observer deliberately takes the same context lock after the draw.
+    std::promise<void> lockHeld, releaseLock;
+    auto held = lockHeld.get_future(); auto release = releaseLock.get_future();
+    const auto contendedBefore = Packet::Counters::earlyBusyFallbacks.load();
+    const auto contendedProofs = Packet::Counters::actualProducerProofChecks.load();
+    std::thread blocker([&] { draw->testPrimitive()->testUnderContextLock([&] {
+        lockHeld.set_value(); release.wait(); }); });
+    try
+    {
+        held.wait(); compare(false);
+        releaseLock.set_value(); blocker.join();
+    }
+    catch (...)
+    {
+        releaseLock.set_value(); blocker.join(); throw;
+    }
+    require(earlyAdmission
+            ? (Packet::Counters::earlyBusyFallbacks.load() == contendedBefore + 1
+                && Packet::Counters::actualProducerProofChecks.load() == contendedProofs)
+            : (Packet::Counters::earlyBusyFallbacks.load() == contendedBefore
+                && Packet::Counters::actualProducerProofChecks.load() > contendedProofs),
+        "actual contention did not use nonwaiting original pixels before optional proof");
     compare();
     if (opportunity)
     {
@@ -342,6 +478,69 @@ int main(int argc, char** argv) try
     material->addUniform(material->getUniform("projectionMatrix"), osg::StateAttribute::PROTECTED);
     compare();
     camera->getStateSet()->removeUniform("projectionMatrix");
+
+    // An actual observer makes CPU MDI distinguishable from the three original
+    // draws. It is bound after OSG applied the certified cached program.
+    osg::ref_ptr<osg::Program> observer = new osg::Program;
+    observer->addShader(new osg::Shader(osg::Shader::VERTEX,
+        "#version 330 compatibility\n#extension GL_ARB_shader_draw_parameters : require\n"
+        "flat out int drawIndex;void main(){gl_Position=gl_ModelViewProjectionMatrix*gl_Vertex;drawIndex=gl_DrawIDARB;}\n"));
+    observer->addShader(new osg::Shader(osg::Shader::FRAGMENT,
+        "#version 330 compatibility\nflat in int drawIndex;void main(){gl_FragColor=drawIndex==0?vec4(1,0,0,1):vec4(0,1,0,1);}\n"));
+    require(context->makeCurrent(), "observer compilation needs the actual context");
+    observer->compileGLObjects(*context->getState());
+    auto* observerPcp = observer->getPCP(*context->getState());
+    require(observerPcp && observerPcp->isLinked(), "draw-index observer did not link");
+    context->releaseContext();
+    osg::ref_ptr<ExternalConsumer> candidateObserver = new ExternalConsumer, controlObserver = new ExternalConsumer;
+    candidateObserver->delegate = original->getDrawCallback();
+    original->setDrawCallback(candidateObserver); control->setDrawCallback(controlObserver);
+    candidateObserver->program = controlObserver->program = observerPcp->getHandle();
+    pixels->expectedExternalProgram = 0; // The observer verifies/restores immediately around the draw.
+    for (bool cpu : {false, true})
+    {
+        Packet::Primitive::forceCpuCommands = cpu;
+        const auto before = Packet::Counters::draws.load(), dispatchBefore = Packet::Counters::dispatches.load();
+        pixels->inspect = nullptr;
+        viewer.setSceneData(controlRoot); viewer.frame(); const auto reference = pixels->data;
+        viewer.setSceneData(group); viewer.frame();
+        require(pixels->data == reference && Packet::Counters::draws.load() == before
+                && Packet::Counters::dispatches.load() == dispatchBefore,
+            "uncertified actual program observed CPU MDI or GPU rejection instead of original draws");
+    }
+    // Prove this fixture catches the former CPU fall-through, rather than
+    // passing because another unrelated eligibility check rejected the draw.
+    Packet::Primitive::forceCpuCommands = true;
+    Packet::Primitive::bypassConsumerGuardForNegativeTest = true;
+    const auto unsafeBefore = Packet::Counters::draws.load();
+    viewer.setSceneData(controlRoot); viewer.frame(); const auto observerReference = pixels->data;
+    viewer.setSceneData(group); viewer.frame();
+    Packet::Primitive::bypassConsumerGuardForNegativeTest = false;
+    require(Packet::Counters::draws.load() == unsafeBefore + 1 && pixels->data != observerReference,
+        "observer did not detect the actual former CPU MDI program mismatch");
+    pixels->expectedExternalProgram = 0;
+    candidateObserver->program = controlObserver->program = 0;
+    program->addTransformFeedBackVarying("gl_Position");
+    program->setTransformFeedBackMode(GL_INTERLEAVED_ATTRIBS);
+    for (bool cpu : {false, true}) for (bool feedback : {false, true})
+    {
+        Packet::Primitive::forceCpuCommands = cpu;
+        candidateObserver->discard = controlObserver->discard = !feedback;
+        candidateObserver->feedback = controlObserver->feedback = feedback;
+        const auto before = Packet::Counters::draws.load(), dispatchBefore = Packet::Counters::dispatches.load();
+        viewer.setSceneData(controlRoot); viewer.frame(); const auto reference = pixels->data;
+        viewer.setSceneData(group); viewer.frame();
+        require(pixels->data == reference && Packet::Counters::draws.load() == before
+                && Packet::Counters::dispatches.load() == dispatchBefore,
+            "active feedback/discard observed private commands");
+        if (feedback) require(candidateObserver->captured == controlObserver->captured,
+            "active feedback changed exact captured vertex stream");
+    }
+    Packet::Primitive::forceCpuCommands = false;
+    original->setDrawCallback(candidateObserver->delegate); control->setDrawCallback(nullptr);
+    candidateObserver->delegate = nullptr;
+    program->removeTransformFeedBackVarying("gl_Position");
+    std::cout << "ACTUAL_CONSUMER_PROOF cpu_and_gpu=1 draw_index_observer=1 regression_detected=1 feedback_stream=1 discard=1 exact_pixels=1\n";
 
     auto requireOriginal = [&] {
         const auto before = Packet::Counters::draws.load();
@@ -467,6 +666,12 @@ int main(int argc, char** argv) try
         << " snapshots=" << Packet::Counters::capabilitySnapshots.load()
         << " resolvers_avoided=" << Packet::Counters::gpuResolutionsAvoided.load()
         << " opportunity_original_draws=" << Packet::Counters::visibilityOriginalDraws.load() << '\n';
+    std::cout << "INDIRECT_CONSUMPTION_PROOF projection_reuse_enabled=" << proofReuse
+        << " projection_reuses=" << Packet::Counters::projectionProofReuses.load()
+        << " actual_full_producer_checks=" << Packet::Counters::actualProducerProofChecks.load()
+        << " early_admission_enabled=" << earlyAdmission
+        << " early_new_owner_refusals=" << Packet::Counters::earlyAdmissionFallbacks.load()
+        << " early_contended_inspections=" << Packet::Counters::earlyBusyFallbacks.load() << '\n';
     auto* positions = static_cast<osg::Vec3Array*>(original->getVertexArray());
     (*positions)[0].x() += .1f; positions->dirty(); original->dirtyBound(); control->dirtyBound();
     const auto fallback = Packet::Counters::fallbacks.load();

@@ -149,6 +149,7 @@ public:
     inline static bool forceBusy = false;
     inline static bool forceCpuCommands = false;
     inline static bool forceMissingGpuFunctions = false;
+    inline static bool bypassConsumerGuardForNegativeTest = false;
     void dropCapabilityCertificate() const
     {
         std::lock_guard lock(mContextMutex);
@@ -173,6 +174,25 @@ public:
     }
 #endif
 
+    bool earlyFallbackBeforeProof(const osg::State& state) const
+    {
+        if (!mProduced || state.getContextID() >= 4) return false;
+        std::unique_lock lock(mContextMutex, std::try_to_lock);
+        if (!lock.owns_lock()) { ++Counters::earlyBusyFallbacks; return true; }
+        // Even failed/currently retiring existing owners retain their ordinary
+        // proof/fence/fallback rules. This switch neither releases nor evicts.
+        if (std::any_of(mContexts.begin(), mContexts.end(),
+                [&](const Context& value) { return value.id == state.getContextID(); })) return false;
+        if (sample && Resource::SpeculativeBudget::newOwnerWorkUsable(sample(sampleOwner),
+                Resource::SpeculativePriority::Background)) return false;
+        ++Counters::earlyAdmissionFallbacks;
+        return true;
+    }
+#ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
+    template<class Function> void testUnderContextLock(Function&& task) const
+    { std::lock_guard lock(mContextMutex); std::forward<Function>(task)(); }
+#endif
+
     void draw(osg::State& state, bool useVbo) const override
     {
         auto fallback = [&] {
@@ -189,7 +209,7 @@ public:
         const auto resolveProjection = [&] {
             if (!projectionChecked)
             {
-                projectionChecked = true; projectionKnown = linearObjectProjection(program);
+                projectionChecked = true; projectionKnown = linearObjectProjection(program, &state);
                 if (program && projectionKnown)
                 {
                     const auto* applied = appliedProjection(state, mLeaf);
@@ -212,6 +232,29 @@ public:
             return;
         }
         if (!supported(state, mReuseCapabilities)) { fallback(); return; }
+        // The OSG certificate describes its cached consumer, not an arbitrary
+        // program bound by an external draw callback. A CPU MDI fallback still
+        // exposes draw indices and must not observe that uncertified program.
+        // Check before allocating/binding private storage, for both backends.
+        GLint actualConsumer = 0;
+        glGetIntegerv(GL_CURRENT_PROGRAM, &actualConsumer);
+        bool feedbackActive = false;
+        if (state.get<osg::GLExtensions>()->glVersion >= 4.0f
+            || osg::isGLExtensionSupported(state.getContextID(), "GL_ARB_transform_feedback2"))
+        {
+            GLint feedback = GL_FALSE, paused = GL_FALSE;
+            glGetIntegerv(GL_TRANSFORM_FEEDBACK_ACTIVE, &feedback);
+            glGetIntegerv(GL_TRANSFORM_FEEDBACK_PAUSED, &paused);
+            feedbackActive = feedback && !paused;
+        }
+        const bool uncertifiedConsumer = static_cast<GLuint>(actualConsumer) != (consumer ? consumer->getHandle() : 0)
+            || feedbackActive || glIsEnabled(GL_RASTERIZER_DISCARD);
+        if (uncertifiedConsumer
+#ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
+            && !bypassConsumerGuardForNegativeTest
+#endif
+        )
+        { fallback(); return; }
         std::unique_lock lock(mContextMutex, std::try_to_lock);
         if (!lock.owns_lock()) { fallback(); return; }
 #ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
@@ -282,15 +325,6 @@ public:
             }
         }
         gpu = gpu && indexed && indexed64;
-        if (gpu)
-        {
-            GLint feedback = GL_FALSE, paused = GL_FALSE, actualProgram = 0;
-            glGetIntegerv(GL_TRANSFORM_FEEDBACK_ACTIVE, &feedback);
-            glGetIntegerv(GL_TRANSFORM_FEEDBACK_PAUSED, &paused);
-            glGetIntegerv(GL_CURRENT_PROGRAM, &actualProgram);
-            if ((feedback && !paused) || glIsEnabled(GL_RASTERIZER_DISCARD)
-                || static_cast<GLuint>(actualProgram) != (consumer ? consumer->getHandle() : 0)) gpu = false;
-        }
         if (gpu)
         {
             mCompute->compileGLObjects(state);

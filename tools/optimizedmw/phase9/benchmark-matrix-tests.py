@@ -339,6 +339,45 @@ class Benchmarks(unittest.TestCase):
                 fields[key] = 1
             self.assertTrue(matrix.engagement(path, requested, 0, 48, work)['all_requested_positive'])
 
+    def test_consumption_and_paging_flags_require_each_measured_counter(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            (path/'openmw.log').write_text(
+                'OptimizedMW indirect projection proof reuse: reuses=99 scope=same_draw\n'
+                'OptimizedMW indirect early admission fallback: new_owner_refusals=99 contended_inspections=0\n'
+                'OptimizedMW paging score value reuse: runs=4 pow_reuses=99 pow_computations=12\n')
+            requested = {'indirect projection proof reuse':'true', 'indirect early admission fallback':'true',
+                         'paging score value reuse':'true'}
+            self.assertFalse(matrix.engagement(path, requested)['all_requested_positive'])
+            fields = dict.fromkeys(matrix.indirect_work.EXTENDED_COUNTERS, 0)
+            work = {'phases': {'moving': {'counts': fields}}}
+            self.assertFalse(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            fields['projection_proof_reuses'] = 1
+            result = matrix.engagement(path, requested, work=work)
+            self.assertTrue(result['positive_work']['indirect_projection_proof_reuse'])
+            self.assertFalse(result['all_requested_positive'])
+            fields['early_admission_fallbacks'] = fields['paging_pow_reuses'] = 1
+            self.assertTrue(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            legacy = {'phases': {'moving': {'counts': dict.fromkeys(matrix.indirect_work.COUNTERS, 999)}}}
+            self.assertFalse(matrix.engagement(path, requested, work=legacy)['all_requested_positive'])
+
+    def test_preload_priority_needs_new_admission_and_actual_interval_start(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            (path/'openmw.log').write_text('OptimizedMW preload priority promotion: submitted=9 promoted=9 started=9 fairness=0\n')
+            requested = {'preload priority promotion':'true'}
+            self.assertFalse(matrix.engagement(path, requested)['all_requested_positive'])
+            fields = dict.fromkeys(matrix.indirect_work.PREPARATION_EXTENDED_COUNTERS, 0)
+            work = {'phases': {'moving': {'counts': fields}}}
+            fields['preload_priority_promoted'] = 1
+            self.assertFalse(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            fields['preload_priority_started'] = 1
+            self.assertTrue(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            fields['preload_priority_promoted'] = 0
+            self.assertFalse(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            fields['preload_priority_submitted'] = 1
+            self.assertTrue(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+
     def test_ordinary_packet_submission_cannot_qualify_inert_indirect_or_gpu_work(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)

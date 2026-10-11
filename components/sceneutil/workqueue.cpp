@@ -5,6 +5,8 @@
 #include <components/debug/v3diagnostics.hpp>
 
 #include <cstdint>
+#include <algorithm>
+#include <iterator>
 #include <iomanip>
 #include <numeric>
 #include <optional>
@@ -111,7 +113,7 @@ namespace SceneUtil
         mThreads.clear();
     }
 
-    void WorkQueue::addWorkItem(osg::ref_ptr<WorkItem> item, bool front)
+    void WorkQueue::addWorkItem(osg::ref_ptr<WorkItem> item, bool front, Priority priority)
     {
         if (item->isDone())
         {
@@ -138,8 +140,16 @@ namespace SceneUtil
         {
             std::unique_lock<std::mutex> lock(mMutex);
             if (enqueue) metadata.mQueued = Debug::HitchTrace::Clock::now();
-            if (front)
-                mQueue.push_front({ std::move(item), metadata });
+            if (front || priority == Priority::Urgent)
+                mQueue.push_front({ std::move(item), metadata, Priority::Urgent });
+            else if (priority == Priority::NearFuture && mQueue.size() <= 256)
+            {
+                const auto before = std::find_if(mQueue.begin(), mQueue.end(), [](const auto& entry) {
+                    return entry.mPriority == Priority::Background;
+                });
+                mQueue.insert(before, { std::move(item), metadata, priority });
+                ++PriorityStats::submitted;
+            }
             else
                 mQueue.push_back({ std::move(item), metadata });
             queueDepth = mQueue.size();
@@ -162,6 +172,25 @@ namespace SceneUtil
         }
     }
 
+    bool WorkQueue::promoteWorkItem(const WorkItem* item)
+    {
+        if (!item) return false;
+        std::lock_guard lock(mMutex);
+        // Bound gameplay inspection/reordering for an unexpected backlog.
+        if (mIsReleased || mQueue.size() > 256) return false;
+        const auto target = std::find_if(mQueue.begin(), mQueue.end(), [item](const auto& entry) {
+            return entry.mItem.get() == item;
+        });
+        if (target == mQueue.end() || target->mPriority != Priority::Background) return false;
+        const auto before = std::find_if(mQueue.begin(), target, [](const auto& entry) {
+            return entry.mPriority == Priority::Background;
+        });
+        target->mPriority = Priority::NearFuture;
+        std::rotate(before, target, std::next(target));
+        ++PriorityStats::promoted;
+        return true;
+    }
+
     osg::ref_ptr<WorkItem> WorkQueue::removeWorkItem(WorkTraceMetadata* trace)
     {
         std::unique_lock<std::mutex> lock(mMutex);
@@ -171,8 +200,22 @@ namespace SceneUtil
         }
         if (!mQueue.empty())
         {
-            QueueEntry entry = std::move(mQueue.front());
-            mQueue.pop_front();
+            auto selected = mQueue.begin();
+            if (selected->mPriority == Priority::NearFuture && mNearFutureBurst >= MaximumNearFutureBurst)
+            {
+                const auto background = std::find_if(mQueue.begin(), mQueue.end(), [](const auto& entry) {
+                    return entry.mPriority == Priority::Background;
+                });
+                if (background != mQueue.end()) { selected = background; ++PriorityStats::fairness; }
+            }
+            QueueEntry entry = std::move(*selected);
+            mQueue.erase(selected);
+            if (entry.mPriority == Priority::NearFuture)
+            {
+                if (mNearFutureBurst < MaximumNearFutureBurst) ++mNearFutureBurst;
+                ++PriorityStats::consumed;
+            }
+            else if (entry.mPriority == Priority::Background) mNearFutureBurst = 0;
             if (trace)
             {
                 *trace = entry.mTrace;

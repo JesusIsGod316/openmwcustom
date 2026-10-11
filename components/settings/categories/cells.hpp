@@ -48,6 +48,14 @@ namespace Settings
             mIndex, "Optimizations", "indirect context capability reuse" };
         SettingValue<bool> mOptimizedMWGpuVisibilityOpportunityFilter{
             mIndex, "Optimizations", "gpu visibility opportunity filter" };
+        SettingValue<bool> mOptimizedMWIndirectProjectionProofReuse{
+            mIndex, "Optimizations", "indirect projection proof reuse" };
+        SettingValue<bool> mOptimizedMWIndirectEarlyAdmissionFallback{
+            mIndex, "Optimizations", "indirect early admission fallback" };
+        SettingValue<bool> mOptimizedMWPagingScoreValues{
+            mIndex, "Cells", "paging score value reuse" };
+        SettingValue<bool> mOptimizedMWPreloadPriorityPromotion{
+            mIndex, "Cells", "preload priority promotion" };
         SettingValue<bool> mOptimizedMWActiveShadowBatching{ mIndex, "Shadows", "active batching" };
         SettingValue<bool> mOptimizedMWShadowStaticBatching{
             mIndex, "Shadows", "static batching" };

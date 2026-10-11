@@ -50,6 +50,26 @@ def outputs():
         "keeps that strong control. Collision, picking, shadows and secondary views\n"
         "retain original geometry. Selection alone does not establish runtime use.\n\n"
         "ADDITIONAL INDEPENDENT CONTROLS\n"
+        "[Cells] preload priority promotion = false\n"
+        "Move an already admitted, still-queued cell job into the near-future lane and\n"
+        "enqueue new near-future jobs there. Preserve existing urgent/front jobs, FIFO\n"
+        "within each lane, the same capacity/owner and four-start background fairness.\n"
+        "No additional workers or changes to a running producer's memory policy.\n"
+        "Queue-start counts prove scheduling engagement, not CPU readiness/adoption.\n"
+        "[Cells] paging score value reuse = false\n"
+        "Requires actual paging vertex-cache optimization work. Reuse exact float\n"
+        "power-function results within a single preparation job. Triangle scoring,\n"
+        "tie order and index output remain the control contract. Large valences keep\n"
+        "ordinary computation. This targets preparation cost, not draw-call count.\n"
+        "[Optimizations] indirect projection proof reuse = false\n"
+        "Requires the indirect pipeline. Reuse the successful full projection-family\n"
+        "proof inside that same draw's held source-reader scope and exact State/Program.\n"
+        "The initial full source/import check and actual consumed projection remain.\n"
+        "[Optimizations] indirect early admission fallback = false\n"
+        "Requires the indirect pipeline. When the existing cached admission sample\n"
+        "refuses new private storage, draw live ordinary geometry before optional proof.\n"
+        "Contended inspections also use the ordinary path without waiting. Existing\n"
+        "owners retain their proof/fence rules; budgets and memory floors are unchanged.\n\n"
         "[Cells] lod retain source indices = false\n"
         "Requires the L1 lane. Share immutable source primitives while cooking;\n"
         "only actual reduced outputs receive new indices/EBOs. Cache-hit admission\n"
@@ -101,6 +121,10 @@ def outputs():
         ("Optimizations", "indirect command reuse"): "false",
         ("Optimizations", "indirect context capability reuse"): "false",
         ("Optimizations", "gpu visibility opportunity filter"): "false",
+        ("Optimizations", "indirect projection proof reuse"): "false",
+        ("Optimizations", "indirect early admission fallback"): "false",
+        ("Cells", "paging score value reuse"): "false",
+        ("Cells", "preload priority promotion"): "false",
         ("Camera", "coarse chunk occlusion"): "true",
         ("Camera", "focus refresh interval frames"): "2",
         ("Camera", "full body first person"): "true",

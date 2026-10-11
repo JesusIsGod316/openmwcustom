@@ -183,6 +183,25 @@ def engagement(profile, requested, asset_mask=0, architecture_mask=0, work=None)
         matches = re.findall(r'OptimizedMW gpu visibility opportunity:.*?original_draws=(\d+)(?=\s|$)',text)
         positive['gpu_visibility_opportunity_filter'] = bool(matches and int(matches[-1])>0 and work is not None
             and indirect_work.positive_counts(work, 'opportunity_original_draws'))
+    if requested.get('indirect projection proof reuse') == 'true':
+        matches = re.findall(r'OptimizedMW indirect projection proof reuse:.*?reuses=(\d+)(?=\s|$)',text)
+        positive['indirect_projection_proof_reuse'] = bool(matches and int(matches[-1])>0 and work is not None
+            and indirect_work.positive_counts(work, 'projection_proof_reuses'))
+    if requested.get('indirect early admission fallback') == 'true':
+        matches = re.findall(r'OptimizedMW indirect early admission fallback:.*?new_owner_refusals=(\d+).*?contended_inspections=(\d+)',text)
+        positive['indirect_early_admission_fallback'] = bool(matches and any(int(value)>0 for value in matches[-1])
+            and work is not None and (indirect_work.positive_counts(work, 'early_admission_fallbacks')
+                or indirect_work.positive_counts(work, 'early_busy_fallbacks')))
+    if requested.get('paging score value reuse') == 'true':
+        matches = re.findall(r'OptimizedMW paging score value reuse:.*?pow_reuses=(\d+)(?=\s|$)',text)
+        positive['paging_score_value_reuse'] = bool(matches and int(matches[-1])>0 and work is not None
+            and indirect_work.positive_counts(work, 'paging_pow_reuses'))
+    if requested.get('preload priority promotion') == 'true':
+        matches = re.findall(r'OptimizedMW preload priority promotion:.*?submitted=(\d+).*?promoted=(\d+).*?started=(\d+)', text)
+        positive['preload_priority_promotion'] = bool(matches and int(matches[-1][2]) > 0 and work is not None
+            and indirect_work.positive_counts(work, 'preload_priority_started')
+            and (indirect_work.positive_counts(work, 'preload_priority_promoted')
+                or indirect_work.positive_counts(work, 'preload_priority_submitted')))
     return {'positive_work': positive, 'all_requested_positive': all(positive.values()),
             'limit': 'Preparation/dispatch engagement; visible resource adoption and performance require separate evidence'}
 

@@ -54,8 +54,10 @@ namespace SceneUtil::GpuIndirectPackets
         inline static std::atomic_uint64_t installSourceDeclines{0}, installCommandShapeDeclines{0};
         inline static std::atomic_uint64_t capabilityDraws{0}, capabilitySnapshots{0}, gpuResolutionsAvoided{0};
         inline static std::atomic_uint64_t visibilityOriginalDraws{0}, visibilityDispatchesAvoided{0};
+        inline static std::atomic_uint64_t projectionProofReuses{0}, earlyAdmissionFallbacks{0}, earlyBusyFallbacks{0};
 #ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
         inline static std::atomic_uint64_t actualVersionQueries{0}, actualFunctionResolutions{0};
+        inline static std::atomic_uint64_t actualProducerProofChecks{0};
 #endif
     };
     // Configure before paging workers start. Each produced primitive captures
@@ -63,6 +65,8 @@ namespace SceneUtil::GpuIndirectPackets
     inline std::atomic_bool reuseIndirectCommands{false};
     inline std::atomic_bool reuseContextCapabilities{false};
     inline std::atomic_bool filterVisibilityOpportunity{false};
+    inline std::atomic_bool reuseProjectionProof{false};
+    inline std::atomic_bool earlyAdmissionFallback{false};
     using Sample = Resource::OpenGlPressureSample (*)(void*);
     // Startup/shutdown only, beside the existing upload-pool sampler; no new
     // OS query is introduced on a draw or paging worker.
@@ -102,15 +106,50 @@ namespace SceneUtil::GpuIndirectPackets
         return inherited;
     }
 
-    inline bool linearObjectProjection(const osg::Program* program)
+    // A successful full producer proof may be borrowed only inside this draw's
+    // held reader, for its exact State/Program on this thread. No cross-frame
+    // recipe, context or uniform-value cache is created. Nested scopes restore
+    // their predecessor, including failed/disabled scopes.
+    class ProjectionProofScope
+    {
+    public:
+        ProjectionProofScope(const osg::State* state, const osg::Program* program, bool verified)
+            : mPrevious(sCurrent), mState(state), mProgram(program)
+            , mVerified(verified && state && program && Shader::IndirectProjection::producerReaders)
+        { sCurrent = this; }
+        ~ProjectionProofScope() { sCurrent = mPrevious; }
+        ProjectionProofScope(const ProjectionProofScope&) = delete;
+        ProjectionProofScope& operator=(const ProjectionProofScope&) = delete;
+        static bool current(const osg::State* state, const osg::Program* program)
+        {
+            return sCurrent && sCurrent->mVerified && Shader::IndirectProjection::producerReaders
+                && sCurrent->mState == state && sCurrent->mProgram == program;
+        }
+    private:
+        inline static thread_local const ProjectionProofScope* sCurrent = nullptr;
+        const ProjectionProofScope* mPrevious;
+        const osg::State* mState;
+        const osg::Program* mProgram;
+        const bool mVerified;
+    };
+
+    inline bool linearObjectProjection(const osg::Program* program, const osg::State* state = nullptr)
     {
         if (!program) return true; // Exact legacy fixed-function matrix path.
+        if (ProjectionProofScope::current(state, program))
+        { ++Counters::projectionProofReuses; return true; }
+#ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
+        ++Counters::actualProducerProofChecks;
+#endif
         return Shader::IndirectProjection::matches(*program);
     }
 
     inline bool commandProgramSafe(const osg::Program* program, const osg::State& state)
     {
         if (!program) return true;
+#ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
+        ++Counters::actualProducerProofChecks;
+#endif
         // Custom shaders can observe changed draw boundaries or vertex-cache
         // invocation counts through side effects. Token resemblance is not a
         // purity certificate. Exact shipped object recipes (including their
@@ -186,6 +225,8 @@ void main() {
         Draw(osg::Geometry* candidate, const osg::Geometry& source, std::shared_ptr<Capacity> capacity)
             : mCandidate(candidate), mCapacity(std::move(capacity)), mVertex(source.getVertexArray())
             , mVertexGeneration(mVertex->getModifiedCount()), mMaterial(source.getStateSet())
+            , mReuseProjectionProof(reuseProjectionProof.load(std::memory_order_relaxed))
+            , mEarlyAdmissionFallback(earlyAdmissionFallback.load(std::memory_order_relaxed))
         {
             for (const auto& primitive : source.getPrimitiveSetList())
             {
@@ -195,9 +236,18 @@ void main() {
         }
         void drawImplementation(osg::RenderInfo& info, const osg::Drawable* drawable) const override
         {
-            Shader::IndirectProjection::ProducerReadScope producer;
             const auto* geometry = drawable ? drawable->asGeometry() : nullptr;
             const auto* state = info.getState();
+            if (mEarlyAdmissionFallback && state && mCandidate->getNumPrimitiveSets() == 1
+                && static_cast<const Primitive*>(mCandidate->getPrimitiveSet(0))->earlyFallbackBeforeProof(*state))
+            {
+                // Always draw the live authoritative source. In particular,
+                // no stale candidate arrays/indices or shader proof is used.
+                ++Counters::fallbacks;
+                if (drawable) drawable->drawImplementation(info);
+                return;
+            }
+            Shader::IndirectProjection::ProducerReadScope producer;
             const auto* pcp = state ? state->getLastAppliedProgramObject() : nullptr;
             const bool safeProgram = producer && state && commandProgramSafe(pcp ? pcp->getProgram() : nullptr, *state);
             if (!safeProgram) ++Counters::unknownShaders;
@@ -224,7 +274,12 @@ void main() {
             }
             if (current) for (unsigned i = 0; i < geometry->getNumPrimitiveSets(); ++i)
                 current = current && mProducer[i].matches(geometry->getPrimitiveSet(i));
-            if (current) mCandidate->drawImplementation(info);
+            if (current)
+            {
+                ProjectionProofScope proof(state, pcp ? pcp->getProgram() : nullptr,
+                    mReuseProjectionProof && safeProgram && producer);
+                mCandidate->drawImplementation(info);
+            }
             else
             {
                 Counters::fallbacks.fetch_add(1, std::memory_order_relaxed);
@@ -244,6 +299,7 @@ void main() {
         osg::ref_ptr<const osg::StateSet> mMaterial;
         std::vector<PersistentOpaquePackets::PrimitiveRevision> mProducer;
         std::vector<osg::ref_ptr<const osg::PrimitiveSet>> mPrimitiveOwners;
+        const bool mReuseProjectionProof = false, mEarlyAdmissionFallback = false;
     };
 
     inline bool install(osg::Geometry& original, bool requested = indirectEnabled(), bool gpu = visibilityEnabled())

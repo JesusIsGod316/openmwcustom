@@ -78,7 +78,9 @@ namespace SceneUtil
             PagingVertexCache::Statistics stats;
             Debug::HitchTrace::Scope exactWork("paging.vertex_cache_order", Debug::HitchTrace::CpuTiming::Scoped);
             const bool reduced = exactPagingWorkReductionEnabled();
-            const auto result = PagingVertexCache::optimize(input, vertices->getNumElements(), output, stop, stats, reduced);
+            const bool scoreValues = reusePagingScoreValues.load(std::memory_order_relaxed);
+            const auto result = PagingVertexCache::optimize(
+                input, vertices->getNumElements(), output, stop, stats, reduced, 1, scoreValues);
             if (reduced)
             {
                 ++ExactPagingWorkCounters::runs;
@@ -87,6 +89,13 @@ namespace SceneUtil
                 ExactPagingWorkCounters::scoreReuses.fetch_add(stats.scoreReuses, std::memory_order_relaxed);
                 ExactPagingWorkCounters::heapComparisons.fetch_add(stats.heapComparisons, std::memory_order_relaxed);
                 ExactPagingWorkCounters::unchangedHeapUpdates.fetch_add(stats.unchangedHeapUpdates, std::memory_order_relaxed);
+            }
+            if (scoreValues)
+            {
+                ++ExactPagingWorkCounters::scoreTableRuns;
+                ExactPagingWorkCounters::scoreTableHits.fetch_add(stats.scoreTableHits, std::memory_order_relaxed);
+                ExactPagingWorkCounters::scoreTableComputations.fetch_add(stats.scoreTableComputations, std::memory_order_relaxed);
+                ExactPagingWorkCounters::scoreTableUncached.fetch_add(stats.scoreTableUncached, std::memory_order_relaxed);
             }
             exactWork.setMetric(0, "exact_reduction", reduced);
             exactWork.setMetric(1, "triangles", input.size() / 3);
