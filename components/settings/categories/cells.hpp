@@ -38,8 +38,12 @@ namespace Settings
             mIndex, "Cells", "material image preparation mib", makeClampSanitizerInt(16, 256) };
         SettingValue<bool> mOptimizedMWLodCacheHitAdmission{
             mIndex, "Cells", "lod cache hit admission" };
+        SettingValue<bool> mOptimizedMWLodRetainSourceIndices{
+            mIndex, "Cells", "lod retain source indices" };
         SettingValue<bool> mOptimizedMWOrdinaryOpaquePackets{
             mIndex, "Cells", "ordinary opaque packets" };
+        SettingValue<bool> mOptimizedMWIndirectCommandReuse{
+            mIndex, "Optimizations", "indirect command reuse" };
         SettingValue<bool> mOptimizedMWActiveShadowBatching{ mIndex, "Shadows", "active batching" };
         SettingValue<bool> mOptimizedMWShadowStaticBatching{
             mIndex, "Shadows", "static batching" };

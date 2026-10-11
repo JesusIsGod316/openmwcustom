@@ -24,6 +24,16 @@ Ordinary strong preparation precedes optional L1 cooking; resource denial
 keeps that strong control. Collision, picking, shadows and secondary views
 retain original geometry. Selection alone does not establish runtime use.
 
+ADDITIONAL INDEPENDENT CONTROLS
+[Cells] lod retain source indices = false
+Requires the L1 lane. Share immutable source primitives while cooking;
+only actual reduced outputs receive new indices/EBOs. Cache-hit admission
+is independent. Control retains the existing deep primitive copy.
+[Optimizations] indirect command reuse = false
+Requires the opaque indirect or GPU visibility pipeline. Reuse populated
+CPU command slots; refill a slot after GPU visibility has changed it.
+Existing slot fences, pressure admission and ordinary fallbacks remain.
+
 LEGACY LOCATION -> DESCRIPTIVE LOCATION
 [Camera] v3.21 full body first person -> [Camera] full body first person
 [Camera] v3.21 full body first person shadow compatibility -> [Camera] full body first person shadow compatibility

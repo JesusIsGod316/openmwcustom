@@ -279,6 +279,6 @@ namespace SceneUtil::AssetPaging
     };
     Tiers buildTiers(osg::Node& originalSource, osg::Group& optimizedControl, std::string_view identity,
         unsigned eligible, osg::Camera* mainCamera, Outcome& outcome, bool activeGridLod = false,
-        bool cacheHitAdmission = false);
+        bool cacheHitAdmission = false, bool retainSourceIndices = false);
 }
 #endif

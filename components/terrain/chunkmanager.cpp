@@ -27,6 +27,7 @@
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/material.hpp>
 #include <components/sceneutil/drawphasetrace.hpp>
+#include <components/sceneutil/bufferpreparationscope.hpp>
 #include <components/sceneutil/prepjobservice.hpp>
 #include <components/settings/values.hpp>
 
@@ -134,7 +135,10 @@ namespace Terrain
                 osg::GLBufferObject* glBuffer
                     = mBuffer->getOrCreateGLBufferObject(info.getState()->getContextID());
                 if (glBuffer && glBuffer->isDirty())
+                {
+                    SceneUtil::BufferPreparationScope bufferState(info.getState());
                     glBuffer->compileBuffer();
+                }
                 return true;
             }
 

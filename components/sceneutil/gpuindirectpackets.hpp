@@ -47,7 +47,11 @@ namespace SceneUtil::GpuIndirectPackets
         inline static std::atomic_uint64_t built{ 0 }, draws{ 0 }, commands{ 0 }, dispatches{ 0 };
         inline static std::atomic_uint64_t fallbacks{ 0 }, busySlots{ 0 }, unknownShaders{ 0 }, liveBytes{ 0 };
         inline static std::atomic_uint64_t liveOwners{ 0 }, admissionDeclines{ 0 };
+        inline static std::atomic_uint64_t commandUploads{0}, commandUploadBytes{0}, commandUploadsAvoided{0};
     };
+    // Configure before paging workers start. Each produced primitive captures
+    // its cohort, so no live draw changes policy underneath pending commands.
+    inline std::atomic_bool reuseIndirectCommands{false};
     using Sample = Resource::OpenGlPressureSample (*)(void*);
     // Startup/shutdown only, beside the existing upload-pool sampler; no new
     // OS query is introduced on a draw or paging worker.

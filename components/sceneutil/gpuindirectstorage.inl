@@ -74,6 +74,7 @@ struct Context
 {
     unsigned id = ~0u, next = 0;
     bool failed = false;
+    std::array<bool, 2> gpuCommands{};
     RetiredStorage storage;
     osg::ref_ptr<SyncRetirement> retirement;
 };
@@ -84,7 +85,8 @@ public:
     Primitive() : osg::DrawElementsUInt(GL_TRIANGLES) {}
     Primitive(const Primitive& copy, const osg::CopyOp& op = osg::CopyOp::SHALLOW_COPY)
         : osg::DrawElementsUInt(copy, op), mBase(copy.mBase), mBounds(copy.mBounds), mLeaf(copy.mLeaf)
-        , mCompute(copy.mCompute), mCapacity(copy.mCapacity), mOriginal(copy.mOriginal) {}
+        , mCompute(copy.mCompute), mCapacity(copy.mCapacity), mOriginal(copy.mOriginal)
+        , mReuseCommands(copy.mReuseCommands) {}
     META_Object(SceneUtil, Primitive)
 
     Primitive(std::vector<unsigned>&& indices, std::vector<osg::DrawElementsIndirectCommand>&& commands,
@@ -92,6 +94,7 @@ public:
         const osg::Geometry::PrimitiveSetList& original)
         : osg::DrawElementsUInt(GL_TRIANGLES, indices.begin(), indices.end()), mBase(std::move(commands))
         , mBounds(bounds), mLeaf(leaf), mGpu(gpu), mCapacity(std::move(capacity)), mProduced(true), mOriginal(original)
+        , mReuseCommands(reuseIndirectCommands.load(std::memory_order_relaxed))
     {
         mCompute = new osg::Program;
         mCompute->addShader(new osg::Shader(osg::Shader::COMPUTE, computeSource()));
@@ -111,6 +114,7 @@ public:
 
 #ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
     inline static bool forceBusy = false;
+    inline static bool forceCpuCommands = false;
     std::vector<osg::DrawElementsIndirectCommand> readLastCommands(osg::State& state) const
     {
         std::vector<osg::DrawElementsIndirectCommand> output;
@@ -181,6 +185,9 @@ public:
         const osg::Program* program = consumer ? consumer->getProgram() : nullptr;
         bool gpu = mGpu && osg::getGLVersionNumber() >= 4.3f && ext->glDispatchCompute && ext->glMemoryBarrier
             && ext->glBindBufferRange && ext->glBindBufferBase && ext->glUniform1ui && ext->glUniformMatrix4fv;
+#ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
+        if (forceCpuCommands) gpu = false;
+#endif
         osg::Matrixf projection(state.getProjectionMatrix());
         if (gpu && (!linearObjectProjection(program)
             || (program && (!appliedProjection(state, mLeaf) || !appliedProjection(state, mLeaf)->get(projection)))))
@@ -225,6 +232,7 @@ public:
                 ext->glUniform1ui(compute->getUniformLocation("rows"), static_cast<GLuint>(mBase.size()));
                 ext->glDispatchCompute(static_cast<GLuint>((mBase.size() + 31) / 32), 1, 1);
                 ext->glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+                found->gpuCommands[selected] = true;
                 ext->glUseProgram(static_cast<GLuint>(actualProgram));
                 for (unsigned i = 0; i < 2; ++i)
                     if (binding[i] && size[i] > 0) ext->glBindBufferRange(GL_SHADER_STORAGE_BUFFER, i,
@@ -235,8 +243,20 @@ public:
             }
         }
         if (!gpu)
-            ext->glBufferSubData(GL_DRAW_INDIRECT_BUFFER, 0,
-                static_cast<osg::GLsizeiptr>(mBase.size() * sizeof(osg::DrawElementsIndirectCommand)), mBase.data());
+        {
+            // initialize() already populated each private slot with mBase.
+            // Only a GPU visibility write can change those immutable commands.
+            // Fence selection above still proves that the slot is available.
+            if (!mReuseCommands || found->gpuCommands[selected])
+            {
+                const auto bytes = mBase.size() * sizeof(osg::DrawElementsIndirectCommand);
+                ext->glBufferSubData(GL_DRAW_INDIRECT_BUFFER, 0, static_cast<osg::GLsizeiptr>(bytes), mBase.data());
+                found->gpuCommands[selected] = false;
+                ++Counters::commandUploads;
+                Counters::commandUploadBytes.fetch_add(bytes, std::memory_order_relaxed);
+            }
+            else ++Counters::commandUploadsAvoided;
+        }
         ext->glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, nullptr,
             static_cast<GLsizei>(mBase.size()), sizeof(osg::DrawElementsIndirectCommand));
         found->storage.fences[selected] = ext->glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -272,6 +292,7 @@ private:
         auto* ext = state.get<osg::GLExtensions>();
         GLint previous = 0; glGetIntegerv(GL_ARRAY_BUFFER_BINDING_ARB, &previous);
         context.id = state.getContextID(); context.retirement = retirement;
+        context.gpuCommands = {};
         context.storage.capacity = mCapacity;
         context.storage.context = state.getContextID();
         ext->glGenBuffers(static_cast<GLsizei>(context.storage.buffers.size()), context.storage.buffers.data());
@@ -309,6 +330,7 @@ private:
     std::shared_ptr<Capacity> mCapacity;
     bool mProduced = false;
     const osg::Geometry::PrimitiveSetList mOriginal;
+    bool mReuseCommands = false;
     mutable std::array<Context, 4> mContexts;
     mutable std::mutex mContextMutex;
 };

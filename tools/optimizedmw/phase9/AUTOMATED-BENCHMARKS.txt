@@ -7,7 +7,11 @@ settings between runs; do not compile or change packages during a comparison.
 prepare material images = false
 material image preparation mib = 64
 lod cache hit admission = false
+lod retain source indices = false
 ordinary opaque packets = false
+
+[Optimizations]
+indirect command reuse = false
 
 Material images discovers animated-template future images and their normal,
 normal-height and specular companions through the same VFS/naming rules as the
@@ -20,6 +24,18 @@ LOD cache-hit admission avoids packing attributes and reserving simplifier
 scratch for a validated existing reduced-index product. A miss extends the
 reservation before cooking, or retains the ordinary fallback. Requires the
 existing generated-static-LOD asset lane (AssetMask 1).
+
+LOD source-index retention shares the certified immutable source primitives
+until reduced indices replace them. It avoids a full original index copy and
+its admission allowance, on both cache hits and misses. Source arrays, VBOs,
+EBOs and the actual reduced recipe remain unchanged. Requires AssetMask 1;
+compare with identical cache-hit admission and memory settings in the control.
+
+Indirect command reuse avoids resubmitting unchanged CPU command lists into
+already populated private slots. A GPU-written slot is restored once before
+CPU reuse; the existing fences and busy-slot fallback are retained. Requires
+ArchitectureMask 32 (indirect) or 64 (GPU visibility) in both sides of a pair.
+Counters must show command uploads avoided before any performance comparison.
 
 Ordinary opaque packets extends packet attachment into original-source-certified
 ordinary paging groups, preserving material/transform ancestry and transparent

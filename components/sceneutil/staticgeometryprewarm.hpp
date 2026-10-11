@@ -5,6 +5,7 @@
 #include <osg/BufferObject>
 #include <osg/RenderInfo>
 #include <osg/State>
+#include "bufferpreparationscope.hpp"
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -63,6 +64,7 @@ namespace SceneUtil::StaticGeometryPrewarm
         if(!state || !geometry.getUseVertexBufferObjects())return result;
         auto* ext=state->get<osg::GLExtensions>();
         if(!ext || !ext->isBufferObjectSupported)return result;
+        SceneUtil::BufferPreparationScope bufferState(state);
         const auto* vertices=geometry.getVertexArray();
         const osg::BufferObject* privatePose=vertices?vertices->getBufferObject():nullptr;
         std::array<osg::BufferObject*,32> buffers{};
@@ -97,9 +99,6 @@ namespace SceneUtil::StaticGeometryPrewarm
             if(gl->isDirty()) { gl->compileBuffer();++result.compiled;result.bytes+=bytes; }
             else ++result.clean;
         }
-        // Manual compileBuffer binds GL directly; leave OSG's binding caches
-        // invalidated. Attribute pointers and GL identities are not rewritten.
-        state->unbindVertexBufferObject();state->unbindElementBufferObject();
         return result;
     }
     inline void prepare(osg::RenderInfo& info,const osg::Geometry* geometry)

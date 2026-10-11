@@ -7,6 +7,7 @@
 #include <components/debug/v3diagnostics.hpp>
 #include <components/debug/compileattribution.hpp>
 #include <components/debug/hitchtrace.hpp>
+#include <components/sceneutil/bufferpreparationscope.hpp>
 
 #include <osg/Array>
 #include <osg/Geometry>
@@ -377,6 +378,7 @@ namespace Resource
 
     void OpenMWIncrementalCompileOperation::operator()(osg::GraphicsContext* context)
     {
+        SceneUtil::BufferPreparationScope bufferState(context ? context->getState() : nullptr);
         // Actual OSG CompileTextureOp dispatches Texture::apply(), not
         // compileGLObjects(). The bounded native owner alone uploads opted-in
         // MainDraw candidates. Force-download geometry keeps its exact apply

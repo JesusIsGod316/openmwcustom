@@ -3,6 +3,7 @@
 #include <array>
 #include <iostream>
 #include <stdexcept>
+#include <string_view>
 
 namespace Packet = SceneUtil::GpuIndirectPackets;
 namespace Contract = Shader::IndirectProjection;
@@ -124,8 +125,10 @@ osg::ref_ptr<osg::Program> fixtureProgram(bool certified)
     return result;
 }
 
-int main() try
+int main(int argc, char** argv) try
 {
+    const bool reuse = argc > 1 && std::string_view(argv[1]) == "--reuse-commands";
+    Packet::reuseIndirectCommands.store(reuse);
     const auto initialBytes = Packet::Counters::liveBytes.load();
     auto original = geometry();
     osg::ref_ptr<osg::Geometry> control = new osg::Geometry(*original, osg::CopyOp::SHALLOW_COPY);
@@ -178,6 +181,28 @@ int main() try
     compare();
     require(Packet::Counters::draws.load() > 0 && Packet::Counters::dispatches.load() > 0,
         "candidate performed no real indirect draw/compute visibility dispatch");
+    const auto uploads = Packet::Counters::commandUploads.load();
+    const auto avoided = Packet::Counters::commandUploadsAvoided.load();
+    const auto consumed = Packet::Counters::draws.load();
+    // At least one slot contains a real GPU-written visibility result. Return
+    // to CPU commands, then reuse both slots, comparing actual pixels each time.
+    Packet::Primitive::forceCpuCommands = true;
+    for (unsigned i=0;i<12;++i) compare();
+    Packet::Primitive::forceCpuCommands = false;
+    require(Packet::Counters::draws.load() == consumed+12,"command reuse fixture fell back instead of drawing");
+    if (reuse)
+        require(Packet::Counters::commandUploads.load() <= uploads+2
+            && Packet::Counters::commandUploads.load() > uploads
+            && Packet::Counters::commandUploadsAvoided.load() >= avoided+10,
+            "GPU-written commands were not restored once before immutable slot reuse");
+    else
+        require(Packet::Counters::commandUploads.load() == uploads+12
+            && Packet::Counters::commandUploadsAvoided.load() == avoided,
+            "control no longer performs its original per-draw command upload");
+    std::cout<<"INDIRECT_COMMAND_REUSE_PROOF enabled="<<reuse
+        <<" uploads="<<Packet::Counters::commandUploads.load()-uploads
+        <<" avoided="<<Packet::Counters::commandUploadsAvoided.load()-avoided<<" exact_pixels=1\n";
+    compare(); // Restore a GPU visibility result before inspecting its rejection.
     require(pixels->commands.size() == 3 && pixels->commands[0].instanceCount == 1
         && pixels->commands[1].instanceCount == 1 && pixels->commands[2].instanceCount == 0,
         "GPU did not conservatively reject the actual offscreen cluster");

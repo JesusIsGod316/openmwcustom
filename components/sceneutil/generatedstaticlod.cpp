@@ -314,7 +314,7 @@ namespace SceneUtil::GeneratedStaticLod
         struct Size
         {
             std::size_t nodes = 0, geometries = 0, vertices = 0, indices = 0, bytes = 0;
-            std::uint64_t scratch = 0, serialized = 0, cacheOverlap = 0, graphBytes = 0;
+            std::uint64_t scratch = 0, serialized = 0, cacheOverlap = 0, graphBytes = 0, primitiveBytes = 0;
             std::set<const osg::Program*> programs;
         };
         bool emptyLoaderMarker(const osg::Node& node, Size& size, unsigned depth)
@@ -369,6 +369,7 @@ namespace SceneUtil::GeneratedStaticLod
                 ++size.geometries;
                 size.vertices += geometry->getVertexArray()->getNumElements();
                 size.indices += geometry->getPrimitiveSet(0)->getNumIndices();
+                size.primitiveBytes += primitive->getTotalDataSize();
                 size.bytes += geometry->getVertexArray()->getTotalDataSize() + geometry->getPrimitiveSet(0)->getNumIndices() * 4ull;
                 for (const auto* a : {geometry->getNormalArray(), geometry->getColorArray()})
                     if (a) size.bytes += a->getTotalDataSize();
@@ -709,18 +710,20 @@ namespace SceneUtil::GeneratedStaticLod
     }
     std::size_t sourceBytes(const osg::Node& original)
     { Size size; return inspectNode(original, size, 0) == Refusal::None ? size.bytes : 0; }
-    std::uint64_t cookPeakBytes(const osg::Node& original, bool cacheHitOnly)
+    std::uint64_t cookPeakBytes(const osg::Node& original, bool cacheHitOnly, bool retainSourceIndices)
     {
         Size size;
         if (inspectNode(original, size, 0) != Refusal::None || !size.geometries) return 0;
         // Arrays and StateSets remain shared with the immutable control. Deep
-        // primitive clones and every earlier tier index array can coexist;
-        // account two full uint32 index populations. The per-node allowance
+        // primitive clones and every earlier tier index array can coexist.
+        // The retained-source path omits the original primitive population;
+        // new output indices still have their full upper-bound allowance.
+        // The per-node allowance
         // covers graph vectors/OSG objects and the small lineage/draw receipts.
         // Source serialization, cache checksum/write payloads and metadata
         // remain charged alongside the largest sequential leaf operation.
         return Resource::DerivedAssets::MetadataScratchBytes + size.graphBytes
-            + size.geometries * 8192ull + size.indices * 8ull
+            + size.geometries * 8192ull + size.indices * (retainSourceIndices ? 4ull : 8ull)
             + (cacheHitOnly ? 0 : size.scratch) + size.serialized + size.cacheOverlap;
     }
     unsigned conflictingMaterialOwners(std::span<const MaterialOwner> materials, bool known)
@@ -2195,7 +2198,7 @@ namespace SceneUtil::GeneratedStaticLod
         else osg::Group::traverse(visitor); // compile both immutable representations before activation
     }
     Result build(osg::Node& original, std::string_view identity, osg::Camera* mainCamera,
-        bool reserveGpu, bool activeGridOrigin, bool cacheHitAdmission)
+        bool reserveGpu, bool activeGridOrigin, bool cacheHitAdmission, bool retainSourceIndices)
     {
         Result result;
         BuildStep step=BuildStep::Scope;
@@ -2241,8 +2244,8 @@ namespace SceneUtil::GeneratedStaticLod
             {fail(Refusal::Material);return result;}
             result.guardPhase=GuardPhase::None;
             step=BuildStep::Peak;
-            const auto graphPeak=cookPeakBytes(original,cacheHitAdmission);
-            const auto fullPeak=(cacheHitAdmission ? cookPeakBytes(original) : graphPeak)+identity.size()*2ull;
+            const auto graphPeak=cookPeakBytes(original,cacheHitAdmission,retainSourceIndices);
+            const auto fullPeak=(cacheHitAdmission ? cookPeakBytes(original,false,retainSourceIndices) : graphPeak)+identity.size()*2ull;
             peak=graphPeak+identity.size()*2ull;
             if (!graphPeak || peak>96*Resource::SpeculativeBudget::MiB || identity.size()>256*1024)
             {fail(Refusal::Capacity);return result;}
@@ -2251,8 +2254,10 @@ namespace SceneUtil::GeneratedStaticLod
             step=BuildStep::HostAdmission;
             Resource::SpeculativeScope::Stage reservation(peak,0);
             step=BuildStep::Cook;
-            osg::ref_ptr<osg::Node> derived=osg::clone(&original,
-                osg::CopyOp::DEEP_COPY_NODES|osg::CopyOp::DEEP_COPY_DRAWABLES|osg::CopyOp::DEEP_COPY_PRIMITIVES);
+            const unsigned cloneFlags=osg::CopyOp::DEEP_COPY_NODES|osg::CopyOp::DEEP_COPY_DRAWABLES
+                |(retainSourceIndices ? 0u : osg::CopyOp::DEEP_COPY_PRIMITIVES);
+            osg::ref_ptr<osg::Node> derived=osg::clone(&original,cloneFlags);
+            if(retainSourceIndices) Counters::primitiveCloneBytesAvoided.fetch_add(inspected.primitiveBytes);
             Cook cook(identity,reservation,fullPeak,cacheHitAdmission); derived->accept(cook);
             result.originalIndices=cook.before;result.derivedIndices=cook.after;result.newIndexBytes=cook.newIndexBytes;
             if (!std::isfinite(cook.error)) throw std::runtime_error("LOD error scale invalid");

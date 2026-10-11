@@ -49,6 +49,15 @@ def outputs():
         "Ordinary strong preparation precedes optional L1 cooking; resource denial\n"
         "keeps that strong control. Collision, picking, shadows and secondary views\n"
         "retain original geometry. Selection alone does not establish runtime use.\n\n"
+        "ADDITIONAL INDEPENDENT CONTROLS\n"
+        "[Cells] lod retain source indices = false\n"
+        "Requires the L1 lane. Share immutable source primitives while cooking;\n"
+        "only actual reduced outputs receive new indices/EBOs. Cache-hit admission\n"
+        "is independent. Control retains the existing deep primitive copy.\n"
+        "[Optimizations] indirect command reuse = false\n"
+        "Requires the opaque indirect or GPU visibility pipeline. Reuse populated\n"
+        "CPU command slots; refill a slot after GPU visibility has changed it.\n"
+        "Existing slot fences, pressure admission and ordinary fallbacks remain.\n\n"
         "LEGACY LOCATION -> DESCRIPTIVE LOCATION\n"
     )
     reference += "\n".join(
@@ -81,6 +90,7 @@ def outputs():
         ("Optimizations", "experimental scratch budget mb"): "128",
         ("Optimizations", "experimental concurrent builds"): "1",
         ("Optimizations", "render handoff attribution"): "false",
+        ("Optimizations", "indirect command reuse"): "false",
         ("Camera", "coarse chunk occlusion"): "true",
         ("Camera", "focus refresh interval frames"): "2",
         ("Camera", "full body first person"): "true",
@@ -115,6 +125,11 @@ def outputs():
         ("Cells", "world batching mode"): "2",
         ("Cells", "active grid prepare mode"): "2",
         ("Cells", "generated static lod active grid"): "false",
+        ("Cells", "prepare material images"): "false",
+        ("Cells", "material image preparation mib"): "64",
+        ("Cells", "lod cache hit admission"): "false",
+        ("Cells", "lod retain source indices"): "false",
+        ("Cells", "ordinary opaque packets"): "false",
         ("Cells", "prepared chunk quality mode"): "1",
         ("Shadows", "far caster minimum pixels"): "5.0",
         ("Shadows", "legacy far caster pruning mode"): "3",

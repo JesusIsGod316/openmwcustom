@@ -2002,6 +2002,8 @@ void OMW::Engine::prepareEngine()
     }
     if (SceneUtil::GpuIndirectPackets::indirectEnabled() && !mUseVulkanRenderer)
     {
+        SceneUtil::GpuIndirectPackets::reuseIndirectCommands.store(Settings::cells().mOptimizedMWIndirectCommandReuse,
+            std::memory_order_relaxed);
         SceneUtil::GpuIndirectPackets::sample=&Resource::ResourceSystem::speculativeSample;
         SceneUtil::GpuIndirectPackets::sampleOwner=mResourceSystem.get();
         SceneUtil::GpuIndirectPackets::ledger=mResourceSystem->speculativeBudget();
@@ -2708,6 +2710,7 @@ void OMW::Engine::go()
             +" active_consumed_draws="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeDerivedDraws.load())
             +" active_consumed_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeSubmittedIndices.load())
             +" cache_fast_hits="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::cacheFastHits.load())
+            +" primitive_clone_bytes_avoided="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::primitiveCloneBytesAvoided.load())
             +" cache_miss_admissions="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::cacheMissAdmissions.load());
         Log(Debug::Info) << "OptimizedMW asset compile lifecycle:" << SceneUtil::GeneratedStaticLod::compileLifecycleSummary();
         std::string lodRefusals;
@@ -2961,6 +2964,8 @@ void OMW::Engine::go()
             << " busy_slots=" << C::busySlots.load() << " unknown_shaders=" << C::unknownShaders.load()
             << " admission_declines=" << C::admissionDeclines.load()
             << " live_owned_bytes=" << C::liveBytes.load();
+        Log(Debug::Info) << std::dec << "OptimizedMW indirect command reuse: uploads=" << C::commandUploads.load()
+            << " uploaded_bytes=" << C::commandUploadBytes.load() << " command_uploads_avoided=" << C::commandUploadsAvoided.load();
     }
     if (SceneUtil::FrozenRigDeformation::enabled())
     {

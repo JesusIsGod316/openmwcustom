@@ -2337,7 +2337,8 @@ namespace MWRender
             {
                 auto& partition = *asset->second;
                 auto tiers = SceneUtil::AssetPaging::buildTiers(*partition.source,*mergeGroup,partition.identity,
-                    partition.eligible,mAssetMainCamera.get(),assetOutcome,false,Settings::cells().mOptimizedMWLodCacheHitAdmission);
+                    partition.eligible,mAssetMainCamera.get(),assetOutcome,false,Settings::cells().mOptimizedMWLodCacheHitAdmission,
+                    Settings::cells().mOptimizedMWLodRetainSourceIndices);
                 assetLod = std::move(tiers.lod);
                 assetHlod = std::move(tiers.hlod);
                 if (assetLod.node) assetDerivedHostBytes += assetLod.derivedIndices * sizeof(unsigned)
@@ -2475,7 +2476,7 @@ namespace MWRender
 #endif
                     auto tiers = SceneUtil::AssetPaging::buildTiers(*control,*control,postLodIdentity,
                         SceneUtil::AssetPaging::Lod,mAssetMainCamera.get(),assetOutcome,activeGrid,
-                        Settings::cells().mOptimizedMWLodCacheHitAdmission);
+                        Settings::cells().mOptimizedMWLodCacheHitAdmission,Settings::cells().mOptimizedMWLodRetainSourceIndices);
                     if (!tiers.lod.node) continue;
                     auto* derived = tiers.lod.node->derived();
                     osg::ref_ptr<SceneUtil::GeneratedStaticLod::Group> selector = new SceneUtil::GeneratedStaticLod::Group(

@@ -62,7 +62,11 @@ if ($Stage -eq 'Configure') {
 } else {
     $revision = (& git -C $sourceDirectory rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the game source revision' }
-    $changes = & git -C $sourceDirectory status --porcelain
+    # The root runtime-coordination instructions are user-owned context, not
+    # compiled source. Ignore only that exact untracked file; all other source
+    # and untracked changes still prevent a reproducible installation.
+    $changes = @(& git -C $sourceDirectory status --porcelain) |
+        Where-Object { $_ -ne '?? AGENTS.md' }
     if ($LASTEXITCODE -ne 0 -or $changes) { throw 'Commit the final source before installing a reproducible candidate' }
     $versionSource = Join-Path $BuildDirectory 'components\version\version.cpp'
     if (-not (Test-Path -LiteralPath $versionSource) -or

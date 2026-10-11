@@ -121,7 +121,15 @@ namespace
             if(const auto* geometry=node.asGeometry())
             {
                 const auto stream=[&](const osg::BufferData* data) {
-                    if(data){field(data,"stream_variance",data->getDataVariance());field(data,"stream_generation",data->getModifiedCount());}
+                    if(data)
+                    {
+                        field(data,"stream_variance",data->getDataVariance());field(data,"stream_generation",data->getModifiedCount());
+                        field(data,"stream_pointer",reinterpret_cast<std::uintptr_t>(data->getDataPointer()));
+                        field(data,"stream_size",data->getTotalDataSize());
+                        field(data,"buffer_owner",reinterpret_cast<std::uintptr_t>(data->getBufferObject()));
+                        field(data,"buffer_index",data->getBufferIndex());
+                        if(const auto* buffer=data->getBufferObject()) field(buffer,"buffer_data_count",buffer->getNumBufferData());
+                    }
                 };
                 stream(geometry->getVertexArray());stream(geometry->getNormalArray());stream(geometry->getColorArray());
                 for(unsigned i=0;i<geometry->getNumTexCoordArrays();++i)stream(geometry->getTexCoordArray(i));
@@ -312,6 +320,38 @@ int main(int argc, char** argv) try
                         "cache-only admission must exclude simplifier scratch");
                     std::cout << "L1_CACHE_FAST_PROOF exact_indices=1 reduced_leaf_layout=1 scratch_excluded=1 cache_fast_hits="
                         << L1::Counters::cacheFastHits.load() << '\n';
+
+                    const auto compareIndices=[&](const L1::Result& candidate) {
+                        Geometries retained; candidate.node->derived()->accept(retained);
+                        require(retained.values.size()==expected.values.size(),"index sharing changed leaf population");
+                        for(std::size_t leaf=0;leaf<expected.values.size();++leaf)
+                        {
+                            const auto* a=expected.values[leaf]->getPrimitiveSet(0);
+                            const auto* b=retained.values[leaf]->getPrimitiveSet(0);
+                            require(a->getMode()==b->getMode() && a->getNumIndices()==b->getNumIndices(),
+                                "index sharing changed output recipe");
+                            for(unsigned i=0;i<a->getNumIndices();++i) require(a->index(i)==b->index(i),
+                                "index sharing changed reduced index payload");
+                        }
+                    };
+                    const auto avoided=L1::Counters::primitiveCloneBytesAvoided.load();
+                    for(bool hit:{false,true})
+                    {
+                        auto retainedSource=privateClone(*certificateSource);
+                        GlMutationAudit before(*retainedSource);
+                        const auto retained=L1::build(*retainedSource,path.value()+"|"
+                            +Resource::DerivedAssets::digest(bytes)+(hit ? "" : "|retained-index-miss"),
+                            mainCamera,false,false,hit,true);
+                        require(retained.node && retained.newIndexBytes==result.newIndexBytes,
+                            "retained source indices failed to produce the ordinary reduced product");
+                        compareIndices(retained); before.compare(*retainedSource,"retained source index cook");
+                        require(L1::cookPeakBytes(*certificateSource,hit,true)<L1::cookPeakBytes(*certificateSource,hit),
+                            "source index retention failed to reduce the admitted peak");
+                    }
+                    require(L1::Counters::primitiveCloneBytesAvoided.load()>avoided,
+                        "source index retention did not avoid actual primitive bytes");
+                    std::cout<<"L1_RETAINED_INDEX_PROOF exact_miss_hit_indices=1 source_buffers_unchanged=1 peak_reduced=1 avoided_bytes="
+                        <<L1::Counters::primitiveCloneBytesAvoided.load()-avoided<<'\n';
                 }
             }
             std::cout << "L1_CORPUS_RESULT " << path.value() << " original_indices=" << result.originalIndices

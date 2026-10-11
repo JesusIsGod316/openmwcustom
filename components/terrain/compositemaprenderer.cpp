@@ -14,6 +14,7 @@
 #include <components/resource/openmwcompileoperation.hpp>
 #include <components/resource/preparedterraintexture.hpp>
 #include <components/resource/v321classifiedcompileset.hpp>
+#include <components/sceneutil/bufferpreparationscope.hpp>
 
 #include <algorithm>
 #include <array>
@@ -2186,6 +2187,7 @@ namespace Terrain
             } cleanup{ state, *ext, telemetry, telemetry || preparationActive,
                 mBatchCleanupEmaMs, mBatchCleanupRiskMs, mBatchCleanupSamples };
             const std::size_t batchBegin = compositeMap.mCompiled;
+            SceneUtil::prepareClientArrayDraw(state);
             bool firstBake = true;
             for (std::size_t i = batchBegin; i < bakeEnd; ++i)
             {
@@ -2254,6 +2256,7 @@ namespace Terrain
         }
 
         const std::size_t normalBegin = compositeMap.mCompiled;
+        SceneUtil::prepareClientArrayDraw(state);
         bool firstBake = true;
         for (size_t i = compositeMap.mCompiled; i < bakeEnd; ++i)
         {

@@ -71,6 +71,7 @@ namespace SceneUtil::GeneratedStaticLod
     {
         inline static std::atomic_uint64_t requests{0}, certified{0}, built{0}, diskHits{0};
         inline static std::atomic_uint64_t cacheFastHits{0}, cacheMissAdmissions{0};
+        inline static std::atomic_uint64_t primitiveCloneBytesAvoided{0};
         inline static std::atomic_uint64_t originalIndices{0}, derivedIndices{0}, coarseViews{0}, originalViews{0};
         inline static std::atomic_uint64_t derivedDraws{0}, submittedIndices{0};
         inline static std::atomic_uint64_t materialCullFallbacks{0}, materialDrawFallbacks{0};
@@ -147,7 +148,8 @@ namespace SceneUtil::GeneratedStaticLod
     std::size_t sourceBytes(const osg::Node& original);
     // Conservative immutable clone, peak leaf simplifier/cache overlap and
     // metadata estimate; zero means the original graph/layout is unqualified.
-    std::uint64_t cookPeakBytes(const osg::Node& original, bool cacheHitOnly = false);
+    std::uint64_t cookPeakBytes(const osg::Node& original, bool cacheHitOnly = false,
+        bool retainSourceIndices = false);
     bool positiveUniformTransform(const osg::Matrixd& matrix);
     bool isDelegatingDrawCallback(const osg::Drawable::DrawCallback* callback);
     // Temporal coverage must describe the geometry that the exact callback
@@ -301,6 +303,7 @@ namespace SceneUtil::GeneratedStaticLod
     // Every stream remains owned by original; only primitive indices are replaced.
     // reserveGpu=false is for unsubmitted CPU/GL fixtures, never production paging.
     Result build(osg::Node& original, std::string_view sourceIdentity, osg::Camera* mainCamera,
-        bool reserveGpu = true, bool activeGridOrigin = false, bool cacheHitAdmission = false);
+        bool reserveGpu = true, bool activeGridOrigin = false, bool cacheHitAdmission = false,
+        bool retainSourceIndices = false);
 }
 #endif

@@ -205,6 +205,14 @@ class Benchmarks(unittest.TestCase):
             self.assertTrue(matrix.engagement(path,{'lod cache hit admission':'true'},1)['all_requested_positive'])
             (path/'openmw.log').write_text('OptimizedMW persistent opaque packets: submitted=1d169f ordinary_branches=1693\n')
             self.assertFalse(matrix.engagement(path,{'ordinary opaque packets':'true'})['all_requested_positive'])
+            (path/'openmw.log').write_text('active_consumed_draws=0 primitive_clone_bytes_avoided=1024\n')
+            self.assertFalse(matrix.engagement(path,{'lod retain source indices':'true'},1)['all_requested_positive'])
+            (path/'openmw.log').write_text('active_consumed_draws=10 primitive_clone_bytes_avoided=1024\n')
+            self.assertTrue(matrix.engagement(path,{'lod retain source indices':'true'},1)['all_requested_positive'])
+            (path/'openmw.log').write_text('command_uploads_avoided=0\n')
+            self.assertFalse(matrix.engagement(path,{'indirect command reuse':'true'})['all_requested_positive'])
+            (path/'openmw.log').write_text('command_uploads_avoided=25\n')
+            self.assertTrue(matrix.engagement(path,{'indirect command reuse':'true'})['all_requested_positive'])
 
 
     def test_atomic_receipt_survives_a_real_windows_reader_lock(self):

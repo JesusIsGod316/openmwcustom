@@ -146,10 +146,16 @@ def engagement(profile, requested, asset_mask=0):
     if requested.get('lod cache hit admission') == 'true':
         matches = re.findall(r'cache_fast_hits=(\d+)(?=\s|$)',text)
         positive['lod_cache_hit'] = bool(matches and int(matches[-1])>0)
+    if requested.get('lod retain source indices') == 'true':
+        matches = re.findall(r'primitive_clone_bytes_avoided=(\d+)(?=\s|$)',text)
+        positive['lod_source_index_reuse'] = bool(matches and int(matches[-1])>0)
     if requested.get('ordinary opaque packets') == 'true':
         matches = re.findall(r'ordinary_branches=(\d+)(?=\s|$)',text)
         submitted = re.findall(r'OptimizedMW persistent opaque packets:.*?submitted=(\d+)(?=\s|$)',text)
         positive['ordinary_packets'] = bool(matches and int(matches[-1])>0 and submitted and int(submitted[-1])>0)
+    if requested.get('indirect command reuse') == 'true':
+        matches = re.findall(r'command_uploads_avoided=(\d+)(?=\s|$)',text)
+        positive['indirect_command_reuse'] = bool(matches and int(matches[-1])>0)
     return {'positive_work': positive, 'all_requested_positive': all(positive.values()),
             'limit': 'Preparation/dispatch engagement; visible resource adoption and performance require separate evidence'}
 

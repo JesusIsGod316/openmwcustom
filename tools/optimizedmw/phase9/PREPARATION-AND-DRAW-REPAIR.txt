@@ -1,0 +1,102 @@
+OptimizedMW preparation and draw work, 2026-10-10
+
+This batch keeps three independent areas active: preparation correctness,
+LOD construction cost, and render submission. It does not promote a runtime
+performance result. Full scene ownership changes remain valid experiments.
+
+Implemented
+
+1. Resource compilation restores the caller's GL buffer bindings, OSG binding
+   pointers, current vertex-array state and VAO. Terrain's direct buffer
+   compile path uses the same scope. CPU-array terrain composite drawing
+   clears stale dispatch/buffer state before establishing its client pointers.
+   The rejected static prewarm experiment remains disabled in the launcher.
+
+   The pinned OSG compileBuffer implementation binds GL directly. Its cached
+   unbind methods do nothing if their cached pointer is null. The native GL
+   fixture reproduces live VBO/EBO bindings with empty OSG caches safely,
+   without issuing an invalid draw. The repaired path also passes populated
+   cache restoration, exception unwinding, VBO-to-client backend transition
+   and caller VAO restoration. This proves the defect and the binding repair;
+   it does not establish that this was the cause of the earlier driver crash.
+
+2. [Cells] lod retain source indices = false
+   The candidate shares certified immutable original primitive/index data
+   during cooking. Actual reduced outputs still get private index data/EBOs.
+   The existing deep primitive copy remains the control. Both original
+   source serialization and simplifier/cache overlap stay in the budget.
+   This control is independent of lod cache hit admission.
+
+   Native validation compares exact reduced indices on a miss and a hit,
+   checks source array/primitive/buffer identities and revisions, and proves
+   a lower conservative cook peak. It also exercises real reduced draws.
+   A runtime comparison must show both avoided copies and actual LOD draws.
+
+3. [Optimizations] indirect command reuse = false
+   Both private command slots already contain the immutable base commands
+   after allocation. The candidate skips redundant CPU uploads, except when
+   GPU visibility has changed a selected slot. That slot is restored once.
+   Existing fence availability, busy fallback, capacity and retirement rules
+   remain in force. Each primitive captures its startup policy.
+
+   Native validation performs a GPU visibility dispatch, returns to the CPU
+   command path, and compares exact pixels on 12 real indirect draws. Control
+   makes 12 uploads; candidate makes one upload and avoids 11. Shader/view
+   parity, actual offscreen rejection and bounded retirement also pass.
+   This is measured work reduction, not a route FPS claim.
+
+The editable settings generator includes these controls and the existing
+material image preparation, cache-hit admission and ordinary packet controls.
+Automated comparisons reject requested mechanisms that did no positive work.
+Preserve the same architecture/asset masks in each control/candidate pair.
+
+Runtime evidence and remaining questions
+
+The prior 2bd2c353 engine completed both private Balmora diagnostic runs without
+a crash. The LOD candidate built 702 products and had 346 fast cache hits, but
+recorded zero actual reduced draws. Of 228 owned preparation requests, 217 were
+pruned with expired owners; no owned completion callback ran. Completion,
+publication and visible adoption therefore remain an independent work item.
+Do not count this run as evidence that LOD improved rendering.
+
+Both deep captures overflowed the uninstrumented leaf pool. Compile attribution
+has its own valid family receipt, but that does not validate the dropped leaf
+timeline. Heavy diagnostic catalog work and queue backlog make these unsuitable
+for an FPS comparison. Normal runs must establish adoption and frame pacing;
+focused diagnostic runs investigate the exact pending owners afterward.
+
+Broader next mechanisms, with measurable acceptance
+
+- Paging and shader readiness: keep exact demanded owners alive through bounded
+  preparation and publication; prioritize visible demand over abandoned work.
+  First identify where live demand is lost. Acceptance requires actual ready
+  callbacks/adopted draws, bounded residence and preserved invalidation.
+- General texture preparation: use the existing material-driven preparation
+  lane across changing assets, then compare image lookup/decode/mip/upload
+  costs and first-use readiness. Avoid a hardcoded texture list. Retain pressure,
+  context ownership and fallback rules while testing larger upload pools.
+- Persistent render ownership: retain certified opaque geometry/material
+  packets and immutable current/previous frame inputs, rather than reconstructing
+  traversal/state every frame. Measure reduced CPU traversal/dispatch and total
+  frame time, with ordinary control and secondary-view/shadow parity.
+- GPU visibility/submission: expand the current indirect prototype only where
+  supported shader recipes and scene ownership are explicit. GPU frustum and
+  later depth-pyramid occlusion can write bounded command counts. Measure saved
+  CPU work against compute, upload, synchronization and GPU time. Disocclusion
+  and unknown shader recipes must keep a conservative original fallback.
+- Deformation and DLSS inputs: publish owned current/previous transform and
+  deformation snapshots; validate complete dynamic motion/depth inputs before
+  enabling evaluation. A bounded frame pipeline is an architectural candidate,
+  with latency, stalls, correctness and memory measured separately.
+- Lua/update scheduling: attack observed script, animation and wait costs using
+  independent controls. Extra threads require independent work/VM ownership;
+  raising a thread count alone does not safely parallelize shared Lua state.
+
+Testing order
+
+Use one assembled build. Start with normal control and independent candidates
+on both recorded routes, then combine proven engaged candidates. Pin executable,
+settings, mod loadout, route, cap, cache starting state and symbols. Keep game
+tests muted on the unswitched private desktop, use the Phase 9 process guard,
+and defer launches during a reserved manual Engine Expansions test. Native
+fixtures prove their bounded workloads; user route validation governs promotion.

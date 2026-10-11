@@ -443,7 +443,8 @@ namespace SceneUtil::AssetPaging
         return true;
     }
     Tiers buildTiers(osg::Node& source, osg::Group& control, std::string_view identity,
-        unsigned eligible, osg::Camera* camera, Outcome& outcome, bool activeGridLod, bool cacheHitAdmission)
+        unsigned eligible, osg::Camera* camera, Outcome& outcome, bool activeGridLod, bool cacheHitAdmission,
+        bool retainSourceIndices)
     {
         Tiers tiers;
         std::unique_ptr<Resource::ExperimentalSpeculativeScope> experimental;
@@ -460,7 +461,7 @@ namespace SceneUtil::AssetPaging
         if (eligible & Lod)
         {
             if (activeGridLod) ++GeneratedStaticLod::Counters::activeBuildAttempts;
-            tiers.lod = GeneratedStaticLod::build(control, identity, camera,true,activeGridLod,cacheHitAdmission);
+            tiers.lod = GeneratedStaticLod::build(control, identity, camera,true,activeGridLod,cacheHitAdmission,retainSourceIndices);
             if (tiers.lod.node && !Resource::AssetGpuBudget::retainUntilShutdown(tiers.lod.gpuReservation))
             {
                 tiers.lod.node = nullptr;
