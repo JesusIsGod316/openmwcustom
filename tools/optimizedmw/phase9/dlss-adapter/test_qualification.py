@@ -80,6 +80,55 @@ class ReceiptRejection(unittest.TestCase):
         with self.assertRaises(AssertionError):
             checked_run(path, False)
 
+    def test_source_import_requires_private_pixels_and_ownership_rejections(self):
+        inputs = json.loads((self.positive / 'INPUTS.json').read_text(encoding='utf-8-sig'))
+        if not inputs.get('source_textures', False):
+            self.skipTest('Direct shared-texture cohort; private import has a separate proof')
+        path = self.copied(self.positive)
+        evidence = path / 'adapter-evidence.jsonl'
+        original = evidence.read_text()
+        for field in ('source_textures', 'exact_private_source_pixels',
+                      'source_stale_frame_generation_extent_refused', 'source_destination_alias_refused'):
+            with self.subTest(field=field):
+                evidence.write_text(original)
+                self.edit_rows(evidence, lambda rows:
+                    next(row for row in rows if row['check'] == 'real_dlss_evaluated').__setitem__(field, False))
+                with self.assertRaises(AssertionError):
+                    checked_run(path, False)
+
+    def test_source_import_requires_translating_history_frames(self):
+        inputs = json.loads((self.positive / 'INPUTS.json').read_text(encoding='utf-8-sig'))
+        if not inputs.get('source_textures', False):
+            self.skipTest('Nonzero motion is required only for the private source cohort')
+        path = self.copied(self.positive)
+        self.edit_rows(path / 'adapter-evidence.jsonl', lambda rows:
+            next(row for row in rows if row['check'] == 'real_dlss_evaluated'
+                 and row['sequence'] == 2).__setitem__('nonzero_motion_pixels', 0))
+        with self.assertRaises(AssertionError):
+            checked_run(path, False)
+
+    def test_source_import_requires_actual_depth_format(self):
+        inputs = json.loads((self.positive / 'INPUTS.json').read_text(encoding='utf-8-sig'))
+        if not inputs.get('source_textures', False):
+            self.skipTest('Private depth sampling has a separate proof')
+        path = self.copied(self.positive)
+        self.edit_rows(path / 'adapter-evidence.jsonl', lambda rows:
+            next(row for row in rows if row['check'] == 'real_feature_created').__setitem__(
+                'private_source_formats', ['RGBA16F', 'R32F', 'RG16F']))
+        with self.assertRaises(AssertionError):
+            checked_run(path, False)
+
+    def test_source_import_refuses_retired_owner(self):
+        inputs = json.loads((self.positive / 'INPUTS.json').read_text(encoding='utf-8-sig'))
+        if not inputs.get('source_textures', False):
+            self.skipTest('Private source lifetime applies to the source import cohort')
+        path = self.copied(self.positive)
+        self.edit_rows(path / 'adapter-evidence.jsonl', lambda rows:
+            next(row for row in rows if row['check'] == 'feature_retirement_resources_released').__setitem__(
+                'retired_source_import_refused', False))
+        with self.assertRaises(AssertionError):
+            checked_run(path, False)
+
     def test_visible_window_or_failed_exit(self):
         path = self.copied(self.positive)
         receipt = path / 'Desktop/DESKTOP-RECEIPT.json'

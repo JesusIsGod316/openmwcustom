@@ -1,5 +1,6 @@
 #include "shared-d3d11-textures.hpp"
 #include "gpu-transfers.hpp"
+#include "source-textures.hpp"
 #include <nvsdk_ngx_helpers.h>
 
 #include <cmath>
@@ -90,6 +91,7 @@ namespace
         Device device;
         Bridge bridge;
         GpuTransfers gpuTransfers;
+        SourceTextures sourceTextures;
         // Retain all SDK configuration strings and descriptors through its
         // shutdown; do not rely on an undocumented copy of caller storage.
         std::filesystem::path applicationDataPath;
@@ -103,6 +105,7 @@ namespace
         bool retired = true;
         bool negativeNoEvaluation = false;
         bool gpuTransfersEnabled = false;
+        bool sourceTexturesEnabled = false;
         explicit Fixture(const std::filesystem::path& logDirectory)
             : applicationDataPath(logDirectory)
         {
@@ -139,6 +142,7 @@ namespace
             textures[3] = device.make(bridge, 1, 1, DXGI_FORMAT_R32_FLOAT, false);
             textures[4] = device.make(bridge, width, height, DXGI_FORMAT_R16G16B16A16_FLOAT, true);
             if (gpuTransfersEnabled) gpuTransfers.makeConsumer(width, height);
+            if (sourceTexturesEnabled) sourceTextures.create(iw, ih, generation + 1);
             NVSDK_NGX_DLSS_Create_Params params{};
             params.Feature.InWidth = iw; params.Feature.InHeight = ih;
             params.Feature.InTargetWidth = width; params.Feature.InTargetHeight = height;
@@ -175,6 +179,9 @@ namespace
                 << ",\"input_width\":" << iw << ",\"input_height\":" << ih
                 << ",\"output_width\":" << width << ",\"output_height\":" << height
                 << ",\"input_color\":\"RGBA16F\",\"depth\":\"R32F\",\"motion\":\"RG16F\",\"output\":\"RGBA16F\""
+                << ",\"source_textures\":" << (sourceTexturesEnabled ? "true" : "false")
+                << ",\"private_source_formats\":" << (sourceTexturesEnabled
+                    ? "[\"RGBA16F\",\"DEPTH_COMPONENT32F\",\"RG16F\"]" : "[]")
                 << ",\"actual_ngx_core\":" << jsonPath(modulePath)
                 << ",\"configured_dlss_runtime\":" << jsonPath(
                     std::filesystem::path(executablePath).parent_path() / "nvngx_dlss.dll")
@@ -191,11 +198,23 @@ namespace
             for (unsigned y = 0; y < colorTexture.height; ++y)
                 for (unsigned x = 0; x < colorTexture.width; ++x)
                 {
-                    const auto pixel = color((x >= colorTexture.width / 2) + 2 * (y >= colorTexture.height / 2), changed);
+                    const auto pixel = color(sourceTexturesEnabled
+                        ? SourceTextures::quadrant(x,y,colorTexture.width,colorTexture.height,frame)
+                        : (x >= colorTexture.width / 2) + 2 * (y >= colorTexture.height / 2), changed);
                     std::copy(pixel.begin(), pixel.end(), colors.begin() + 4 * (y * colorTexture.width + x));
                 }
             std::vector<float> depths(static_cast<std::size_t>(colorTexture.width) * colorTexture.height, .5f);
             std::vector<float> motion(static_cast<std::size_t>(colorTexture.width) * colorTexture.height * 2, 0.f);
+            if (sourceTexturesEnabled)
+            {
+                const auto mv=SourceTextures::motion(frame);
+                for(unsigned y=0;y<colorTexture.height;++y)for(unsigned x=0;x<colorTexture.width;++x)
+                {
+                    const auto pixel=y*colorTexture.width+x;
+                    depths[pixel]=SourceTextures::depth(SourceTextures::quadrant(x,y,colorTexture.width,colorTexture.height,frame));
+                    motion[2*pixel]=mv[0];motion[2*pixel+1]=mv[1];
+                }
+            }
             std::vector<float> sentinel(static_cast<std::size_t>(output.width) * output.height * 4, -9.f);
             const float exposure = 1.f;
             std::vector<HANDLE> handles; for (const auto& texture : textures) handles.push_back(texture.registration);
@@ -203,9 +222,26 @@ namespace
             bridge.lock(handles);
             if (gpuTransfersEnabled)
             {
-                gpuTransfers.quadrants(textures[0], [changed](unsigned q) { return color(q, changed); });
-                gpuTransfers.fill(textures[1], {.5f, 0.f, 0.f, 1.f});
-                gpuTransfers.fill(textures[2], {0.f, 0.f, 0.f, 1.f});
+                if (sourceTexturesEnabled)
+                {
+                    sourceTextures.produce(gpuTransfers,frame,sequence,[changed](unsigned q){return color(q,changed);});
+                    require(!sourceTextures.accepts(sequence-1,generation,textures),"Stale source frame must refuse import");
+                    require(!sourceTextures.accepts(sequence,generation+1,textures),"Stale source generation must refuse import");
+                    ++textures[1].width;
+                    require(!sourceTextures.accepts(sequence,generation,textures),"Wrong source extent must refuse import");
+                    --textures[1].width;
+                    const auto sharedName=textures[0].gl;
+                    textures[0].gl=sourceTextures.images[0].gl;
+                    require(!sourceTextures.accepts(sequence,generation,textures),"Aliased source/destination must refuse import");
+                    textures[0].gl=sharedName;
+                    sourceTextures.copyToShared(gpuTransfers,sequence,generation,textures);
+                }
+                else
+                {
+                    gpuTransfers.quadrants(textures[0], [changed](unsigned q) { return color(q, changed); });
+                    gpuTransfers.fill(textures[1], {.5f, 0.f, 0.f, 1.f});
+                    gpuTransfers.fill(textures[2], {0.f, 0.f, 0.f, 1.f});
+                }
                 gpuTransfers.fill(textures[3], {exposure, 0.f, 0.f, 1.f});
                 gpuTransfers.fill(textures[4], {-9.f, -9.f, -9.f, -9.f});
             }
@@ -254,6 +290,11 @@ namespace
             require(actualColors == colors && actualDepth == depths && actualMotion == motion
                 && actualExposure == std::vector<float>{exposure},
                 "Exact typed input images survived actual shared evaluation");
+            if(sourceTexturesEnabled)
+                require(read(sourceTextures.images[0],GL_RGBA,4)==colors
+                    && read(sourceTextures.images[1],GL_DEPTH_COMPONENT,1)==depths
+                    && read(sourceTextures.images[2],Rg,2)==motion,
+                    "Private source images remain owned and unchanged after exact GPU import/evaluation");
             glBindTexture(GL_TEXTURE_2D, 0);
             bridge.unlock(handles);
             const double consumeMs = milliseconds(consumeStart);
@@ -299,6 +340,11 @@ namespace
                 << ",\"exact_input_pixels\":true,\"exact_cross_api_output\":true,\"maximum_patch_error\":" << maximumError
                 << ",\"exact_exposure_pixel\":true"
                 << ",\"gpu_produced_inputs\":" << (gpuTransfersEnabled ? "true" : "false")
+                << ",\"source_textures\":" << (sourceTexturesEnabled ? "true" : "false")
+                << ",\"exact_private_source_pixels\":" << (sourceTexturesEnabled ? "true" : "false")
+                << ",\"source_stale_frame_generation_extent_refused\":" << (sourceTexturesEnabled ? "true" : "false")
+                << ",\"source_destination_alias_refused\":" << (sourceTexturesEnabled ? "true" : "false")
+                << ",\"nonzero_motion_pixels\":" << (sourceTexturesEnabled && (frame==1 || frame==3) ? colorTexture.width*colorTexture.height : 0)
                 << ",\"exact_graphics_consumer_pixels\":" << (gpuTransfersEnabled ? "true" : "false")
                 << ",\"gl_production_lock_write_unlock_ms\":" << produceMs
                 << ",\"ngx_evaluate_cpu_ms\":" << evaluateMs << ",\"d3d_completion_observation_ms\":" << completeMs
@@ -328,8 +374,14 @@ namespace
                 std::vector<HANDLE> handles; for (const auto& texture : textures) handles.push_back(texture.registration);
                 bridge.lock(handles); gpuTransfers.retireConsumer(); bridge.unlock(handles);
             }
+            if(sourceTexturesEnabled)
+            {
+                sourceTextures.retire(gpuTransfers);
+                require(!sourceTextures.accepts(sequence,generation,textures),"Retired private source cannot be reimported");
+            }
             for (auto& texture : textures) retire(bridge, texture);
-            evidence.row("feature_retirement_resources_released", "\"status\":\"pass\"");
+            evidence.row("feature_retirement_resources_released", std::string("\"status\":\"pass\",")
+                + "\"retired_source_import_refused\":" + (sourceTexturesEnabled ? "true" : "false"));
         }
         void close()
         {
@@ -339,6 +391,7 @@ namespace
             // Shutdown follows completed evaluation and feature retirement;
             // no application GPU resources remain in flight or are reused.
             require(bridge.closeDevice(bridge.device), "Close completed interop device"); bridge.device = nullptr;
+            if(sourceTexturesEnabled) sourceTextures.close(gpuTransfers);
             if (gpuTransfersEnabled) gpuTransfers.close();
             device.commands.Reset(); device.device.Reset(); device.adapter.Reset(); context.close();
         }
@@ -347,18 +400,20 @@ namespace
 
 int main(int argc, char** argv)
 {
-    bool negative = false, gpu = false;
+    bool negative = false, gpu = false, sources = false;
     try
     {
-        require(argc >= 3 && argc <= 5 && std::string(argv[1]) == "--output",
-            "Usage: fixture --output fresh-evidence.jsonl [--negative-no-evaluation] [--gpu-transfers]");
+        require(argc >= 3 && argc <= 6 && std::string(argv[1]) == "--output",
+            "Usage: fixture --output fresh-evidence.jsonl [--negative-no-evaluation] [--gpu-transfers] [--source-textures]");
         for (int i = 3; i < argc; ++i)
         {
             const std::string option(argv[i]);
             if (option == "--negative-no-evaluation" && !negative) negative = true;
             else if (option == "--gpu-transfers" && !gpu) gpu = true;
+            else if (option == "--source-textures" && !sources) sources = true;
             else throw std::runtime_error("Unknown or duplicated fixture option");
         }
+        require(!sources || gpu,"Private source textures require the GPU transfer backend");
         const auto output = std::filesystem::absolute(argv[2]);
         require(!std::filesystem::exists(output), "Preserve previous fixture output");
         std::filesystem::create_directories(output.parent_path() / "NgxLogs");
@@ -369,7 +424,9 @@ int main(int argc, char** argv)
         auto* fixture = new Fixture(output.parent_path() / "NgxLogs");
         fixture->negativeNoEvaluation = negative;
         fixture->gpuTransfersEnabled = gpu;
+        fixture->sourceTexturesEnabled = sources;
         if (gpu) fixture->gpuTransfers.initialize();
+        if (sources) fixture->sourceTextures.initialize(fixture->gpuTransfers);
         std::ostringstream identity;
         identity << "\"status\":\"pass\",\"device_luid_low\":" << fixture->device.glLuid.LowPart
             << ",\"device_luid_high\":" << fixture->device.glLuid.HighPart
@@ -377,7 +434,8 @@ int main(int argc, char** argv)
             << ",\"vendor_id\":" << fixture->device.description.VendorId
             << ",\"device_id\":" << fixture->device.description.DeviceId
             << ",\"same_device\":true,\"window_hidden\":true,\"actual_ngx_backend\":\"D3D11\""
-            << ",\"gpu_transfers\":" << (gpu ? "true" : "false");
+            << ",\"gpu_transfers\":" << (gpu ? "true" : "false")
+            << ",\"source_textures\":" << (sources ? "true" : "false");
         evidence.row("same_device_real_ngx", identity.str());
         const auto dimensions = gpu
             ? std::array{std::pair{1920u,1080u}, std::pair{1600u,900u}, std::pair{1920u,1080u}}
@@ -391,6 +449,7 @@ int main(int argc, char** argv)
         fixture->close(); delete fixture;
         evidence.row("adapter_complete", std::string("\"status\":\"pass\",\"actual_evaluations\":12,\"retired_generations\":3,")
             + "\"gpu_transfers\":" + (gpu ? "true" : "false")
+            + ",\"source_textures\":" + (sources ? "true" : "false")
             + ",\"game_dlss_enabled\":false,\"dense_game_motion_proved\":false,\"performance_promoted\":false");
         return 0;
     }

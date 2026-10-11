@@ -46,7 +46,10 @@ def checked_run(directory: Path, negative: bool):
     assert len(device) == 1 and device[0]["same_device"] and device[0]["window_hidden"]
     assert device[0]["device_node_mask"] and device[0]["actual_ngx_backend"] == "D3D11"
     gpu = inputs.get("gpu_transfers", False)
+    source = inputs.get("source_textures", False)
+    assert not source or gpu, "Private source import requires the GPU path"
     assert device[0].get("gpu_transfers", False) is gpu
+    assert device[0].get("source_textures", False) is source
     if negative:
         assert not any(r["check"] == "real_dlss_evaluated" for r in evidence + stdout)
         marker = [r for r in stdout if r["check"] == "negative_no_evaluation"]
@@ -58,10 +61,15 @@ def checked_run(directory: Path, negative: bool):
         assert markers[0]["actual_evaluations"] == 12 and markers[0]["retired_generations"] == 3
         assert not markers[0]["game_dlss_enabled"] and not markers[0]["dense_game_motion_proved"]
         assert markers[0].get("gpu_transfers", False) is gpu
+        assert markers[0].get("source_textures", False) is source
         created = [r for r in evidence if r["check"] == "real_feature_created"]
         assert len(created) == 3
         assert [(r["output_width"], r["output_height"]) for r in created] == (
             [(1920, 1080), (1600, 900), (1920, 1080)] if gpu else [(640, 360), (800, 448), (640, 360)])
+        for row in created:
+            assert row.get("source_textures", False) is source
+            if source:
+                assert row["private_source_formats"] == ["RGBA16F", "DEPTH_COMPONENT32F", "RG16F"]
         evaluations = [r for r in evidence if r["check"] == "real_dlss_evaluated"]
         assert len(evaluations) == 12
         assert [(r["generation"], r["sequence"]) for r in evaluations] == [
@@ -72,10 +80,21 @@ def checked_run(directory: Path, negative: bool):
             assert row["exact_exposure_pixel"]
             if gpu:
                 assert row["gpu_produced_inputs"] and row["exact_graphics_consumer_pixels"]
+            assert row.get("source_textures", False) is source
+            if source:
+                assert row["exact_private_source_pixels"]
+                assert row["source_stale_frame_generation_extent_refused"] and row["source_destination_alias_refused"]
+                extent = created[row["generation"] - 1]
+                moving = row["sequence"] % 4 in (2, 0)
+                assert row["nonzero_motion_pixels"] == (
+                    extent["input_width"] * extent["input_height"] if moving else 0)
             assert row["reset"] is (row["sequence"] % 4 in (1, 3)) and row["maximum_patch_error"] < .15
         for check in ("feature_retirement_gpu_complete", "feature_retirement_sdk_released",
                       "feature_retirement_resources_released"):
             assert len([r for r in evidence if r["check"] == check and r["status"] == "pass"]) == 3
+        if source:
+            assert all(row["retired_source_import_refused"] for row in evidence
+                if row["check"] == "feature_retirement_resources_released")
     return inputs, receipt, evidence, [digest(directory / relative) for relative in (
         "INPUTS.json", "adapter-evidence.jsonl", "Desktop/stdout.log", "Desktop/stderr.log",
         "Desktop/DESKTOP-RECEIPT.json")]
@@ -88,8 +107,8 @@ def normalized(path: str):
 def qualify(positive: Path, negative: Path, binary: Path):
     actual, actual_receipt, evidence, raw_actual = checked_run(positive, False)
     control, control_receipt, _, raw_control = checked_run(negative, True)
-    for field in ("fixture_sha256", "runtime_sha256", "sdk_commit", "source_files", "gpu_transfers"):
-        if field == "gpu_transfers":
+    for field in ("fixture_sha256", "runtime_sha256", "sdk_commit", "source_files", "gpu_transfers", "source_textures"):
+        if field in ("gpu_transfers", "source_textures"):
             assert actual.get(field, False) is control.get(field, False)
             continue
         assert actual[field] == control[field], "Positive and negative inputs differ"
@@ -118,6 +137,10 @@ def qualify(positive: Path, negative: Path, binary: Path):
         "provenance_limit": "Post-run hashes of callback-identified installed core/model files; not a loader-time attestation",
         "driver_version": next(iter(drivers)), "actual_evaluations": 12, "retired_generations": 3,
         "gpu_transfers": actual.get("gpu_transfers", False),
+        "source_textures": actual.get("source_textures", False),
+        "private_source_formats": ["RGBA16F", "DEPTH_COMPONENT32F", "RG16F"] if actual.get("source_textures", False) else [],
+        "evaluations_with_nonzero_motion": sum(row.get("nonzero_motion_pixels", 0) > 0
+            for row in evidence if row["check"] == "real_dlss_evaluated"),
         "feature_extents": [{k: row[k] for k in ("generation", "input_width", "input_height", "output_width", "output_height")}
             for row in evidence if row["check"] == "real_feature_created"],
         "negative_control": "Untouched output rejected by the same real output validator; zero evaluations",
@@ -126,7 +149,9 @@ def qualify(positive: Path, negative: Path, binary: Path):
         "input_desktop_unchanged": True, "visible_input_desktop_windows": [],
         "raw_evidence": raw_actual + raw_control,
         "limits": [
-            "Synthetic images, zero motion/jitter and controlled exposure; not dense game coverage.",
+            ("Separate owned GL color/depth/motion with synthetic translation and reset, zero jitter and controlled exposure; not dense game coverage."
+             if actual.get("source_textures", False) else "Synthetic images, zero motion/jitter and controlled exposure; not dense game coverage."),
+            "Source import modifies private-context GL state; production game state restoration and async leases are not proved.",
             "Costs include synthetic production, completion observation and readback; not gameplay or isolated GPU timing.",
             "No in-game DLSS/jitter/frame generation enabled and no performance promotion.",
             "Signed runtime input validated by the launcher; SDK source or compilation alone is not runtime proof."

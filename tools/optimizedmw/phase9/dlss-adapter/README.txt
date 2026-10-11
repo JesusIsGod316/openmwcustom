@@ -47,6 +47,21 @@ remain mandatory. The same no-evaluation negative control applies in this
 mode. This is a real GPU producer/consumer transfer proof at 1080p, with
 synthetic zero-motion images; it is not an in-game acceptance result.
 
+The --gpu-transfers --source-textures variant adds a separate GL source owner
+in the engine producer's formats: RGBA16F color, DEPTH_COMPONENT32F depth and
+RG16F motion. A same-context texelFetch shader samples these private sources
+into the locked, typed shared NGX destinations; no source is registered with
+D3D or uploaded from the CPU. History frames translate the quadrant boundaries
+by (+2,+1) then (-2,-1) GL pixels, with current-to-previous motion in render
+pixels and positive Y down. Reset frames have zero motion. Every private and
+shared input component is checked exactly after evaluation, including sampled
+depth and both signs of motion. The importer must refuse stale frame/generation,
+wrong extent and source/destination alias descriptors before submission.
+Separate sources retire after actual application work and verification, across
+the same three output extents. This proves the missing format/import step under
+a private owner; it does not prove a production game lease, complete dynamic
+motion coverage, async execution or restoration of a borrowed game's GL state.
+
 GPU transfer submission/locking is recorded separately from verification
 readbacks. Completion observation includes the native event polling policy;
 these measurements do not isolate the DLSS kernel or predict gameplay FPS.
@@ -69,8 +84,9 @@ means this negative control was detected, and never an actual evaluation.
 Timing fields include synthetic uploads, locks, CPU API submission, bounded
 GPU completion observation and verification readbacks. They are neither
 isolated GPU algorithm time nor production bridge performance. The fixture
-uses small synthetic images with zero motion, zero jitter and controlled
-exposure. It does not prove dense dynamic game inputs, alpha-tested/animated
+uses synthetic images, zero jitter and controlled exposure. Direct shared-input
+variants use zero motion; the private-source variant includes translation and
+reset. It does not prove dense dynamic game inputs, alpha-tested/animated
 coverage, production color order/orientation, UI resolve, multi-view support,
 gameplay image quality, latency or any FPS improvement.
 
