@@ -94,6 +94,61 @@ components/rendercore/synchronousinputlease.hpp dependency. Run the separate
 p9-dlss-synchronous-lease-tests executable for incomplete-contract, stale-token,
 overwrite, retirement and ordinary-refusal checks without a GPU/game launch.
 
+Optional actual-format/OSG integration proof
+------------------------------------------
+Supply P9_OSG_PREFIX pointing to the existing pinned OSG 3.6.5 installation when
+configuring this standalone project. This adds p9-dlss-production-format, an
+import-only target which does not link NGX or enable a game setting. Keep the
+previous qualified adapter binary and its source pin unchanged in their saved
+cohort; build this extended source into a fresh validation directory.
+
+Run through the same hidden, unswitched private-desktop host, profile mutex and
+idle-game checks as the adapter. Use a fresh evidence path for each invocation:
+  p9-dlss-production-format --output fresh-format-evidence.jsonl
+  p9-dlss-production-format --output fresh-negative-evidence.jsonl --negative-corrupt-copy
+
+Sixteen bounded 64x48 controlled source frames cover realized RGBA8 color,
+DEPTH24_STENCIL8 and DEPTH32F_STENCIL8, each with ordinary and reversed depth,
+nonzero stencil bytes and both signs of synthetic render-pixel motion. An
+owned GL sampler uses GL_NONE comparison while the borrowed source texture
+deliberately retains comparison mode. Source color/depth/stencil must stay
+unchanged, imported GL and independent D3D pixels must be exact, and a stale
+frame refusal must preserve the fallback destination. The strict complete-input
+lease remains synthetic-only: this proof never marks game motion complete.
+
+The depth expectation is independent of the imported values. D24 is observed
+as the actual packed unsigned 24-bit representation and mapped as integer /
+(2^24 - 1), rounded once to R32F; D32F retains its exact packed float bits.
+The imported R32F, independent D3D readback and mathematical expectation must
+match exactly, with zero allowed ULP error. A separate GL_DEPTH_COMPONENT /
+GL_FLOAT CPU readback conversion can differ from this expectation by one ULP
+on the tested driver; that difference is recorded and bounded independently.
+Every actual packed source depth/stencil representation remains unchanged.
+
+An actual OSG program, texture, state stack and ordinary textured Geometry
+render exact nonempty quadrant pixels before and after every import. Foreign
+raw GL program/FBO/sampler/clip/raster state is restored without changing the
+cached OSG identities; the following intact Geometry draw must remain exact.
+This proves a bounded raw-GL/OSG interleave with no active application queries
+or conditional rendering. It does not prove all production draw boundaries.
+The corruption control changes the imported depth and requires the real pixel
+validator to reject it before any frame is counted as qualified.
+
+Record the fresh compiled-input/binary pin, exact loaded osg.dll and
+OpenThreads.dll bytes, hidden-desktop receipt, stdout/stderr and the JSONL.
+The native device row reports actual loaded DLL paths, pinned OSG version and
+the same physical NVIDIA GL/D3D node. Run qualify_production_format.py on the
+finished positive/negative directories (INPUTS.json, format-evidence.jsonl,
+Desktop logs/receipt) to seal them, and test_production_format_qualification.py
+to check missing-frame, pixel/state/fallback, profile, source/runtime/pin,
+visible-window and unsupported-claim rejection. No timing or FPS claim follows
+from these deliberately blocking native verification readbacks.
+
+Actual production input realization, first-person/scene depth alignment,
+color/HUD ordering, view and history identities, dense moving/alpha surface
+coverage, complete resets and ordinary presentation fallback remain separate
+game integration gates. Game evaluation and jitter remain disabled.
+
 An initial prototype inserted a redundant empty-context D3D event after
 ReleaseFeature and timed out on the tested driver. Its failure is preserved.
 The qualified ordering drains actual application work before ReleaseFeature,
@@ -125,3 +180,5 @@ Primary API contracts:
 https://github.com/NVIDIA/DLSS/tree/v310.9.1
 https://raw.githubusercontent.com/NVIDIA/DLSS/v310.9.1/include/nvsdk_ngx.h
 https://raw.githubusercontent.com/KhronosGroup/OpenGL-Registry/main/extensions/NV/WGL_NV_DX_interop2.txt
+https://registry.khronos.org/OpenGL/extensions/ARB/ARB_sampler_objects.txt
+https://registry.khronos.org/OpenGL/extensions/ARB/ARB_depth_buffer_float.txt

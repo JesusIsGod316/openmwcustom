@@ -295,6 +295,26 @@ namespace SceneUtil::StaticVao
             auto* context=state->getGraphicsContext();
             if(!arrays || !arrays->getVertexArrayObject() || !context || !context->isCurrent())
             {++Counters::contextFallbacks; osg::Geometry::drawImplementation(info); return;}
+            // Drawable's outer proxy restores only the global VAS pointer,
+            // leaving this VAO and the context-global ARRAY_BUFFER bound.
+            // Return an ordinary coherent binding boundary before that proxy
+            // exits. In particular, never restore the global EBO into this
+            // geometry's retained VAO. No GL queries occur on this draw path.
+            struct OrdinaryBindingBoundary
+            {
+                osg::State& state;
+                ~OrdinaryBindingBoundary()
+                {
+                    state.setCurrentToGlobalVertexArrayState();
+                    auto* ordinary=state.getCurrentVertexArrayState();
+                    state.bindVertexArrayObject(ordinary);
+                    auto* extensions=state.get<osg::GLExtensions>();
+                    auto* vertex=ordinary->getCurrentVertexBufferObject();
+                    auto* element=ordinary->getCurrentElementBufferObject();
+                    extensions->glBindBuffer(GL_ARRAY_BUFFER_ARB,vertex?vertex->getGLObjectID():0);
+                    extensions->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER_ARB,element?element->getGLObjectID():0);
+                }
+            } ordinaryBoundary{*state};
             ++Counters::draws;
             auto* found=state->getContextID()<mContexts.size()?&mContexts[state->getContextID()]:nullptr;
             const bool contextValid=found && found->matches(*state,arrays);

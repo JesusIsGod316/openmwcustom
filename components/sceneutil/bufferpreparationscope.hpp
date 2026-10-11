@@ -10,8 +10,10 @@ namespace SceneUtil
 {
     // compileBuffer binds GL directly. Cached unbind calls are insufficient:
     // they return without touching GL when OSG's cached pointer is null.
-    // Restore the caller's known binding state, including its VAO, without GL
-    // queries, CPU waits, array mutation, or a change to resource ownership.
+    // Native Drawable restores the global VAS pointer while its geometry VAO
+    // can remain bound. Its global cached EBO then describes another VAO.
+    // Preserve actual GL bindings separately from those native cache pointers.
+    // Binding queries are confined to preparation, never repeated draw reuse.
     // This scope is for resource compilation, not arbitrary attribute drawing.
     class BufferPreparationScope
     {
@@ -24,7 +26,14 @@ namespace SceneUtil
             if (!mExtensions || !mExtensions->glBindBuffer || !mArrays) return;
             mVertex = mArrays->getCurrentVertexBufferObject();
             mElement = mArrays->getCurrentElementBufferObject();
-            mVao = state->getCurrentVertexArrayObject();
+            GLint vertex=0,element=0,vao=0;
+            glGetIntegerv(GL_ARRAY_BUFFER_BINDING_ARB,&vertex);
+            glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING_ARB,&element);
+            // GL_VERTEX_ARRAY_BINDING is absent from some pinned SDK headers.
+            if (mExtensions->glBindVertexArray) glGetIntegerv(0x85B5,&vao);
+            mVertexBinding=static_cast<GLuint>(vertex);
+            mElementBinding=static_cast<GLuint>(element);
+            mVao=static_cast<GLuint>(vao);
             mValid = true;
         }
         BufferPreparationScope(const BufferPreparationScope&) = delete;
@@ -33,9 +42,18 @@ namespace SceneUtil
         {
             if (!mValid) return;
             mState->setCurrentVertexArrayState(mArrays);
-            mState->bindVertexArrayObject(mVao);
-            mExtensions->glBindBuffer(GL_ARRAY_BUFFER_ARB, mVertex ? mVertex->getGLObjectID() : 0);
-            mExtensions->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER_ARB, mElement ? mElement->getGLObjectID() : 0);
+            // Compilation may bind a VAO directly without changing State's
+            // tracked name. Its cached-equality bind can then skip the actual
+            // restoration. Force GL first and update the native tracked name.
+            if (mExtensions->glBindVertexArray)
+            {
+                mExtensions->glBindVertexArray(mVao);
+                mState->setCurrentVertexArrayObject(mVao);
+            }
+            // Contexts without VAO support keep their ordinary global VAS and
+            // need only their actual VBO/EBO bindings and caches restored.
+            mExtensions->glBindBuffer(GL_ARRAY_BUFFER_ARB, mVertexBinding);
+            mExtensions->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER_ARB, mElementBinding);
             mArrays->setCurrentVertexBufferObject(mVertex);
             mArrays->setCurrentElementBufferObject(mElement);
         }
@@ -45,7 +63,7 @@ namespace SceneUtil
         osg::GLExtensions* mExtensions = nullptr;
         osg::ref_ptr<osg::VertexArrayState> mArrays;
         osg::ref_ptr<osg::GLBufferObject> mVertex, mElement;
-        GLuint mVao = 0;
+        GLuint mVao = 0,mVertexBinding = 0,mElementBinding = 0;
         bool mValid = false;
     };
 

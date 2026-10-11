@@ -23,5 +23,21 @@ target_link_libraries(p9-dlss-d3d11-adapter PRIVATE
 set_property(TARGET p9-dlss-d3d11-adapter PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
+# Optional import-only proof against the already installed, pinned OSG runtime.
+# No dependency download and no game renderer integration or NGX evaluation.
+set(P9_OSG_PREFIX "" CACHE PATH "Existing pinned OSG 3.6.5 prefix for native format proof")
+if(P9_OSG_PREFIX)
+    list(PREPEND CMAKE_PREFIX_PATH "${P9_OSG_PREFIX}")
+    find_package(OpenSceneGraph 3.6.5 EXACT REQUIRED COMPONENTS osg)
+    add_executable(p9-dlss-production-format production-format-tests.cpp)
+    target_compile_features(p9-dlss-production-format PRIVATE cxx_std_20)
+    target_compile_definitions(p9-dlss-production-format PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_include_directories(p9-dlss-production-format SYSTEM PRIVATE ${OPENSCENEGRAPH_INCLUDE_DIRS})
+    target_link_libraries(p9-dlss-production-format PRIVATE ${OPENSCENEGRAPH_LIBRARIES}
+        d3d11 dxgi opengl32 user32 gdi32)
+    set_property(TARGET p9-dlss-production-format PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
+
 # The signed runtime is supplied beside this separate executable by its audited
 # local runner, never installed into OptimizedMW or bundled with this source.

@@ -218,6 +218,113 @@ int main() try
         require(V::Counters::producerFallbacks.load()>fallbackBefore,"dirty producer did not take fallback");
         ordinary=nullptr;candidate=nullptr;
     }
+    // Native mixed-renderer sequence, with no dispatcher/cache reset between
+    // draws. B1 and B2 share one VBO but have distinct array offsets; a retained
+    // candidate must not leave ARRAY_BUFFER bound to A behind global B caches.
+    progress("ordinary B1 / retained A / ordinary B2 shared VBO-offset interleave");
+    auto b1=mesh(osg::Array::BIND_PER_VERTEX),b2=mesh(osg::Array::BIND_PER_VERTEX);
+    auto* b2Vertices=static_cast<osg::Vec3Array*>(b2->getVertexArray());
+    (*b2Vertices)[1].x()=.3f;b2Vertices->dirty();
+    b2Vertices->setBufferObject(b1->getVertexArray()->getBufferObject());
+    auto sourceA=mesh(osg::Array::BIND_PER_VERTEX);auto retainedA=V::make(*sourceA);
+    require(retainedA.valid(),"mixed renderer candidate admission failed");
+    const auto b1Control=image(b1),b2Control=image(b2);
+    require(b1Control!=b2Control,"mixed renderer controls lack distinct nonempty shapes");
+    auto* sharedVbo=b1->getVertexArray()->getGLBufferObject(context->getState()->getContextID());
+    require(sharedVbo && sharedVbo==b2Vertices->getGLBufferObject(context->getState()->getContextID())
+        && sharedVbo->getOffset(b1->getVertexArray()->getBufferIndex())
+            !=sharedVbo->getOffset(b2Vertices->getBufferIndex()),"shared VBO-offset fixture did not engage distinct offsets");
+    require(image(b1)==b1Control,"B1 shared-storage baseline pixels changed");
+    const auto aControl=image(sourceA);require(image(retainedA)==aControl,"A mixed renderer pixels changed");
+    require(context->makeCurrent(),"mixed renderer boundary inspection unavailable");
+    auto* mixedState=context->getState();auto* globalArrays=mixedState->getCurrentVertexArrayState();
+    GLint actualVao=-1,actualVertex=-1,actualElement=-1;
+    glGetIntegerv(0x85B5,&actualVao);glGetIntegerv(GL_ARRAY_BUFFER_BINDING_ARB,&actualVertex);
+    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING_ARB,&actualElement);
+    require(globalArrays!=retainedA->getVertexArrayStateList()[mixedState->getContextID()]
+        && actualVao==static_cast<GLint>(globalArrays->getVertexArrayObject()),"retained A left mismatched global VAS/actual VAO");
+    require(actualVertex==static_cast<GLint>(globalArrays->getCurrentVertexBufferObject()
+        ?globalArrays->getCurrentVertexBufferObject()->getGLObjectID():0)
+        && actualElement==static_cast<GLint>(globalArrays->getCurrentElementBufferObject()
+        ?globalArrays->getCurrentElementBufferObject()->getGLObjectID():0),"retained A left mismatched ordinary buffer caches");
+    context->releaseContext();
+    require(image(b2)==b2Control,"B2 shared VBO offset corrupted after retained A without reset");
+    // Exercise the ordinary client/display-list path found concurrently in
+    // the real failed game dump, including its first native list compilation.
+    progress("ordinary native display list first compilation following retained candidate");
+    auto display=mesh(osg::Array::BIND_PER_VERTEX);
+    display->setUseVertexBufferObjects(false);display->setUseDisplayList(true);
+    const auto displayControl=image(display);
+    display->dirtyGLObjects();require(image(retainedA)==aControl,"A before display-list first use changed pixels");
+    require(image(display)==displayControl,"retained A corrupted ordinary first display-list compilation");
+    require(image(retainedA)==aControl,"ordinary display-list use corrupted retained A");
+    // An ordinary native VAO retains OSG's original outer-proxy behavior. Its
+    // actual element binding can differ from the now-current global VAS cache.
+    // Unrelated preparation must restore both, without confusing their owners.
+    progress("unrelated native compile while ordinary VAO and global VAS are split");
+    auto nativeDonor=mesh(osg::Array::BIND_PER_VERTEX);nativeDonor->setUseVertexArrayObject(true);
+    auto preparingSource=mesh(osg::Array::BIND_PER_VERTEX);auto preparing=V::make(*preparingSource);
+    require(preparing.valid(),"interleaved preparation candidate admission failed");
+    const auto donorControl=image(nativeDonor);
+    require(context->makeCurrent(),"native split preparation context unavailable");
+    osg::RenderInfo interleavedInfo(mixedState,nullptr);
+    auto* donorArrays=nativeDonor->getVertexArrayStateList()[mixedState->getContextID()].get();
+    auto* beforeArrays=mixedState->getCurrentVertexArrayState();
+    auto* beforeVertex=beforeArrays->getCurrentVertexBufferObject();
+    auto* beforeElement=beforeArrays->getCurrentElementBufferObject();
+    glGetIntegerv(0x85B5,&actualVao);glGetIntegerv(GL_ARRAY_BUFFER_BINDING_ARB,&actualVertex);
+    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING_ARB,&actualElement);
+    require(donorArrays && donorArrays!=beforeArrays && actualVao==static_cast<GLint>(donorArrays->getVertexArrayObject())
+        && actualElement!=0,"native proxy split preparation fixture did not engage");
+    preparing->compileGLObjects(interleavedInfo);
+    GLint preparedVao=-1,preparedVertex=-1,preparedElement=-1;
+    glGetIntegerv(0x85B5,&preparedVao);glGetIntegerv(GL_ARRAY_BUFFER_BINDING_ARB,&preparedVertex);
+    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING_ARB,&preparedElement);
+    require(preparedVao==actualVao && preparedVertex==actualVertex && preparedElement==actualElement,
+        "preparation overwrote unrelated native VAO EBO using global VAS cache");
+    require(mixedState->getCurrentVertexArrayState()==beforeArrays
+        && beforeArrays->getCurrentVertexBufferObject()==beforeVertex
+        && beforeArrays->getCurrentElementBufferObject()==beforeElement,"preparation changed independent native VAS caches");
+    progress("raw-only VAO binding mutation inside preparation leaves tracked name unchanged");
+    {
+        SceneUtil::BufferPreparationScope rawMutation(mixedState);
+        auto* extensions=mixedState->get<osg::GLExtensions>();
+        require(extensions->glBindVertexArray!=nullptr,"native VAO binding function unavailable");
+        extensions->glBindVertexArray(0);
+        GLint rawChanged=-1;glGetIntegerv(0x85B5,&rawChanged);
+        require(rawChanged==0 && mixedState->getCurrentVertexArrayObject()==static_cast<GLuint>(actualVao),
+            "raw-only VAO mutation unexpectedly changed native tracked name");
+    }
+    glGetIntegerv(0x85B5,&preparedVao);glGetIntegerv(GL_ARRAY_BUFFER_BINDING_ARB,&preparedVertex);
+    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING_ARB,&preparedElement);
+    require(preparedVao==actualVao && preparedVertex==actualVertex && preparedElement==actualElement
+        && mixedState->getCurrentVertexArrayObject()==static_cast<GLuint>(actualVao),
+        "raw-only VAO mutation bypassed actual preparation restoration");
+    require(mixedState->getCurrentVertexArrayState()==beforeArrays
+        && beforeArrays->getCurrentVertexBufferObject()==beforeVertex
+        && beforeArrays->getCurrentElementBufferObject()==beforeElement,
+        "raw-only preparation changed separately retained native VAS/cache references");
+    progress("preparation entry has native donor VAO bound and deliberately stale tracked name");
+    mixedState->setCurrentVertexArrayObject(0); // No GL bind: deliberately stale native tracking at entry.
+    glGetIntegerv(0x85B5,&preparedVao);
+    require(preparedVao==actualVao && mixedState->getCurrentVertexArrayObject()==0,
+        "stale-at-entry fixture failed to separate actual and tracked VAO names");
+    preparing->compileGLObjects(interleavedInfo);
+    glGetIntegerv(0x85B5,&preparedVao);glGetIntegerv(GL_ARRAY_BUFFER_BINDING_ARB,&preparedVertex);
+    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING_ARB,&preparedElement);
+    require(preparedVao==actualVao && preparedVertex==actualVertex && preparedElement==actualElement
+        && mixedState->getCurrentVertexArrayObject()==static_cast<GLuint>(actualVao),
+        "stale-at-entry preparation did not restore actual donor VAO/EBO and reconcile native tracking");
+    require(mixedState->getCurrentVertexArrayState()==beforeArrays
+        && beforeArrays->getCurrentVertexBufferObject()==beforeVertex
+        && beforeArrays->getCurrentElementBufferObject()==beforeElement,
+        "stale-at-entry preparation changed separately retained native VAS/cache references");
+    context->releaseContext();
+    require(image(nativeDonor)==donorControl,"unrelated native donor reuse after preparation changed pixels");
+    const auto preparingControl=image(preparingSource);
+    require(image(preparing)==preparingControl,"interleaved prepared candidate first use changed pixels");
+    b1=nullptr;b2=nullptr;sourceA=nullptr;retainedA=nullptr;display=nullptr;nativeDonor=nullptr;
+    preparingSource=nullptr;preparing=nullptr;
     ordinary=mesh(osg::Array::BIND_PER_VERTEX);candidate=V::make(*ordinary);
     progress("reverse depth");
     camera->setClearDepth(0);camera->getOrCreateStateSet()->setAttributeAndModes(new osg::Depth(osg::Depth::GEQUAL,0,1,true));
