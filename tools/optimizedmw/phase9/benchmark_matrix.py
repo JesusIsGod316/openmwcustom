@@ -285,6 +285,37 @@ def completed_run_receipts(directory, launcher_code):
     return receipt, desktop
 
 
+def protected_input_qualification(receipt, allow_external_lua_storage_changes=False):
+    playback = receipt.get('playback') or {}
+    unchanged = playback.get('protected_inputs_unchanged') is True
+    review = playback.get('protected_input_review') or {}
+    if unchanged:
+        return {'unchanged': True, 'accepted': True, 'changes': []}
+    if not allow_external_lua_storage_changes:
+        raise ValueError('Original protected inputs changed without explicit external Lua-storage approval')
+    if (review.get('policy') != 'allow_external_regular_lua_storage_updates'
+            or review.get('accepted') is not True
+            or review.get('allow_external_lua_storage_changes') is not True
+            or review.get('isolated_private_profile') is not True
+            or review.get('unchanged') is not False
+            or review.get('blocked_change_count') != 0
+            or playback.get('protected_inputs_accepted') is not True):
+        raise ValueError('External Lua-storage changes lack an accepted isolated-profile review')
+    changes = review.get('changes')
+    if not isinstance(changes, list) or not changes:
+        raise ValueError('External Lua-storage review lacks exact changed identities')
+    for change in changes:
+        old, new = change.get('before') or {}, change.get('after') or {}
+        path = Path(old.get('path', ''))
+        if (change.get('accepted') is not True
+                or change.get('reason') != 'approved_external_lua_storage_update'
+                or path.name.lower() not in ('global_storage.bin', 'player_storage.bin')
+                or str(path).lower() != str(Path(new.get('path', ''))).lower()
+                or new.get('exists') is not True):
+            raise ValueError('External Lua-storage review contains an unapproved change')
+    return review
+
+
 def run_matrix(plan_path, output):
     plan = read_json(plan_path); output = Path(output).resolve()
     if output.exists():
@@ -315,6 +346,9 @@ def run_matrix(plan_path, output):
                 'stage':'setup', 'receipt':str(directory/'RUN.json'),
                 'desktop_receipt':str(directory/'Desktop'/'DESKTOP-RECEIPT.json')}
             route = routes[case['route']]
+            allow_external_lua = case.get('allow_external_lua_storage_changes', False)
+            if not isinstance(allow_external_lua, bool):
+                raise ValueError('allow_external_lua_storage_changes must be a JSON boolean')
             settings = case.get('settings',[])
             settings_path = directory/'requested-settings.json'; benchmark_desktop.save(settings_path,settings)
             receipt_path = directory/'RUN.json'
@@ -326,11 +360,14 @@ def run_matrix(plan_path, output):
                     '-NoPrompt','-AttackMask','1','-RamMask','4','-MemoryProfile','Headroom',
                     '-ArchitectureMask',str(case.get('architecture_mask',0)),
                     '-AssetMask',str(case.get('asset_mask',0)),'-TraceLevel',case.get('depth','Normal'),'-Candidate','CONTROL']
+            if allow_external_lua:
+                args.append('-AllowExternalLuaStorageChanges')
             print(json.dumps({'case':case['id'],'route':case['route'],'state':'started'}),flush=True)
             current_case['stage'] = 'private_launcher'
             code = benchmark_desktop.launch(plan['powershell'],args,game,directory/'Desktop',plan.get('deadline',600))
             current_case['stage'] = 'run_qualification'
             receipt, desktop = completed_run_receipts(directory, code)
+            protected = protected_input_qualification(receipt, allow_external_lua)
             if not desktop.get('owned_render_window_observed') or not desktop['input_desktop_unchanged'] or desktop.get('input_desktop_owned_visible_windows'):
                 raise ValueError('Private rendering isolation incomplete')
             if not receipt['settings_restore_verified'] or not receipt['environment_restore_verified']:
@@ -348,7 +385,7 @@ def run_matrix(plan_path, output):
             benchmark_desktop.save(directory/'ANALYSIS.json',metrics)
             result = {'id':case['id'],'route':case['route'],'depth':case.get('depth','Normal'),
                       'receipt':str(receipt_path),'zip':receipt['zip'],'route_quality':quality,
-                      'engagement':engaged,'analysis':metrics}
+                      'protected_input_review':protected,'engagement':engaged,'analysis':metrics}
             state['runs'].append(result); benchmark_desktop.save(output/'MATRIX.json',state)
             print(json.dumps({'case':case['id'],'state':'completed','positive':engaged}),flush=True)
             if not engaged['all_requested_positive']:

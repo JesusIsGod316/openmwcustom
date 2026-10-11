@@ -102,7 +102,7 @@ class Benchmarks(unittest.TestCase):
                 plan = root/'plan.json'
                 plan.write_text(json.dumps({'game_directory':str(game), 'route_catalog':str(catalog),
                     'symbols':str(game/'symbols.pdb'), 'powershell':'not-executed',
-                    'cases':[{'id':'IndirectReuse', 'route':'Balmora', 'architecture_mask':32,
+                    'cases':[{'id':'IndirectReuse', 'route':'Balmora', 'architecture_mask':20,
                         'settings':[{'section':'Optimizations', 'key':'indirect command reuse', 'value':'true'}]}]}))
                 profile = root/'profile'; profile.mkdir()
                 (profile/'openmw.log').write_text('OptimizedMW automatic benchmark: master_volume=0\n'
@@ -119,6 +119,7 @@ class Benchmarks(unittest.TestCase):
                     matrix.benchmark_desktop.save(desktop_path.parent/'RUN.json', {
                         'exit_code':0, 'launch_failure':None, 'settings_restore_verified':True,
                         'environment_restore_verified':True, 'profile_directory':str(profile),
+                        'playback':{'protected_inputs_unchanged':True},
                         'zip':matrix.identity(archive)})
                     return 0
 
@@ -135,6 +136,56 @@ class Benchmarks(unittest.TestCase):
                 positive = state['runs'][0]['engagement']['positive_work']
                 self.assertEqual(positive, {'indirect_command_reuse':bool(avoided)})
                 self.assertEqual(state['state'], 'completed' if avoided else 'failed')
+
+    def test_external_storage_receipt_keeps_raw_mutations_and_requires_approval(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = str(Path(temporary)/'global_storage.bin')
+            review = {'policy':'allow_external_regular_lua_storage_updates', 'accepted':True,
+                'unchanged':False, 'allow_external_lua_storage_changes':True,
+                'isolated_private_profile':True, 'blocked_change_count':0, 'changes':[{
+                    'before':{'path':path, 'exists':True, 'sha256':'a'*64, 'bytes':1},
+                    'after':{'path':path, 'exists':True, 'sha256':'b'*64, 'bytes':1},
+                    'accepted':True, 'reason':'approved_external_lua_storage_update'}]}
+            receipt = {'playback':{'protected_inputs_unchanged':False,
+                'protected_inputs_accepted':True, 'protected_input_review':review}}
+            with self.assertRaisesRegex(ValueError, 'without explicit'):
+                matrix.protected_input_qualification(receipt)
+            self.assertIs(matrix.protected_input_qualification(receipt, True), review)
+            self.assertFalse(receipt['playback']['protected_inputs_unchanged'])
+            review['isolated_private_profile'] = False
+            with self.assertRaisesRegex(ValueError, 'isolated-profile review'):
+                matrix.protected_input_qualification(receipt, True)
+            review['isolated_private_profile'] = True
+            review['changes'][0]['before']['path'] = str(Path(temporary)/'settings.cfg')
+            review['changes'][0]['after']['path'] = review['changes'][0]['before']['path']
+            with self.assertRaisesRegex(ValueError, 'unapproved change'):
+                matrix.protected_input_qualification(receipt, True)
+            review['changes'] = []
+            with self.assertRaisesRegex(ValueError, 'exact changed identities'):
+                matrix.protected_input_qualification(receipt, True)
+
+    def test_matrix_forwards_storage_approval_only_when_explicit(self):
+        for allowed in (False, True, 'false'):
+            with self.subTest(allowed=allowed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); game = root/'game'; game.mkdir()
+                for name in ('openmw.exe', 'BUILD-IDENTITY.json', 'symbols.pdb'):
+                    (game/name).write_bytes(b'offline input; never executed')
+                catalog = root/'catalog.json'
+                catalog.write_text(json.dumps({'routes':[{'id':'Balmora', 'inputs':[], 'pinned_acquisition':'unused'}]}))
+                plan = root/'plan.json'
+                plan.write_text(json.dumps({'game_directory':str(game), 'route_catalog':str(catalog),
+                    'symbols':str(game/'symbols.pdb'), 'powershell':'never-executed',
+                    'cases':[{'id':'ApprovalCase', 'route':'Balmora', 'allow_external_lua_storage_changes':allowed}]}))
+
+                def stop_before_game(executable, arguments, working, desktop_path, deadline):
+                    self.assertEqual('-AllowExternalLuaStorageChanges' in arguments, allowed)
+                    raise ValueError('offline launch boundary reached')
+
+                with patch.object(matrix.benchmark_desktop, 'launch', side_effect=stop_before_game) as launch:
+                    message = 'must be a JSON boolean' if isinstance(allowed, str) else 'offline launch boundary'
+                    with self.assertRaisesRegex(ValueError, message):
+                        matrix.run_matrix(plan, root/'output')
+                    self.assertEqual(launch.call_count, 0 if isinstance(allowed, str) else 1)
 
     def test_pins_detect_same_length_changes(self):
         with tempfile.TemporaryDirectory() as temporary:

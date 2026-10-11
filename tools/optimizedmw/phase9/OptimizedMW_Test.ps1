@@ -30,6 +30,7 @@ param(
     [string]$ExperimentSettingsFile='',
     [string]$AutomatedResultFile='',
     [string]$AutomatedDerivedCacheDirectory='',
+    [switch]$AllowExternalLuaStorageChanges,
     [ValidateRange(180,900)][int]$AutomatedDeadlineSeconds=420
 )
 $ErrorActionPreference = 'Stop'
@@ -53,6 +54,7 @@ $ProfilesRoot = Join-Path $UserOpenMW 'OptimizedMW-Phase9-Profiles'
 $frozenRuntime=$null
 $automatedSession=$null
 $comparisonDirectory=$GameDir
+if($AllowExternalLuaStorageChanges -and -not $AutomatedRouteCapture){throw 'External Lua-storage approval applies only to isolated automated routes'}
 if($AutomatedRouteCapture){
     if(-not $AutomatedRouteName -or $SavePath -or $OptimizationConfig -or $SystemTrace -or -not $NoPrompt){
         throw 'Automated routes require a route name and -NoPrompt, and use their own save/config; Windows trace is separate.'
@@ -83,6 +85,8 @@ public static class OptimizedMWPrivateDesktopIdentity {
     . (Join-Path $GameDir 'OptimizedMW_RoutePlayback.ps1') -GameDir $GameDir -LibraryOnly
     $automatedSession=New-OptimizedMWPlaybackSession @routeRequest
     $frozenRuntime=$automatedSession.runtime
+    $automatedSession.manifest | Add-Member -NotePropertyName original_input_monitor_policy -NotePropertyValue $(if($AllowExternalLuaStorageChanges){'allow_external_regular_lua_storage_updates'}else{'strict_original_inputs'})
+    Write-OptimizedMWRouteJson (Join-Path $automatedSession.directory 'SESSION.json') $automatedSession.manifest
     # The route's addon/config/binding changes are private, recorded derivations.
     $frozenRuntime.config_identity=Get-OptimizedMWFrozenFile $frozenRuntime.config_path
     foreach($inputIdentity in $frozenRuntime.copied_input_identities){
@@ -806,14 +810,19 @@ try{
         $playbackSummary=Export-OptimizedMWPlaybackLog -LogPath $automatedSession.manifest.stdout_path -OutputPath (Join-Path $ProfileDir 'playback.jsonl') -SessionId $automatedSession.id -ExitCode $exitCode
         Assert-OptimizedMWPlaybackIdentities $automatedSession.manifest.source_capture
         $protectedAfter=Get-OptimizedMWRouteProtectedInputs $automatedSession.baseline
-        $protectedUnchanged=Compare-OptimizedMWRouteProtectedInputs $automatedSession.manifest.protected_before $protectedAfter
-        $playbackSummary|Add-Member -NotePropertyName protected_inputs_unchanged -NotePropertyValue $protectedUnchanged
+        $protectedReview=Get-OptimizedMWRouteProtectedInputReview -Before $automatedSession.manifest.protected_before -After $protectedAfter -Baseline $automatedSession.baseline -Runtime $frozenRuntime -AllowExternalLuaStorageChanges:$AllowExternalLuaStorageChanges
+        $playbackSummary|Add-Member -NotePropertyName protected_inputs_unchanged -NotePropertyValue $protectedReview.unchanged
+        $playbackSummary|Add-Member -NotePropertyName protected_inputs_accepted -NotePropertyValue $protectedReview.accepted
+        $playbackSummary|Add-Member -NotePropertyName protected_input_review -NotePropertyValue $protectedReview
         $playbackSummary|Add-Member -NotePropertyName launch_scope -NotePropertyValue 'private_desktop_windowed_rendering'
         Write-OptimizedMWRouteJson (Join-Path $ProfileDir 'playback-summary.json') $playbackSummary
         Copy-Item -LiteralPath (Join-Path $automatedSession.directory 'SESSION.json') -Destination (Join-Path $ProfileDir 'playback-session.json')
         Copy-Item -LiteralPath $automatedSession.manifest.stdout_path -Destination (Join-Path $ProfileDir 'playback-stdout.log')
         Copy-Item -LiteralPath $automatedSession.manifest.stderr_path -Destination (Join-Path $ProfileDir 'playback-stderr.log')
-        if(-not $playbackSummary.playback_complete -or -not $protectedUnchanged -or $exitCode -ne 0){throw 'Automatic route failed; retained complete raw failure evidence'}
+        if($exitCode -ne 0){throw ('Automatic game exited with code '+$exitCode+'; retained raw failure evidence')}
+        if(-not $playbackSummary.playback_complete){throw 'Automatic route did not complete; retained raw route evidence'}
+        if(-not $protectedReview.accepted){throw 'Original-input monitor rejected protected-file changes; completed route evidence retained'}
+        if(-not $protectedReview.unchanged){Write-Host 'Completed private run retained with approved external Lua-storage updates; see protected_input_review.' -ForegroundColor Yellow}
     }
     [IO.File]::WriteAllLines($memoryCsv,$memoryLines,[Text.Encoding]::ASCII)
     "memory_samples_dropped=$memoryDropped" | Add-Content -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt') -Encoding Ascii

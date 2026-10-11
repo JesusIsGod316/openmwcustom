@@ -147,6 +147,10 @@ add_test(NAME p9-optimization-aliases COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/generate-optimization-aliases.py --check)
 set_tests_properties(p9-optimization-aliases PROPERTIES TIMEOUT 30)
 if(WIN32)
+  add_test(NAME p9-route-protected-inputs COMMAND ${P9_MENU_POWERSHELL}
+    -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${CMAKE_CURRENT_SOURCE_DIR}/route-protected-input-tests.ps1)
+  set_tests_properties(p9-route-protected-inputs PROPERTIES TIMEOUT 30
+    ENVIRONMENT "PSModulePath=$ENV{WINDIR}/System32/WindowsPowerShell/v1.0/Modules")
   add_test(NAME p9-memory-profiles COMMAND ${P9_MENU_POWERSHELL}
     -NoProfile -ExecutionPolicy Bypass -File ${CMAKE_CURRENT_SOURCE_DIR}/memory-profile-tests.ps1)
   add_test(NAME p9-setting-writer COMMAND ${P9_MENU_POWERSHELL}

@@ -5,7 +5,7 @@ settings between runs; do not compile or change packages during a comparison.
 
 [Cells]
 prepare material images = false
-material image preparation mib = 64
+material image prepare mib = 64
 lod cache hit admission = false
 lod retain source indices = false
 ordinary opaque packets = false
@@ -34,7 +34,8 @@ compare with identical cache-hit admission and memory settings in the control.
 Indirect command reuse avoids resubmitting unchanged CPU command lists into
 already populated private slots. A GPU-written slot is restored once before
 CPU reuse; the existing fences and busy-slot fallback are retained. Requires
-ArchitectureMask 32 (indirect) or 64 (GPU visibility) in both sides of a pair.
+ArchitectureMask 20 (packets + CPU indirect) or 52 (packets + indirect + GPU
+visibility) in both sides of a pair. Bit 64 is CPU deformation, not GPU visibility.
 Counters must show command uploads avoided before any performance comparison.
 
 Ordinary opaque packets extends packet attachment into original-source-certified
@@ -64,6 +65,15 @@ Canonical archives stay in Benchmarks. Each matrix keeps build/route/tool pins,
 requested settings, desktop/process receipts, route/actor policy, artifact hashes
 and pacing analysis. Source route/save files and regular gameplay settings are
 verified unchanged. Failure preserves evidence and stops broader comparisons.
+
+Each automatic case may explicitly set allow_external_lua_storage_changes: true
+after user approval. The launcher then records and accepts updates to the regular
+profile's global_storage.bin and player_storage.bin only after checking that its
+private config/user-data paths are disjoint. It retains unchanged=false and exact
+before/after identities; missing files, settings, saves, bindings, shaders, source
+routes and frozen/package inputs do not receive this exception. Default is strict.
+This acknowledges external profile writes, not performance-neutral background work;
+an overlapping game remains a separate resource-contention limit on comparisons.
 
 Functional route completion and engagement are separate from performance proof.
 The guided physical follower can add steering and reference-clock holds. Review

@@ -41,6 +41,58 @@ function Compare-OptimizedMWRouteProtectedInputs {
     return $unchanged
 }
 
+function Get-OptimizedMWRouteProtectedInputReview {
+    param([object[]]$Before,[object[]]$After,[object]$Baseline,[object]$Runtime,[switch]$AllowExternalLuaStorageChanges)
+    $unchanged=Compare-OptimizedMWRouteProtectedInputs $Before $After
+    $allowed=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $isolated=$false
+    if($AllowExternalLuaStorageChanges){
+        # Permanent Lua storage is read from the private config directory. An
+        # opt-in may cover only the two external originals, never test inputs.
+        $original=Assert-OptimizedMWPlainPath ([string]$Baseline.lock.source_configuration_directory)
+        $originalData=Assert-OptimizedMWPlainPath ([string]$Baseline.lock.source_user_data_directory)
+        $private=Assert-OptimizedMWPlainPath ([string]$Runtime.directory)
+        $privateData=Assert-OptimizedMWPlainPath ([string]$Runtime.user_data_directory)
+        if((Assert-OptimizedMWPlainPath ([string]$Runtime.config_path)) -ine (Join-Path $private 'openmw.cfg') -or
+           (Assert-OptimizedMWPlainPath ([string]$Runtime.settings_path)) -ine (Join-Path $private 'settings.cfg') -or
+           -not $privateData.StartsWith($private.TrimEnd('\','/')+'\',[StringComparison]::OrdinalIgnoreCase)){
+            throw 'External Lua-storage approval requires a private config and user-data directory'
+        }
+        foreach($sourceRoot in @($original,$originalData)){
+            foreach($privateRoot in @($private,$privateData)){
+                if($sourceRoot -ieq $privateRoot -or
+                   $privateRoot.StartsWith($sourceRoot.TrimEnd('\','/')+'\',[StringComparison]::OrdinalIgnoreCase) -or
+                   $sourceRoot.StartsWith($privateRoot.TrimEnd('\','/')+'\',[StringComparison]::OrdinalIgnoreCase)){
+                    throw 'External Lua-storage approval requires disjoint original and private profile paths'
+                }
+            }
+        }
+        foreach($name in @('global_storage.bin','player_storage.bin')){[void]$allowed.Add((Join-Path $original $name))}
+        $isolated=$true
+    }
+    $changes=[Collections.Generic.List[object]]::new()
+    for($i=0;$i -lt [Math]::Max($Before.Count,$After.Count);++$i){
+        $old=$(if($i -lt $Before.Count){$Before[$i]}else{$null})
+        $new=$(if($i -lt $After.Count){$After[$i]}else{$null})
+        if($null -ne $old -and $null -ne $new -and $old.path -ieq $new.path -and
+           $old.exists -eq $new.exists -and $old.sha256 -ceq $new.sha256 -and $old.bytes -eq $new.bytes){continue}
+        $accepted=$false;$reason='protected_input_changed'
+        if($null -eq $old -or $null -eq $new -or $old.path -ine $new.path){$reason='protected_identity_structure_changed'}
+        elseif($AllowExternalLuaStorageChanges -and $allowed.Contains([string]$old.path) -and $new.exists){
+            $accepted=$true;$reason='approved_external_lua_storage_update'
+        }
+        $changes.Add([pscustomobject]@{before=$old;after=$new;accepted=$accepted;reason=$reason})
+    }
+    $blocked=@($changes.ToArray() | Where-Object {-not $_.accepted})
+    return [pscustomobject]@{
+        policy=$(if($AllowExternalLuaStorageChanges){'allow_external_regular_lua_storage_updates'}else{'strict_original_inputs'});
+        unchanged=$unchanged;accepted=($unchanged -or $blocked.Count -eq 0);
+        isolated_private_profile=$isolated;allow_external_lua_storage_changes=[bool]$AllowExternalLuaStorageChanges;
+        changes=$changes.ToArray();blocked_change_count=$blocked.Count;
+        scope='Original-input monitoring only; frozen inputs, source routes, package pins and occupied-game guards remain independent.'
+    }
+}
+
 function Set-OptimizedMWRouteIniValue {
     param([string]$Path,[string]$Section,[string]$Key,[string]$Value)
     $lines=[Collections.Generic.List[string]]::new();$current='';$inserted=$false
