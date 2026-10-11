@@ -28,6 +28,7 @@ param(
     [string]$AutomatedRouteCapture='',
     [ValidateSet('','existing','balmora')][string]$AutomatedRouteName='',
     [string]$ExperimentSettingsFile='',
+    [ValidateSet('Off','Camera','Dynamic')][string]$AutomatedTemporalMode='Off',
     [string]$AutomatedResultFile='',
     [string]$AutomatedDerivedCacheDirectory='',
     [switch]$AllowExternalLuaStorageChanges,
@@ -55,6 +56,7 @@ $frozenRuntime=$null
 $automatedSession=$null
 $comparisonDirectory=$GameDir
 if($AllowExternalLuaStorageChanges -and -not $AutomatedRouteCapture){throw 'External Lua-storage approval applies only to isolated automated routes'}
+if($AutomatedTemporalMode -ne 'Off' -and -not $AutomatedRouteCapture){throw 'Automatic temporal inputs require an isolated automated route'}
 if($AutomatedRouteCapture){
     if(-not $AutomatedRouteName -or $SavePath -or $OptimizationConfig -or $SystemTrace -or -not $NoPrompt){
         throw 'Automated routes require a route name and -NoPrompt, and use their own save/config; Windows trace is separate.'
@@ -242,6 +244,14 @@ if($NoPrompt -and -not $ModeChoice){throw '-NoPrompt requires -Mode or -HitchMas
 if(-not $ModeChoice){throw 'Choose a numbered test or supply an explicit CLI selection'}
 $choice=$ModeChoice
 $mode=Get-P9Mode $choice
+if($AutomatedTemporalMode -ne 'Off'){
+    # Keep the same RAM/animation and Normal/Deep selection on both arms.
+    # This selects input production only; evaluation and jitter remain gated.
+    $mode.Temporal='1';$mode.Ownership='1'
+    $mode.DynamicMotion=[string][int]($AutomatedTemporalMode -eq 'Dynamic')
+    $mode.Name+='-TEMPORAL-'+$AutomatedTemporalMode.ToUpperInvariant()
+    if($hitchSelection){$hitchSelection.experiment+='-TEMPORAL-'+$AutomatedTemporalMode.ToUpperInvariant()}
+}
 if($numericSelection -and $numericSelection.legacy_mode){$mode.Trace=[string][int]($numericSelection.trace_level -eq 'Deep')}
 if($numericSelection){
     $mode.NumericMenuRevision=4;$mode.NumericSelectionId=$numericSelection.selection_id

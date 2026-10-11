@@ -21,6 +21,15 @@ def runtime_fixture(game):
 
 
 class Benchmarks(unittest.TestCase):
+    def test_temporal_input_modes_do_not_silently_fall_back_to_control(self):
+        self.assertEqual(matrix.temporal_arguments({}), [])
+        self.assertEqual(matrix.temporal_arguments({'temporal_mode':'Off'}), [])
+        for mode in ('Camera', 'Dynamic'):
+            self.assertEqual(matrix.temporal_arguments({'temporal_mode':mode}), ['-AutomatedTemporalMode',mode])
+        for mode in ('DLSS', True, None, 'dynamic'):
+            with self.assertRaisesRegex(ValueError, 'Unknown automatic temporal'):
+                matrix.temporal_arguments({'temporal_mode':mode})
+
     def test_private_timeout_without_run_receipt_keeps_actual_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)

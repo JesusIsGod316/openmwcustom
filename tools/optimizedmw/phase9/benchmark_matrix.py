@@ -372,6 +372,13 @@ def protected_input_qualification(receipt, allow_external_lua_storage_changes=Fa
     return review
 
 
+def temporal_arguments(case):
+    mode = case.get('temporal_mode', 'Off')
+    if mode not in ('Off', 'Camera', 'Dynamic'):
+        raise ValueError('Unknown automatic temporal input mode: ' + str(mode))
+    return ['-AutomatedTemporalMode', mode] if mode != 'Off' else []
+
+
 def run_matrix(plan_path, output):
     plan = read_json(plan_path); output = Path(output).resolve()
     if output.exists():
@@ -421,6 +428,7 @@ def run_matrix(plan_path, output):
                     '-NoPrompt','-AttackMask','1','-RamMask','4','-MemoryProfile','Headroom',
                     '-ArchitectureMask',str(case.get('architecture_mask',0)),
                     '-AssetMask',str(case.get('asset_mask',0)),'-TraceLevel',case.get('depth','Normal'),'-Candidate','CONTROL']
+            args += temporal_arguments(case)
             if allow_external_lua:
                 args.append('-AllowExternalLuaStorageChanges')
             print(json.dumps({'case':case['id'],'route':case['route'],'state':'started'}),flush=True)
