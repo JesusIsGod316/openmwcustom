@@ -136,7 +136,7 @@ namespace P9Dlss
         }
         Texture make(Bridge& bridge, unsigned width, unsigned height, DXGI_FORMAT format, bool output)
         {
-            require(width && height && width <= 1280 && height <= 720, "Bounded fixture texture extent");
+            require(width && height && width <= 1920 && height <= 1080, "Bounded 1080p fixture texture extent");
             UINT support = 0; dx(device->CheckFormatSupport(format, &support), "Check exact format support");
             const UINT required = D3D11_FORMAT_SUPPORT_TEXTURE2D | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE
                 | (output ? D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW : 0);

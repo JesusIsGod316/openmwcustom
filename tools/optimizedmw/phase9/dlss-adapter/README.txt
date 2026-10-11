@@ -37,6 +37,22 @@ The hardware proof checks:
   evaluation and verification work completes before SDK feature release and
   interop/resource retirement. No slot is reused while work is in flight.
 
+The independently selectable --gpu-transfers mode uses output 1920x1080 ->
+1600x900 -> 1920x1080. It produces all typed inputs and the negative sentinel
+in actual shared floating-point OpenGL framebuffers, without CPU texture
+uploads. A graphics framebuffer copy consumes the NVIDIA output into an
+independent private GL target. Every copied pixel must equal the shared output
+and the independent D3D readback. Input-change resets and safe recreation
+remain mandatory. The same no-evaluation negative control applies in this
+mode. This is a real GPU producer/consumer transfer proof at 1080p, with
+synthetic zero-motion images; it is not an in-game acceptance result.
+
+GPU transfer submission/locking is recorded separately from verification
+readbacks. Completion observation includes the native event polling policy;
+these measurements do not isolate the DLSS kernel or predict gameplay FPS.
+Use qualify_adapter.py on finished positive/negative artifacts to seal
+provenance and test_qualification.py to exercise tampered-receipt rejection.
+
 An initial prototype inserted a redundant empty-context D3D event after
 ReleaseFeature and timed out on the tested driver. Its failure is preserved.
 The qualified ordering drains actual application work before ReleaseFeature,

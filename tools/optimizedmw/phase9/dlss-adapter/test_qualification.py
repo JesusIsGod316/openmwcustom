@@ -70,6 +70,16 @@ class ReceiptRejection(unittest.TestCase):
         with self.assertRaises(AssertionError):
             checked_run(path, False)
 
+    def test_gpu_case_requires_actual_consumer(self):
+        inputs = json.loads((self.positive / 'INPUTS.json').read_text(encoding='utf-8-sig'))
+        if not inputs.get('gpu_transfers', False):
+            self.skipTest('CPU upload cohort; GPU consumer applies to separate GPU cohort')
+        path = self.copied(self.positive)
+        self.edit_rows(path / 'adapter-evidence.jsonl', lambda rows:
+            next(row for row in rows if row['check'] == 'real_dlss_evaluated').__setitem__('exact_graphics_consumer_pixels', False))
+        with self.assertRaises(AssertionError):
+            checked_run(path, False)
+
     def test_visible_window_or_failed_exit(self):
         path = self.copied(self.positive)
         receipt = path / 'Desktop/DESKTOP-RECEIPT.json'

@@ -1,4 +1,5 @@
 #include "shared-d3d11-textures.hpp"
+#include "gpu-transfers.hpp"
 #include <nvsdk_ngx_helpers.h>
 
 #include <cmath>
@@ -88,6 +89,7 @@ namespace
         HiddenContext context;
         Device device;
         Bridge bridge;
+        GpuTransfers gpuTransfers;
         // Retain all SDK configuration strings and descriptors through its
         // shutdown; do not rely on an undocumented copy of caller storage.
         std::filesystem::path applicationDataPath;
@@ -100,6 +102,7 @@ namespace
         std::uint64_t generation = 0, sequence = 0;
         bool retired = true;
         bool negativeNoEvaluation = false;
+        bool gpuTransfersEnabled = false;
         explicit Fixture(const std::filesystem::path& logDirectory)
             : applicationDataPath(logDirectory)
         {
@@ -135,6 +138,7 @@ namespace
             textures[2] = device.make(bridge, iw, ih, DXGI_FORMAT_R16G16_FLOAT, false);
             textures[3] = device.make(bridge, 1, 1, DXGI_FORMAT_R32_FLOAT, false);
             textures[4] = device.make(bridge, width, height, DXGI_FORMAT_R16G16B16A16_FLOAT, true);
+            if (gpuTransfersEnabled) gpuTransfers.makeConsumer(width, height);
             NVSDK_NGX_DLSS_Create_Params params{};
             params.Feature.InWidth = iw; params.Feature.InHeight = ih;
             params.Feature.InTargetWidth = width; params.Feature.InTargetHeight = height;
@@ -197,9 +201,20 @@ namespace
             std::vector<HANDLE> handles; for (const auto& texture : textures) handles.push_back(texture.registration);
             const auto produceStart = Clock::now();
             bridge.lock(handles);
-            write(textures[0], GL_RGBA, colors.data()); write(textures[1], Red, depths.data());
-            write(textures[2], Rg, motion.data()); write(textures[3], Red, &exposure);
-            write(textures[4], GL_RGBA, sentinel.data());
+            if (gpuTransfersEnabled)
+            {
+                gpuTransfers.quadrants(textures[0], [changed](unsigned q) { return color(q, changed); });
+                gpuTransfers.fill(textures[1], {.5f, 0.f, 0.f, 1.f});
+                gpuTransfers.fill(textures[2], {0.f, 0.f, 0.f, 1.f});
+                gpuTransfers.fill(textures[3], {exposure, 0.f, 0.f, 1.f});
+                gpuTransfers.fill(textures[4], {-9.f, -9.f, -9.f, -9.f});
+            }
+            else
+            {
+                write(textures[0], GL_RGBA, colors.data()); write(textures[1], Red, depths.data());
+                write(textures[2], Rg, motion.data()); write(textures[3], Red, &exposure);
+                write(textures[4], GL_RGBA, sentinel.data());
+            }
             bridge.unlock(handles);
             const double produceMs = milliseconds(produceStart);
             NVSDK_NGX_D3D11_DLSS_Eval_Params params{};
@@ -221,7 +236,15 @@ namespace
             const double completeMs = milliseconds(completeStart);
             const auto consumeStart = Clock::now();
             bridge.lock(handles);
+            if (gpuTransfersEnabled) gpuTransfers.consume(textures[4]);
+            bridge.unlock(handles);
+            const double graphicsConsumeMs = milliseconds(consumeStart);
+            const auto verifyStart = Clock::now();
+            bridge.lock(handles);
             auto pixels = read(textures[4], GL_RGBA, 4);
+            if (gpuTransfersEnabled)
+                require(read(gpuTransfers.consumerImage, GL_RGBA, 4) == pixels,
+                    "Every actual graphics consumer pixel equals the shared DLSS output");
             // Verify input identity too: NGX cannot quietly consume an unrelated
             // texture on another device or a stale generation of our buffers.
             const auto actualColors = read(textures[0], GL_RGBA, 4);
@@ -234,6 +257,7 @@ namespace
             glBindTexture(GL_TEXTURE_2D, 0);
             bridge.unlock(handles);
             const double consumeMs = milliseconds(consumeStart);
+            const double verificationMs = milliseconds(verifyStart);
             for (float value : pixels) require(std::isfinite(value) && value > -.5f && value < 2.f,
                 "Every actual DLSS output component initialized and finite");
             float maximumError = 0.f;
@@ -274,10 +298,15 @@ namespace
                 << ",\"reset\":" << (params.InReset ? "true" : "false")
                 << ",\"exact_input_pixels\":true,\"exact_cross_api_output\":true,\"maximum_patch_error\":" << maximumError
                 << ",\"exact_exposure_pixel\":true"
-                << ",\"gl_production_lock_upload_unlock_ms\":" << produceMs
+                << ",\"gpu_produced_inputs\":" << (gpuTransfersEnabled ? "true" : "false")
+                << ",\"exact_graphics_consumer_pixels\":" << (gpuTransfersEnabled ? "true" : "false")
+                << ",\"gl_production_lock_write_unlock_ms\":" << produceMs
                 << ",\"ngx_evaluate_cpu_ms\":" << evaluateMs << ",\"d3d_completion_observation_ms\":" << completeMs
+                << ",\"gl_graphics_consumer_lock_copy_unlock_ms\":" << graphicsConsumeMs
+                << ",\"gl_verification_readbacks_unlock_ms\":" << verificationMs
                 << ",\"gl_consume_lock_readback_unlock_ms\":" << consumeMs
-                << ",\"scope\":\"synthetic_adapter_cost_with_readback_not_game_performance\"";
+                << ",\"scope\":\"synthetic_adapter_cost_with_readback_not_game_performance\""
+                << ",\"graphics_consumer_scope\":\"interop_lock_gpu_copy_unlock_without_verification_readback\"";
             evidence.row("real_dlss_evaluated", fields.str());
         }
         void destroy(Evidence& evidence)
@@ -294,6 +323,11 @@ namespace
             // new application GPU workload requiring an empty-context marker.
             // Restore our immediate context before creating the next feature.
             device.commands->ClearState();
+            if (gpuTransfersEnabled)
+            {
+                std::vector<HANDLE> handles; for (const auto& texture : textures) handles.push_back(texture.registration);
+                bridge.lock(handles); gpuTransfers.retireConsumer(); bridge.unlock(handles);
+            }
             for (auto& texture : textures) retire(bridge, texture);
             evidence.row("feature_retirement_resources_released", "\"status\":\"pass\"");
         }
@@ -305,6 +339,7 @@ namespace
             // Shutdown follows completed evaluation and feature retirement;
             // no application GPU resources remain in flight or are reused.
             require(bridge.closeDevice(bridge.device), "Close completed interop device"); bridge.device = nullptr;
+            if (gpuTransfersEnabled) gpuTransfers.close();
             device.commands.Reset(); device.device.Reset(); device.adapter.Reset(); context.close();
         }
     };
@@ -312,11 +347,18 @@ namespace
 
 int main(int argc, char** argv)
 {
-    const bool negative = argc == 4 && std::string(argv[3]) == "--negative-no-evaluation";
+    bool negative = false, gpu = false;
     try
     {
-        require((argc == 3 || negative) && std::string(argv[1]) == "--output",
-            "Usage: fixture --output fresh-evidence.jsonl [--negative-no-evaluation]");
+        require(argc >= 3 && argc <= 5 && std::string(argv[1]) == "--output",
+            "Usage: fixture --output fresh-evidence.jsonl [--negative-no-evaluation] [--gpu-transfers]");
+        for (int i = 3; i < argc; ++i)
+        {
+            const std::string option(argv[i]);
+            if (option == "--negative-no-evaluation" && !negative) negative = true;
+            else if (option == "--gpu-transfers" && !gpu) gpu = true;
+            else throw std::runtime_error("Unknown or duplicated fixture option");
+        }
         const auto output = std::filesystem::absolute(argv[2]);
         require(!std::filesystem::exists(output), "Preserve previous fixture output");
         std::filesystem::create_directories(output.parent_path() / "NgxLogs");
@@ -326,23 +368,30 @@ int main(int argc, char** argv)
         // possibly in-flight resources in destructors would be unsafe.
         auto* fixture = new Fixture(output.parent_path() / "NgxLogs");
         fixture->negativeNoEvaluation = negative;
+        fixture->gpuTransfersEnabled = gpu;
+        if (gpu) fixture->gpuTransfers.initialize();
         std::ostringstream identity;
         identity << "\"status\":\"pass\",\"device_luid_low\":" << fixture->device.glLuid.LowPart
             << ",\"device_luid_high\":" << fixture->device.glLuid.HighPart
             << ",\"device_node_mask\":" << fixture->device.nodeMask
             << ",\"vendor_id\":" << fixture->device.description.VendorId
             << ",\"device_id\":" << fixture->device.description.DeviceId
-            << ",\"same_device\":true,\"window_hidden\":true,\"actual_ngx_backend\":\"D3D11\"";
+            << ",\"same_device\":true,\"window_hidden\":true,\"actual_ngx_backend\":\"D3D11\""
+            << ",\"gpu_transfers\":" << (gpu ? "true" : "false");
         evidence.row("same_device_real_ngx", identity.str());
-        for (const auto dimensions : {std::pair{640u,360u}, std::pair{800u,448u}, std::pair{640u,360u}})
+        const auto dimensions = gpu
+            ? std::array{std::pair{1920u,1080u}, std::pair{1600u,900u}, std::pair{1920u,1080u}}
+            : std::array{std::pair{640u,360u}, std::pair{800u,448u}, std::pair{640u,360u}};
+        for (const auto extent : dimensions)
         {
-            fixture->create(dimensions.first, dimensions.second, evidence);
+            fixture->create(extent.first, extent.second, evidence);
             for (unsigned frame = 0; frame < 4; ++frame) fixture->evaluate(frame, evidence);
             fixture->destroy(evidence);
         }
         fixture->close(); delete fixture;
-        evidence.row("adapter_complete", "\"status\":\"pass\",\"actual_evaluations\":12,\"retired_generations\":3,"
-            "\"game_dlss_enabled\":false,\"dense_game_motion_proved\":false,\"performance_promoted\":false");
+        evidence.row("adapter_complete", std::string("\"status\":\"pass\",\"actual_evaluations\":12,\"retired_generations\":3,")
+            + "\"gpu_transfers\":" + (gpu ? "true" : "false")
+            + ",\"game_dlss_enabled\":false,\"dense_game_motion_proved\":false,\"performance_promoted\":false");
         return 0;
     }
     catch (const std::exception& exception)
