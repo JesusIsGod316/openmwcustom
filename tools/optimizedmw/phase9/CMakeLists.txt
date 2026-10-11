@@ -149,6 +149,9 @@ set_tests_properties(p9-composite-cpu-mips p9-composite-cpu-mips-gl PROPERTIES T
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME p9-indirect-interval-work COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/indirect-work-tests.py)
+add_test(NAME p9-runtime-dependencies COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/runtime-dependencies-tests.py)
+set_tests_properties(p9-runtime-dependencies PROPERTIES TIMEOUT 30)
 set_tests_properties(p9-indirect-interval-work PROPERTIES TIMEOUT 30)
 add_test(NAME p9-optimization-aliases COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/generate-optimization-aliases.py --check)

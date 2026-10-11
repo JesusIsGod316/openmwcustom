@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import runtime_dependencies
 
 root=Path(sys.argv[1]); source=Path(__file__).resolve().parents[3]
 public=source/'tools/optimizedmw/phase9'
@@ -21,6 +22,8 @@ for extra in ('ARCHITECTURE-CANDIDATES.md','ASSET-PIPELINE-CANDIDATES.txt'):
     files.append(extra)
     assert (root/extra).is_file() and (root/extra).stat().st_size>0
 assert (root/'openmw.exe').read_bytes()[:2]==b'MZ', 'not a Windows PE executable'
+dependencies=runtime_dependencies.runtime_closure(root)
+Path('RUNTIME-DEPENDENCIES.json').write_text(json.dumps(dependencies,indent=2)+'\n')
 assert sorted(p.name.lower() for p in root.glob('*.bat'))==['start-optimizedmw-systemtrace.bat','start-optimizedmw-test.bat']
 assert os.environ['EXPECTED_COMMIT'] in (root/'CI-ID.txt').read_text()
 assert (root/'resources/version').read_text().splitlines()[1] == os.environ['EXPECTED_COMMIT'], 'resource version does not match engine source'
@@ -49,6 +52,8 @@ for name in ('groundcover.vert','groundcover.frag','groundcover_lod.glsl','tempo
         assert deployed.read_bytes()==(source/'files/shaders'/relative).read_bytes(),relative
     files.append('resources/shaders/'+relative)
 lines=[hashlib.sha256((root/n).read_bytes()).hexdigest()+'  '+n for n in files]
+lines += [hashlib.sha256(Path(n).read_bytes()).hexdigest()+'  '+str(Path(n).relative_to(root.resolve()))
+          for n in dependencies['files'] if Path(n)!=root.resolve()/'openmw.exe']
 lines.append(hashlib.sha256((root/'optimization-settings-aliases.json').read_bytes()).hexdigest()+'  optimization-settings-aliases.json')
 for relative in ('builtin.omwscripts', 'scripts/omw/camera/camera.lua',
                  'scripts/omw/camera/settings.lua', 'scripts/omw/settings/common.lua'):

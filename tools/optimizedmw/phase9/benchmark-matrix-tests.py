@@ -11,6 +11,15 @@ spec=importlib.util.spec_from_file_location('matrix',ROOT/'benchmark_matrix.py')
 matrix=importlib.util.module_from_spec(spec);spec.loader.exec_module(matrix)
 
 
+def runtime_fixture(game):
+    fixture_spec=importlib.util.spec_from_file_location('runtime_fixture',ROOT/'runtime-dependencies-tests.py')
+    fixture=importlib.util.module_from_spec(fixture_spec);fixture_spec.loader.exec_module(fixture)
+    # Valid metadata only; the mocked launcher never executes these fixtures.
+    (game/'openmw.exe').write_bytes(fixture.pe())
+    plugins=game/'osgPlugins-fixture';plugins.mkdir()
+    (plugins/'osgdb_dds.dll').write_bytes(fixture.pe())
+
+
 class Benchmarks(unittest.TestCase):
     def test_private_timeout_without_run_receipt_keeps_actual_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -50,6 +59,7 @@ class Benchmarks(unittest.TestCase):
             game = root/'game'; game.mkdir()
             for name in ('openmw.exe', 'BUILD-IDENTITY.json', 'symbols.pdb'):
                 (game/name).write_bytes(b'offline test input; never executed')
+            runtime_fixture(game)
             catalog = root/'catalog.json'
             catalog.write_text(json.dumps({'routes':[{'id':'Balmora', 'inputs':[],
                 'pinned_acquisition':str(root/'unused_route')}]}))
@@ -96,6 +106,7 @@ class Benchmarks(unittest.TestCase):
                 root = Path(temporary); game = root/'game'; game.mkdir()
                 for name in ('openmw.exe', 'BUILD-IDENTITY.json', 'symbols.pdb'):
                     (game/name).write_bytes(b'offline test input; never executed')
+                runtime_fixture(game)
                 catalog = root/'catalog.json'
                 catalog.write_text(json.dumps({'routes':[{'id':'Balmora', 'inputs':[],
                     'pinned_acquisition':str(root/'unused_route')}]}))
@@ -171,6 +182,7 @@ class Benchmarks(unittest.TestCase):
                 root = Path(temporary); game = root/'game'; game.mkdir()
                 for name in ('openmw.exe', 'BUILD-IDENTITY.json', 'symbols.pdb'):
                     (game/name).write_bytes(b'offline input; never executed')
+                runtime_fixture(game)
                 catalog = root/'catalog.json'
                 catalog.write_text(json.dumps({'routes':[{'id':'Balmora', 'inputs':[], 'pinned_acquisition':'unused'}]}))
                 plan = root/'plan.json'

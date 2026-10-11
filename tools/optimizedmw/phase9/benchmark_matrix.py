@@ -17,6 +17,7 @@ import sys
 
 import benchmark_desktop
 import indirect_work
+import runtime_dependencies
 
 
 def read_json(path):
@@ -354,6 +355,10 @@ def run_matrix(plan_path, output):
     pins = [identity(game/'openmw.exe'),identity(plan['symbols']),identity(game/'BUILD-IDENTITY.json'),
             identity(plan_path),identity(plan['route_catalog']),identity(__file__),identity(benchmark_desktop.__file__)]
     pins.append(identity(indirect_work.__file__))
+    dependencies = runtime_dependencies.runtime_closure(game)
+    pins.append(identity(runtime_dependencies.__file__))
+    pins += [identity(path) for path in dependencies['files'] if Path(path) != game/'openmw.exe']
+    benchmark_desktop.save(output/'RUNTIME-DEPENDENCIES.json', dependencies)
     pins += [identity(path) for path in sorted(game.glob('OptimizedMW_*.ps1'))]
     pins += [identity(path) for path in sorted((game/'RoutePlayback').rglob('*')) if path.is_file()]
     for route in routes.values():

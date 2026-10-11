@@ -3,6 +3,12 @@ OptimizedMW autonomous comparison batch
 One executable contains the independent candidates and their controls. Change
 settings between runs; do not compile or change packages during a comparison.
 
+Before any route starts, the package and matrix checks validate the packaged
+AMD64 DLL import closure, delay imports and installed OSG plugins. An SDK or
+PATH search cannot stand in for a packaged dependency. Actual runtime files
+are pinned across the matrix. This checks presence and architecture; game
+startup, dynamic driver loading and rendering still require their own proof.
+
 [Cells]
 prepare material images = false
 material image prepare mib = 64
@@ -12,6 +18,8 @@ ordinary opaque packets = false
 
 [Optimizations]
 indirect command reuse = false
+indirect context capability reuse = false
+gpu visibility opportunity filter = false
 
 Material images discovers animated-template future images and their normal,
 normal-height and specular companions through the same VFS/naming rules as the

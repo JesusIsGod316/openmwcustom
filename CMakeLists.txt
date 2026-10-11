@@ -1281,6 +1281,8 @@ if(WIN32)
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_Test.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/benchmark_desktop.py"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/benchmark_matrix.py"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/indirect_work.py"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/runtime_dependencies.py"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/AUTOMATED-BENCHMARKS.txt"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_NumericMenu.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_MemoryProfile.ps1"
