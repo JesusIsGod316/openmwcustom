@@ -41,11 +41,11 @@
     "scope": "Independent source review repairs late adoption of actual winning immutable asset owners by already rendered terrain views. Dedicated cache-publication serials are sampled before owner binding. Cache-only refresh requires the exact key, current source/VFS/shader epochs, existing normal prepare/spatial/P3 quality, completed nontransient asset preparation, actual GL readiness and unchanged active canonical RefnumSet. Pending owners retain an unconsumed serial; unrelated, absent, stale, disabled or incompatible owners preserve the live control without construction. Each view shallow-copies only its outer PAT and replaces the exact prepared child, preserving terrain/groundcover identity and order, transforms, existing wrappers, weak bookkeeping and original picking/shadow/secondary fallbacks. No world reset, worker-side view mutation, optional build on demand, admission/floor change or visibility/error-policy relaxation. Real unchanged-World pending-to-ready adoption, cache-only negatives, original picking, actual tagged draw and final natural numeric-profile engagement remain required; this source seal alone makes no runtime or performance claim."
   },
   "sha256": {
-    "apps/openmw/mwrender/occlusionculling.cpp": "e92c9023598376e4cd864af07ad1888c0c4502a38405f0c908a174e2a5e24ad8",
+    "apps/openmw/mwrender/occlusionculling.cpp": "bb94963259469055744e8654fe3cdc3c69c6990af1a41160f37bafa4cd7f011e",
     "apps/openmw/mwrender/occlusionculling.hpp": "3e4039257ed9585677afd4d8db527b1d015246bdb8dcd63e08054debf554f624",
     "apps/openmw/mwrender/objectpaging.cpp": "1d247e5ebd5a054d1a6ef5a00b3004cc7c1c7aa47375be901c99b134ecf041eb",
     "apps/openmw/mwrender/groundcover.cpp": "10e1f1de1a38fcd34288ac98df09d20eb6e596ce9f42b8abb9d5bd6f2982bddd",
-    "apps/openmw/mwrender/objects.cpp": "9bf5045f1c8c4323b2cc286c2912b5fef73ff813f5e472929ec4be79829f7935",
+    "apps/openmw/mwrender/objects.cpp": "406986e3e17a96cff8198dc02587ec2c3d4034d3fd4b0be42f8bbcb92b27faa2",
     "components/sceneutil/occlusionculling.cpp": "1aa1ebea417b9b4eff232d78fbf29b78cae92b68e23e0f8ba8b5ac1b46f6c19f",
     "components/sceneutil/groundcoverbatch.hpp": "377ed69299f6c3bdc9f9ff9fa75c3ccf8c3f46ed9a819966eafe497d3b2da564",
     "components/sceneutil/groundcoverpolicy.hpp": "1b0bc6969f8f13550abb9d64d3bdb20e692eeae57096d6bc95679d2675cd2d4c",
@@ -53,7 +53,8 @@
     "components/terrain/quadtreeworld.cpp": "23538fa133529df6c951fed88f54066da80c0f0defff95933210e385f10875fd",
     "components/terrain/quadtreeworld.hpp": "6441b6f9615aeae121f303bf1d71a7afb0b91dbe8e4c734bfd62d13a68d2fd37",
     "components/terrain/viewdata.cpp": "f868a452c557c4f7c53003ccb06e211f9d3cec525ff088aada3759bbc7e2c633",
-    "components/terrain/viewdata.hpp": "4581625ee1d1b8f8e34de0f8befbd8ee29e088d169b28b4c988c63872d41a731"
+    "components/terrain/viewdata.hpp": "4581625ee1d1b8f8e34de0f8befbd8ee29e088d169b28b4c988c63872d41a731",
+    "components/sceneutil/ownedcellcull.hpp": "3a87e02624c68340f3c0ed95f531c000bbe6bbcf08fc417528819dee9fe8a06d"
   },
   "source_index_retention_checkpoint": {
     "base": "3a8a3b06ff8b7e812a99ee3cc5153b42696db003",
@@ -64,5 +65,11 @@
     "base": "b46dbea321f2b0662aa3442685a3a1f7e8b03c59",
     "scope": "Source review connects original-before-CopyOp certified private ordinary paging geometry under retained Geodes and relative transforms to the existing default-off G16/G32 callback. The existing ordinary opaque packets/G4 gate, whole-population ancestry proof, source and shader certificates, command shape, quotas/fences and ordinary mutation fallback remain. The call is after original shadow certification and before retained packet row capture. It excludes asset-owned LOD/HLOD and post-optimized L1 paths. No MSOC, chunk membership, quality/error thresholds, RefnumSet, source epoch, required readiness, allocation floors or source-control selection changes.",
     "validation": "NATIVE_COMPILE_AND_ACTUAL_NESTED_GPU_PIXEL_OWNERSHIP_CHECKS_PASSED; natural paging engagement and game performance pending. Source seal is not runtime or performance acceptance."
+  },
+  "owned_cell_snapshot_checkpoint": {
+    "base": "b3a046917ab6baef4086078b2b8d98ffc980512f",
+    "scope": "Reviewed bounded default-off exact root cull snapshots. Ordinary MSOC pass tests/order and live child fallback retained. Generation/topology/dirty/callback changes immediately invalidate reuse. Compatible single cull-owner threading only; child and 8 MiB metadata caps refuse admission. Actual OSG mutation, immutable publication, callback, clone, cap/release and transform fixtures pass. Source/correctness seal is not gameplay visual or performance acceptance.",
+    "native_fixture": "tools/optimizedmw/phase9/owned-cell-cull-tests.cpp",
+    "validation": "BuildB_20261011/GAME-NATIVE-SUITE-RESULTS.xml and NATIVE-SUITE-RESULTS.xml"
   }
 }
