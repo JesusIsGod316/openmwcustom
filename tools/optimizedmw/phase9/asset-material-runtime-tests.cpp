@@ -7,6 +7,7 @@
 #include <components/sceneutil/shadowproxygroup.hpp>
 #include <components/sceneutil/depth.hpp>
 #include <components/sceneutil/material.hpp>
+#include <components/sceneutil/gpuindirectpackets.hpp>
 #include <components/settings/parser.hpp>
 #include <components/settings/values.hpp>
 #include <components/shader/assetgeometrycontract.hpp>
@@ -16,6 +17,7 @@
 #include <osg/Material>
 #include <osg/Texture2D>
 #include <osg/ClipControl>
+#include <osg/MatrixTransform>
 #include <osgViewer/Viewer>
 #include <osgViewer/Renderer>
 #include <osgUtil/GLObjectsVisitor>
@@ -71,9 +73,8 @@ namespace
             "#version 120\nvoid main(){gl_FragColor=vec4(0.75,0.2,0.85,1.0);}\n"));
         return result;
     }
-    osg::ref_ptr<osg::Geometry> grid(float left,unsigned red,unsigned blue)
+    osg::ref_ptr<osg::Geometry> grid(float left,unsigned red,unsigned blue,unsigned side=20)
     {
-        constexpr unsigned side=20;
         osg::ref_ptr<osg::Geometry> result=new osg::Geometry;
         osg::ref_ptr<osg::Vec3Array> vertices=new osg::Vec3Array,normals=new osg::Vec3Array;
         osg::ref_ptr<osg::Vec2Array> uv=new osg::Vec2Array;
@@ -124,12 +125,13 @@ namespace
         osg::ref_ptr<Pixels> pixels=new Pixels;
         osgViewer::Viewer viewer;
         std::filesystem::path shaderPath;
-        explicit Fixture(const std::filesystem::path& path):shaderPath(path)
+        explicit Fixture(const std::filesystem::path& path,bool clustered=false):shaderPath(path)
         {
             shaders.setShaderPath(shaderPath);
             auto defines=Shader::getDefaultDefines();
             for(const auto& [name,value]:SceneUtil::ShadowManager::getShadowsDisabledDefines()) defines[name]=value;
             for(const auto& [name,value]:light->getLightDefines()) defines[name]=value;
+            if(clustered) {defines["lightingMethodClustered"]="1";defines["useGPUShader4"]="1";}
             defines["reverseZ"]=SceneUtil::AutoDepth::isReversed() ? "1" : "0";
             shaders.setGlobalDefines(defines);
             osg::ref_ptr<osg::GraphicsContext::Traits> traits=new osg::GraphicsContext::Traits;
@@ -156,6 +158,22 @@ namespace
             state->addUniform(new osg::Uniform("alpha",1.f));state->addUniform(new osg::Uniform("actorFade",1.f));
             state->addUniform(new osg::Uniform("distortionStrength",0.f));
             state->addUniform(new osg::Uniform("near",.1f));state->addUniform(new osg::Uniform("far",1000.f));
+            if(clustered)
+            {
+                // Exercise the real clustered object recipe with explicitly
+                // owned, empty light lists. These are fixture inputs, not a
+                // replacement for production clustered-light preparation.
+                state->addUniform(new osg::Uniform("screenRes",osg::Vec2f(128,128)));
+                state->addUniform(new osg::Uniform("gridSize",osg::Vec3f(1,1,1)));
+                state->addUniform(new osg::Uniform("clusterFar",1000.f));
+                for(unsigned binding=1;binding<=5;++binding)
+                {
+                    osg::ref_ptr<osg::UIntArray> data=new osg::UIntArray(256);
+                    std::fill(data->begin(),data->end(),0u);data->setDataVariance(osg::Object::STATIC);
+                    data->setBufferObject(new osg::ShaderStorageBufferObject);
+                    state->setAttributeAndModes(new osg::ShaderStorageBufferBinding(binding,data,0,data->getTotalDataSize()),osg::StateAttribute::ON);
+                }
+            }
             state->addUniform(new osg::Uniform("fogColor",osg::Vec4(0,0,0,1)));state->addUniform(new osg::Uniform("fogStart",999.f));state->addUniform(new osg::Uniform("fogEnd",1000.f));
             osg::ref_ptr<SceneUtil::Light> sun=new SceneUtil::Light;
             sun->setPosition({0,0,1,0});sun->setAmbient({.6f,.6f,.6f,1});sun->setDiffuse({.8f,.8f,.8f,1});sun->setSpecular({0,0,0,1});light->setSunlight(sun);
@@ -223,6 +241,78 @@ namespace
     }
     void parity(const std::array<unsigned char,128*128*4>& a,const std::array<unsigned char,128*128*4>& b)
     {require(a==b,"fallback must exactly match ordinary control pixels, including cleared candidate material");}
+    Resource::OpenGlPressureSample indirectPressure;
+    Resource::OpenGlPressureSample indirectSample(void*) {return indirectPressure;}
+    void indirectCases(Fixture& fixture,bool gpu)
+    {
+        namespace P=SceneUtil::GpuIndirectPackets;
+        Resource::SpeculativeBudget budget;
+        indirectPressure.generation=1;indirectPressure.decision.state=Resource::OpenGlPressure::Normal;
+        indirectPressure.growthWatermarkValid=true;indirectPressure.decision.admissionsPerSample=1;
+        indirectPressure.memory.physicalValid=true;indirectPressure.memory.physicalTotal=32ull<<30;
+        indirectPressure.memory.physicalAvailable=16ull<<30;
+        indirectPressure.memory.commitValid=true;indirectPressure.memory.commitAvailable=16ull<<30;
+        indirectPressure.decision.limits.physicalReserve=4ull<<30;
+        indirectPressure.decision.limits.commitReserve=1ull<<30;
+        P::sample=&indirectSample;P::ledger=&budget;P::reuseIndirectCommands=true;
+        osg::ref_ptr<osg::Group> source=new osg::Group;source->setDataVariance(osg::Object::STATIC);
+        osg::ref_ptr<osg::MatrixTransform> transform=new osg::MatrixTransform;
+        transform->setDataVariance(osg::Object::STATIC);transform->setMatrix(osg::Matrixd::translate(.04,.02,0));
+        osg::ref_ptr<osg::Geode> geode=new osg::Geode;geode->setDataVariance(osg::Object::STATIC);
+        osg::ref_ptr<osg::Geometry> geometry=grid(-.92f,190,30,32);geode->addDrawable(geometry);
+        transform->addChild(geode);source->addChild(transform);
+        Shader::ShaderVisitor visitor(fixture.shaders,fixture.images,"objects");source->accept(visitor);
+        const auto* program=dynamic_cast<const osg::Program*>(geometry->getStateSet()->getAttribute(osg::StateAttribute::PROGRAM));
+        require(program && Shader::IndirectProjection::matches(*program),"actual object/PBR ShaderManager program lacks separate indirect certificate");
+        osg::ref_ptr<osg::Node> control=osg::clone(source.get(),osg::CopyOp::DEEP_COPY_NODES|osg::CopyOp::DEEP_COPY_DRAWABLES|osg::CopyOp::DEEP_COPY_PRIMITIVES);
+        require(P::installCertifiedSubtrees(*source,1024,true,gpu)==1,"actual object/PBR nested indirect installation declined");
+        const auto draws=P::Counters::draws.load(),dispatches=P::Counters::dispatches.load();
+        const auto avoided=P::Counters::commandUploadsAvoided.load();
+        for(unsigned i=0;i<12;++i)
+        {
+            fixture.show(*control);fixture.frame();const auto expected=fixture.pixels->data;
+            require(rgbPixels(expected)>500,"actual control material must produce visible RGB pixels");
+            fixture.show(*source);fixture.frame();parity(expected,fixture.pixels->data);
+            require(P::Counters::draws.load()==draws+i+1,"actual object/PBR callback did not submit indirect work");
+        }
+        if(!gpu) require(P::Counters::commandUploadsAvoided.load()>avoided,"actual CPU PBR command reuse did no work");
+        require(gpu?(P::Counters::dispatches.load()>dispatches):(P::Counters::dispatches.load()==dispatches),
+            "actual object/PBR CPU/GPU visibility selection did not engage its requested path");
+        auto globals=fixture.shaders.getGlobalDefines();globals["radialFog"]="1";
+        fixture.shaders.setGlobalDefines(globals);
+        require(Shader::IndirectProjection::matches(*program),"trusted actual shader regeneration lost indirect proof");
+        fixture.show(*control);fixture.frame();const auto regenerated=fixture.pixels->data;
+        fixture.show(*source);fixture.frame();parity(regenerated,fixture.pixels->data);
+        require(P::Counters::draws.load()==draws+13,"regenerated actual program did no indirect work");
+        // A legal GLSL preprocessor injection changes the actual compile
+        // recipe without touching the reviewed Shader object's source bytes.
+        // The native control can render it, but repacking must decline it.
+        fixture.scene->getStateSet()->setDefine("FORCE_OPAQUE", "0\n#define UNREVIEWED_RECIPE 1",
+            osg::StateAttribute::ON|osg::StateAttribute::OVERRIDE);
+        fixture.show(*control);fixture.frame();const auto imported=fixture.pixels->data;
+        const auto importedBefore=P::Counters::draws.load(),importedRefused=P::Counters::fallbacks.load();
+        fixture.show(*source);fixture.frame();parity(imported,fixture.pixels->data);
+        require(P::Counters::draws.load()==importedBefore && P::Counters::fallbacks.load()>importedRefused,
+            "unsafe effective imported recipe did not preserve original draws");
+        fixture.scene->getStateSet()->removeDefine("FORCE_OPAQUE");
+        // Override the effective production material with a real uncertified
+        // shader. Exact original primitive boundaries must remain the fallback.
+        auto unknown=adversarialProgram();fixture.scene->getStateSet()->setAttribute(unknown,osg::StateAttribute::ON|osg::StateAttribute::OVERRIDE);
+        fixture.show(*control);fixture.frame();const auto expected=fixture.pixels->data;
+        const auto refused=P::Counters::fallbacks.load(),before=P::Counters::draws.load();
+        fixture.show(*source);fixture.frame();parity(expected,fixture.pixels->data);
+        require(P::Counters::draws.load()==before && P::Counters::fallbacks.load()>refused,"uncertified actual shader did not preserve original draws");
+        fixture.scene->getStateSet()->removeAttribute(osg::StateAttribute::PROGRAM);
+        fixture.show(*control);fixture.frame();geometry->setDrawCallback(nullptr);
+        fixture.light->removeChildren(0,fixture.light->getNumChildren());
+        geometry=nullptr;geode=nullptr;transform=nullptr;source=nullptr;control=nullptr;
+        auto* context=fixture.camera->getGraphicsContext();require(context->makeCurrent(),"indirect retirement owner unavailable");
+        glFinish();osg::flushAllDeletedGLObjects(context->getState()->getContextID());context->releaseContext();
+        P::sample=nullptr;P::ledger=nullptr;
+        std::cout<<"ACTUAL_OBJECT_INDIRECT_PASS gpu="<<gpu<<" draws="<<(P::Counters::draws.load()-draws)
+            <<" dispatches="<<(P::Counters::dispatches.load()-dispatches)<<" reuse="<<(P::Counters::commandUploadsAvoided.load()-avoided)
+            <<" exact_material_pixels=1 regenerated_recipe=1 imported_recipe_control=1 unknown_shader_control=1 gl_error=0\n";
+    }
     void cases(Fixture& fixture,bool hlod)
     {
         auto pair=fixture.make(hlod);fixture.prepare(pair);
@@ -353,17 +443,30 @@ namespace
 }
 int main(int argc,char** argv) try
 {
-    require((argc==3 || (argc==4 && std::string_view(argv[3])=="--reverse-z")) && std::string_view(argv[1])=="--shader-dir",
-        "usage: p9-asset-material-runtime --shader-dir exact-shader-tree [--reverse-z]");
-    const bool reversed=argc==4;SceneUtil::AutoDepth::setReversed(reversed);
+    require(argc>=3 && argc<=6 && std::string_view(argv[1])=="--shader-dir",
+        "usage: p9-asset-material-runtime --shader-dir exact-shader-tree [--reverse-z] [--indirect-cpu|--indirect-gpu] [--clustered]");
+    bool reversed=false,indirect=false,gpu=false,clustered=false;
+    for(int i=3;i<argc;++i)
+    {
+        const std::string_view option=argv[i];
+        if(option=="--reverse-z") reversed=true;
+        else if(option=="--clustered") clustered=true;
+        else if(option=="--indirect-cpu" || option=="--indirect-gpu") {indirect=true;gpu=option=="--indirect-gpu";}
+        else require(false,"unrecognized actual material fixture option");
+    }
+    SceneUtil::AutoDepth::setReversed(reversed);
 #ifdef _WIN32
     _putenv_s("OPENMW_P9_ASSET_MASK","3");
+    if(indirect) _putenv_s(gpu?"OPENMW_P9_GPU_VISIBILITY":"OPENMW_P9_MULTI_DRAW_INDIRECT","1");
 #else
     setenv("OPENMW_P9_ASSET_MASK","3",1);
+    if(indirect) setenv(gpu?"OPENMW_P9_GPU_VISIBILITY":"OPENMW_P9_MULTI_DRAW_INDIRECT","1",1);
 #endif
     Settings::SettingsFileParser parser;parser.loadSettingsFile(std::filesystem::path(P9_SOURCE)/"files/settings-default.cfg",Settings::Manager::mDefaultSettings);
     Settings::StaticValues::initDefaults();Settings::Manager::mUserSettings=Settings::Manager::mDefaultSettings;Settings::StaticValues::init();
-    Fixture fixture(std::filesystem::u8path(argv[2]));admission(fixture);cases(fixture,false);cases(fixture,true);
+    Fixture fixture(std::filesystem::u8path(argv[2]),clustered);
+    if(indirect) {indirectCases(fixture,gpu);return 0;}
+    admission(fixture);cases(fixture,false);cases(fixture,true);
     std::cout<<"ASSET_MATERIAL_PROJECTION reversed="<<reversed<<" arbitrary_projection_refused=1 clipcontrol_refused="<<reversed<<" gl_error=0\n";
     std::cout<<"ASSET_MATERIAL_RUNTIME {\"l1\":true,\"h1\":true,\"source_mutation\":true,\"derived_mutation\":true,\"cull_fallback\":true,\"draw_fallback\":true,\"control_preserved\":true,\"gl_error\":0}\n";
     std::cout<<"ASSET_MATERIAL_PASS l1=1 h1=1 source_mutation=1 derived_mutation=1 cull_fallback=1 draw_fallback=1 control_preserved=1 gl_error=0\n";

@@ -2,8 +2,9 @@
 #ifndef OPENMW_SHADER_INDIRECTPROJECTIONBASELINE_H
 #define OPENMW_SHADER_INDIRECTPROJECTIONBASELINE_H
 #include <string_view>
+#include "indirectprojectionpbrbaseline.hpp"
 namespace Shader::IndirectProjection {
-inline bool baselineRaw(std::string_view name, std::string_view source) {
+inline bool stockBaselineRaw(std::string_view name, std::string_view source) {
 std::string_view expected;
 if (name == "compatibility/bs/default.frag") expected =
 "#version 120\n"
@@ -4468,6 +4469,9 @@ if (expected.empty()) return false;
 std::size_t i = 0;
 for (char c : source) { if (c == '\r') continue; if (i == expected.size() || expected[i++] != c) return false; }
 return i == expected.size();
+}
+inline bool baselineRaw(std::string_view name, std::string_view source) {
+    return stockBaselineRaw(name, source) || pbrBaselineRaw(name, source);
 }
 }
 #endif

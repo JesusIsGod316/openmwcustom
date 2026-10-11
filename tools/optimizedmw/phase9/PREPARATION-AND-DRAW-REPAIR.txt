@@ -134,3 +134,51 @@ test owner before quota inspection repaired the test. The failed receipt is
 preserved separately and is not counted as a passing check. Installation counters expose
 nested leaves reached, callbacks built, ancestor refusals and source/command-
 shape refusals without a new per-frame diagnostic stream.
+
+Follow-up: exact production PBR command/projection proof
+
+The a083 Balmora gate built 86 nested callbacks, but all 72,390 observed
+attempts declined on their shader proof. Zero indirect draws means that this
+run cannot compare indirect performance. Ordinary packet submission is a
+different counter and does not qualify indirect work.
+
+The repair adds a separate exact PBR object include/link closure, generated
+only from Git object 52761bedc0f369bd37ceb17eaeaf53701f2ed551 and overlay archive
+SHA256 6f42a686e2a6a9038bbd4a9e2d0d1be6d8812b9b3e681d8b569560c2fe110255.
+All 34 dependency files, including inactive link branches, are pinned. The
+reviewed object position is gl_Position = modelToClip(gl_Vertex), with the
+unchanged mono projection/model-view product; lighting storage is read-only
+in these consumers, and no draw/vertex/instance ID or storage side effects
+are introduced. This proof does not borrow asset or temporal eligibility.
+Raw file changes and statement-bearing @ parameters keep ordinary rendering.
+
+Trusted numeric global recipe regeneration renews a still-current source
+proof and its complete linked program. Externally changed producers cannot
+use this renewal path. A separate nonblocking shared read lease protects
+indirect proof consumption through command execution; manager publication
+holds its writer lease. Busy producers use original primitives. Hot-reloaded
+unreviewed source remains uncertified. Source metadata remains capped at 8 MiB.
+
+generate-indirect-shader-baseline.py --check validates the exact generated
+header and inventory. Its --fixture-dir option materializes the immutable
+reviewed PBR closure for ShaderManager tests; installed/mutable bytes are not
+certificate authorities. The production material fixture accepts
+--indirect-cpu or --indirect-gpu, with --clustered and --reverse-z variants.
+Actual checks require textured RGB pixels, exact control parity, real indirect
+calls, real GPU dispatches when selected, numeric recipe renewal and unknown
+shader fallback. CPU command reuse is checked separately: continuous GPU
+dispatch writes commands itself and need not avoid CPU command uploads.
+
+The automatic matrix now requires built callbacks, submitted indirect draws
+and commands for G16, and actual visibility dispatches for G32. Its ordinary
+paging combination also requires nested installations. A built-only run or
+ordinary packet activity cannot silently qualify these candidates. Real
+route engagement, repeatability, visuals and performance remain separate gates.
+
+The indirect source proof also seals each shader's imported/required define
+names and define mode, plus the program's effective import set. Transform
+feedback output recipes cannot qualify. At draw time a bounded, allocation-free
+read of OSG's effective define stack/cache refuses statement-bearing imported
+values, including a legal preprocessor injection that leaves original Shader
+source bytes unchanged. Actual stock/PBR CPU/GPU fixtures verify that this
+case renders exact control pixels through the original primitive path.

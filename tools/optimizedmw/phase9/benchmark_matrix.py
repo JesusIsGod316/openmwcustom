@@ -132,7 +132,7 @@ def analyze(profile):
             'metrics': {key:pacing(values) for key,values in groups.items() if values}}
 
 
-def engagement(profile, requested, asset_mask=0):
+def engagement(profile, requested, asset_mask=0, architecture_mask=0):
     text = (profile/'openmw.log').read_text(encoding='utf-8-sig')
     positive = {}
     if asset_mask & 1:
@@ -153,6 +153,14 @@ def engagement(profile, requested, asset_mask=0):
         matches = re.findall(r'ordinary_branches=(\d+)(?=\s|$)',text)
         submitted = re.findall(r'OptimizedMW persistent opaque packets:.*?submitted=(\d+)(?=\s|$)',text)
         positive['ordinary_packets'] = bool(matches and int(matches[-1])>0 and submitted and int(submitted[-1])>0)
+    if architecture_mask & (16 | 32):
+        lines = re.findall(r'OptimizedMW opaque indirect pipeline:([^\n]*)', text)
+        fields = {key:int(value) for key,value in re.findall(r'\b(\w+)=(\d+)(?=\s|$)', lines[-1])} if lines else {}
+        positive['indirect_draws'] = all(fields.get(key,0)>0 for key in ('built','draws','commands'))
+        if requested.get('ordinary opaque packets') == 'true':
+            positive['ordinary_nested_indirect'] = fields.get('nested_built',0)>0
+        if architecture_mask & 32:
+            positive['gpu_visibility_dispatches'] = fields.get('dispatches',0)>0
     if requested.get('indirect command reuse') == 'true':
         matches = re.findall(r'command_uploads_avoided=(\d+)(?=\s|$)',text)
         positive['indirect_command_reuse'] = bool(matches and int(matches[-1])>0)
@@ -380,7 +388,7 @@ def run_matrix(plan_path, output):
             quality = route_quality(receipt,profile)
             requested = {entry['key']:entry['value'] for entry in settings
                          if entry['section'] in ('Cells', 'Optimizations')}
-            engaged = engagement(profile,requested,case.get('asset_mask',0))
+            engaged = engagement(profile,requested,case.get('asset_mask',0),case.get('architecture_mask',0))
             metrics = analyze(profile)
             benchmark_desktop.save(directory/'ANALYSIS.json',metrics)
             result = {'id':case['id'],'route':case['route'],'depth':case.get('depth','Normal'),

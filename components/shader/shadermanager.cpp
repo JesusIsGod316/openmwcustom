@@ -293,6 +293,7 @@ namespace Shader
             if (restart.running) viewer.stopThreading();
             std::lock_guard<std::mutex> lock(manager.mMutex);
             AssetGeometry::ProducerMutationScope producer;
+            IndirectProjection::ProducerMutationScope indirectProducer(IndirectProjection::enabled());
             for (auto& [pathShaderToTest, shaderKeys] : mShaderFiles)
             {
                 const std::filesystem::file_time_type writeTime = std::filesystem::last_write_time(pathShaderToTest);
@@ -633,6 +634,7 @@ namespace Shader
         if (shaderIt == mShaders.end())
         {
             AssetGeometry::ProducerMutationScope producer;
+            IndirectProjection::ProducerMutationScope indirectProducer(IndirectProjection::enabled());
             Debug::V3Diagnostics::TraceScope trace("render", "shader_source_create", templateName, 0.1);
             Debug::V3Diagnostics::ScopedCsvTimer timer(
                 Debug::V3Diagnostics::renderWriter(), "shader_source_create", templateName, 0.1);
@@ -647,15 +649,7 @@ namespace Shader
 
             osg::ref_ptr<osg::Shader> shader(new osg::Shader(type ? *type : getShaderType(templateName)));
             shader->setShaderSource(shaderSource);
-            const auto pinned = mHotReloadManager->baselineExpandedTemplates.find(templateName);
-            if (pinned != mHotReloadManager->baselineExpandedTemplates.end() && pinned->second == templateIt->second)
-            {
-                try
-                {
-                shader->getOrCreateUserDataContainer()->addUserObject(new IndirectProjection::Source(*shader, templateName));
-                }
-                catch (const std::bad_alloc&) {} // Optional GPU contract; original shader remains valid.
-            }
+            attachIndirectSource(*shader, templateName, defines);
             attachAssetSource(*shader, templateName, defines);
             // Assign a unique prefix to allow the SharedStateManager to compare shaders efficiently.
             // Append shader source filename for debugging.
@@ -669,6 +663,25 @@ namespace Shader
             shaderIt = mShaders.insert(std::make_pair(std::make_pair(templateName, defines), shader)).first;
         }
         return shaderIt->second;
+    }
+
+    void ShaderManager::attachIndirectSource(osg::Shader& shader, const std::string& templateName, const DefineMap& defines)
+    {
+        if (!IndirectProjection::enabled()) return;
+        const auto pinned = mHotReloadManager->baselineExpandedTemplates.find(templateName);
+        const auto consumed = mShaderTemplates.find(templateName);
+        if (pinned == mHotReloadManager->baselineExpandedTemplates.end() || consumed == mShaderTemplates.end()
+            || pinned->second != consumed->second || !IndirectProjection::numericRecipe(defines)
+            || !IndirectProjection::numericRecipe(mGlobalDefines)) return;
+        try
+        {
+            auto* data = shader.getOrCreateUserDataContainer();
+            const auto index = data->getUserObjectIndex(IndirectProjection::SourceKey);
+            osg::ref_ptr<IndirectProjection::Source> proof = new IndirectProjection::Source(shader, templateName);
+            if (index < data->getNumUserObjects()) data->setUserObject(index, proof);
+            else data->addUserObject(proof);
+        }
+        catch (const std::bad_alloc&) {} // Optional exact proof must preserve ordinary source generation.
     }
 
     void ShaderManager::attachAssetSource(osg::Shader& shader, const std::string& templateName, const DefineMap& defines,
@@ -912,6 +925,7 @@ namespace Shader
     {
         std::lock_guard<std::mutex> lock(mMutex);
         AssetGeometry::ProducerMutationScope producer;
+        IndirectProjection::ProducerMutationScope indirectProducer(IndirectProjection::enabled());
         if (!programTemplate)
             programTemplate = mProgramTemplate;
         const auto key = std::make_pair(vertexShader, fragmentShader);
@@ -978,6 +992,7 @@ namespace Shader
         // unnecessary regeneration and first-use linking.
         if (mGlobalDefines == globalDefines) return;
         AssetGeometry::ProducerMutationScope producer;
+        IndirectProjection::ProducerMutationScope indirectProducer(IndirectProjection::enabled());
         const auto previousAssetVersion = mAssetEpoch->value.fetch_add(1, std::memory_order_acq_rel);
         for (const auto& [pair, program] : mPrograms)
             static_cast<SamplerProgram*>(program.get())->prepareAssetRegeneration(mAssetEpoch, previousAssetVersion);
@@ -1005,6 +1020,10 @@ namespace Shader
                 // replacement to the nodes that need it.
                 continue;
             const bool refreshAsset = AssetGeometry::canRefreshSource(*shader, mAssetEpoch, previousAssetVersion);
+            const auto* data = shader->getUserDataContainer();
+            const auto* indirect = data ? dynamic_cast<const IndirectProjection::Source*>(
+                data->getUserObject(IndirectProjection::SourceKey)) : nullptr;
+            const bool refreshIndirect = IndirectProjection::enabled() && indirect && indirect->matches(*shader);
             std::string shaderSource = mShaderTemplates[templateId];
             std::vector<std::string> linkedShaderNames;
             if (!createSourceFromTemplate(shaderSource, linkedShaderNames, templateId, defines))
@@ -1013,6 +1032,7 @@ namespace Shader
                 // put a working one in later.
                 continue;
             shader->setShaderSource(shaderSource);
+            if (refreshIndirect) attachIndirectSource(*shader, templateId, defines);
             if (refreshAsset) attachAssetSource(*shader, templateId, defines, true);
 
             getLinkedShaders(shader, linkedShaderNames, defines);
@@ -1021,6 +1041,11 @@ namespace Shader
         {
             addLinkedShaders(pair.first, program);
             addLinkedShaders(pair.second, program);
+            if (IndirectProjection::enabled())
+            {
+                try { IndirectProjection::certify(*program); }
+                catch (const std::bad_alloc&) {} // Stale proof fails closed; normal regeneration remains valid.
+            }
             static_cast<SamplerProgram*>(program.get())->finishAssetRegeneration(mAssetEpoch, previousAssetVersion);
         }
     }

@@ -132,6 +132,8 @@ The command pipeline is bounded ownership inside the existing context. It is not
 
 Use **11 → 4** as A and **11 → 6** as B to isolate indirect drawing from its persistent-packet prerequisite. Inspect actual indirect calls, command counts, fallback/slot pressure, CPU submission and GPU duration. A previously merged single draw can remain one indirect draw with extra setup; fewer CPU calls are not guaranteed.
 
+The ordinary paging path now has a separately reviewed exact PBR object recipe in addition to the pinned stock recipe. Its 34-file include/link closure comes from immutable Git and checksum-pinned overlay inputs; asset/temporal certificates cannot authorize command repacking. Shader statements cannot enter through configurable `@` values. Trusted numeric shader regeneration renews only still-current producer proofs, with a nonblocking draw read lease and protected manager publication. Modified dependencies, custom programs and producer contention keep original primitive draws. The metadata cap is unchanged. Actual stock/PBR, clustered-light and reversed-depth pixel checks cover this integration; natural-route engagement and performance must still pass independently. The automatic matrix refuses G16 with zero indirect draws, even when ordinary packet submission is positive.
+
 ### G32: conservative GPU visibility
 
 Compute work can suppress indirect command instances for clusters wholly outside conservative X/Y clip planes. It does not perform occlusion culling, Z rejection or a quality/LOD change. The effective projection and the exact shipped shader-template/include closure must satisfy the projection certificate. Changed/custom shader sources and invalid certificates fail open. Required command/storage visibility barriers and original GL state restoration remain in place.
@@ -139,6 +141,8 @@ Compute work can suppress indirect command instances for clusters wholly outside
 The private compute program is still linked on its first eligible use, and private buffer storage is allocated at its existing GL owner. Those driver calls may stall even though slot/fence readiness polling is nonwaiting. G1's exact application-program preparation does not prepare this internal compute program or guarantee a stall-free first visibility dispatch.
 
 Use **11 → 6** as A and **11 → 7** as B. Check visibility dispatches, visible/total commands, shader-certificate fallback and GPU/CPU frame cost. A view with no newly rejected work can only measure the overhead. Visually inspect screen edges, reflections and shadows; missing geometry is a correctness failure regardless of FPS.
+
+Continuous GPU visibility writes its own command slots. The optional immutable CPU-command reuse setting is measured on CPU indirect draws or a return from GPU-written slots to CPU commands; zero avoided CPU uploads during uninterrupted compute dispatch is not a GPU failure. The matrix requires positive G32 visibility dispatches separately from G16 drawing.
 
 ### G64: frozen parallel actor deformation
 

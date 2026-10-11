@@ -6,6 +6,9 @@
 
 #include <fstream>
 #include <regex>
+#include <cstdlib>
+#include <future>
+#include <thread>
 
 #include <gtest/gtest.h>
 
@@ -318,6 +321,101 @@ namespace
             std::ofstream output(core);
             output << content;
         }
+        Shader::ShaderManager manager;
+        manager.setShaderPath(copied);
+        const auto program = manager.getProgram("compatibility/objects", baselineTemplateDefines(copied));
+        ASSERT_TRUE(program);
+        EXPECT_FALSE(Shader::IndirectProjection::matches(*program));
+    }
+
+    TEST(ProgramVariant, ReviewedPbrObjectProjectionRejectsSourceMutationAndInjectedParameters)
+    {
+        const auto* fixture = std::getenv("OPENMW_P9_REVIEWED_PBR_SHADERS");
+        if (!Shader::IndirectProjection::enabled() || !fixture)
+            GTEST_SKIP() << "Run with indirect enabled and a pinned generator --fixture-dir output";
+        const auto root = std::filesystem::path(fixture);
+        auto defines = baselineTemplateDefines(root);
+        Shader::ShaderManager manager;
+        manager.setShaderPath(root);
+        const auto program = manager.getProgram("compatibility/objects", defines);
+        ASSERT_TRUE(program);
+        ASSERT_TRUE(Shader::IndirectProjection::matches(*program));
+        auto globals = baselineTemplateDefines(root);
+        manager.setGlobalDefines(globals);
+        defines.erase("forcePPL");
+        const auto regenerating = manager.getProgram("compatibility/objects", defines);
+        ASSERT_TRUE(regenerating && Shader::IndirectProjection::matches(*regenerating));
+        globals["forcePPL"] = "1";
+        manager.setGlobalDefines(globals);
+        EXPECT_TRUE(Shader::IndirectProjection::matches(*regenerating));
+        // A shader producer held by another thread must refuse immediately.
+        // This avoids reading source/user-data during manager publication.
+        std::promise<void> locked, release;
+        const auto unlocked = release.get_future();
+        std::thread writer([&] {
+            Shader::IndirectProjection::ProducerMutationScope mutation;
+            locked.set_value(); unlocked.wait();
+        });
+        locked.get_future().wait();
+        EXPECT_FALSE(Shader::IndirectProjection::matches(*regenerating));
+        release.set_value(); writer.join();
+        EXPECT_TRUE(Shader::IndirectProjection::matches(*regenerating));
+        auto* fragment = program->getShader(1);
+        ASSERT_TRUE(fragment && fragment->getType() == osg::Shader::FRAGMENT);
+        const auto exact = fragment->getShaderSource();
+        fragment->setShaderSource(exact + "\n// changed consumed PBR source\n");
+        EXPECT_FALSE(Shader::IndirectProjection::matches(*program));
+        fragment->setShaderSource(exact);
+        EXPECT_TRUE(Shader::IndirectProjection::matches(*program));
+        const auto sourceDefines = fragment->getShaderDefines();
+        fragment->getShaderDefines().insert("UNREVIEWED_IMPORT");
+        EXPECT_FALSE(Shader::IndirectProjection::matches(*program));
+        fragment->setShaderDefines(sourceDefines);
+        const auto imports = program->getShaderDefines();
+        program->getShaderDefines().insert("UNREVIEWED_PROGRAM_IMPORT");
+        EXPECT_FALSE(Shader::IndirectProjection::matches(*program));
+        program->setShaderDefines(imports);
+        EXPECT_TRUE(Shader::IndirectProjection::matches(*program));
+        ASSERT_TRUE(imports.count("FORCE_OPAQUE"));
+        osg::ref_ptr<osg::State> state = new osg::State;
+        osg::ref_ptr<osg::StateSet> inherited = new osg::StateSet;
+        inherited->setDefine("FORCE_OPAQUE", "0\n#define UNREVIEWED_RECIPE 1", osg::StateAttribute::ON);
+        state->pushStateSet(inherited);
+        EXPECT_FALSE(Shader::IndirectProjection::safeImports(*program, *state));
+        state->getDefineString(imports);
+        EXPECT_FALSE(Shader::IndirectProjection::safeImports(*program, *state));
+        state->popStateSet();
+        inherited->setDefine("FORCE_OPAQUE", "0", osg::StateAttribute::ON);
+        state->pushStateSet(inherited);
+        EXPECT_TRUE(Shader::IndirectProjection::safeImports(*program, *state));
+        state->getDefineString(imports);
+        EXPECT_TRUE(Shader::IndirectProjection::safeImports(*program, *state));
+        // CPU generation accepts arbitrary substitutions, while this exact
+        // command-purity contract must refuse statement-bearing parameters.
+        defines["forcePPL"] = "0\n#define UNREVIEWED_STATEMENT 1\n";
+        const auto injected = manager.getProgram("compatibility/objects", defines);
+        ASSERT_TRUE(injected);
+        EXPECT_FALSE(Shader::IndirectProjection::matches(*injected));
+        EXPECT_TRUE(Shader::IndirectProjection::numericParameter(" +2, 3, -4.5e-2 "));
+        EXPECT_FALSE(Shader::IndirectProjection::numericParameter("1, "));
+        EXPECT_FALSE(Shader::IndirectProjection::numericParameter("0; gl_Position=vec4(0);"));
+    }
+
+    TEST(ProgramVariant, ReviewedPbrDependencyMutationCannotAcquireIndirectCertificate)
+    {
+        const auto* fixture = std::getenv("OPENMW_P9_REVIEWED_PBR_SHADERS");
+        if (!Shader::IndirectProjection::enabled() || !fixture)
+            GTEST_SKIP() << "Run with indirect enabled and a pinned generator --fixture-dir output";
+        const auto root = std::filesystem::path(fixture);
+        const auto copied = TestingOpenMW::outputDir() / "program-variant-pbr-lighting-mutation";
+        std::filesystem::create_directories(copied);
+        std::filesystem::copy(root, copied,
+            std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
+        // The previously unlisted PBR include must be checked, even though
+        // the object and mono projection roots retain their exact names/bytes.
+        std::ofstream output(copied / "compatibility" / "lighting.glsl", std::ios::app);
+        output << "\n// changed PBR lighting dependency must revoke its raw proof\n";
+        output.close();
         Shader::ShaderManager manager;
         manager.setShaderPath(copied);
         const auto program = manager.getProgram("compatibility/objects", baselineTemplateDefines(copied));

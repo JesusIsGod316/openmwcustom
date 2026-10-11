@@ -106,6 +106,7 @@ class Benchmarks(unittest.TestCase):
                         'settings':[{'section':'Optimizations', 'key':'indirect command reuse', 'value':'true'}]}]}))
                 profile = root/'profile'; profile.mkdir()
                 (profile/'openmw.log').write_text('OptimizedMW automatic benchmark: master_volume=0\n'
+                    'OptimizedMW opaque indirect pipeline: built=1 draws=12 commands=24 dispatches=0 nested_built=1\n'
                     f'OptimizedMW indirect command reuse: uploads=1 uploaded_bytes=60 command_uploads_avoided={avoided}\n')
                 archive = root/'capture.zip'; archive.write_bytes(b'fixture evidence; not a real game capture')
                 output = root/'output'
@@ -134,7 +135,7 @@ class Benchmarks(unittest.TestCase):
                     launch.assert_called_once()
                 state = matrix.read_json(output/'MATRIX.json')
                 positive = state['runs'][0]['engagement']['positive_work']
-                self.assertEqual(positive, {'indirect_command_reuse':bool(avoided)})
+                self.assertEqual(positive, {'indirect_draws':True,'indirect_command_reuse':bool(avoided)})
                 self.assertEqual(state['state'], 'completed' if avoided else 'failed')
 
     def test_external_storage_receipt_keeps_raw_mutations_and_requires_approval(self):
@@ -310,6 +311,23 @@ class Benchmarks(unittest.TestCase):
             self.assertFalse(matrix.engagement(path,{'indirect command reuse':'true'})['all_requested_positive'])
             (path/'openmw.log').write_text('command_uploads_avoided=25\n')
             self.assertTrue(matrix.engagement(path,{'indirect command reuse':'true'})['all_requested_positive'])
+
+    def test_ordinary_packet_submission_cannot_qualify_inert_indirect_or_gpu_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            ordinary = 'OptimizedMW persistent opaque packets: submitted=1000 ordinary_branches=8\n'
+            requested = {'ordinary opaque packets':'true'}
+            for draws, dispatches, nested, qualified in ((0,0,86,False),(13,0,86,False),
+                    (13,13,0,False),(13,13,86,True)):
+                with self.subTest(draws=draws,dispatches=dispatches,nested=nested):
+                    (path/'openmw.log').write_text(ordinary+'OptimizedMW opaque indirect pipeline: '
+                        f'built=86 draws={draws} commands=26 dispatches={dispatches} nested_built={nested}\n')
+                    result = matrix.engagement(path,requested,0,52)
+                    self.assertTrue(result['positive_work']['ordinary_packets'])
+                    self.assertEqual(result['all_requested_positive'],qualified)
+            (path/'openmw.log').write_text(ordinary+'OptimizedMW opaque indirect pipeline: '
+                'built=86 draws=13 commands=26 dispatches=0 nested_built=86\n')
+            self.assertTrue(matrix.engagement(path,requested,0,20)['all_requested_positive'])
 
 
     def test_atomic_receipt_survives_a_real_windows_reader_lock(self):

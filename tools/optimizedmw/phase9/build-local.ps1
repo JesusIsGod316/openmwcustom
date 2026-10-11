@@ -2,7 +2,8 @@ param(
     [ValidateSet('Configure','Build','Test')][string]$Stage = 'Configure',
     [string]$BuildDirectory = "$env:TEMP\optimizedmw-phase9-audited-native",
     [string]$DependencyDirectory = "$env:TEMP\openmw-fullbody-combat-deps\vcpkg",
-    [string]$SdlDirectory = "$env:TEMP\openmw-fullbody-combat-native-build\_deps\SDL3-3.4.10",
+    [string]$SdlDirectory = "$env:TEMP\optimizedmw-phase9-audited-game\_deps\SDL3-3.4.10",
+    [string]$YamlIncludeDirectory = "$env:TEMP\optimizedmw-phase9-audited-game\extern\fetched\yaml-cpp\include",
     [switch]$Interop,
     [int]$Jobs = 4
 )
@@ -21,7 +22,7 @@ foreach ($runtimeDirectory in @((Join-Path $SdlDirectory 'lib\x64'), "$installed
     if (($env:PATH -split ';') -notcontains $runtimeDirectory) { $env:PATH = "$runtimeDirectory;$env:PATH" }
 }
 if ($Stage -eq 'Configure') {
-    foreach ($required in @($cmake,$ninja,(Join-Path $installed 'include\osg\Version'),(Join-Path $SdlDirectory 'include\SDL3\SDL.h'))) {
+    foreach ($required in @($cmake,$ninja,(Join-Path $installed 'include\osg\Version'),(Join-Path $SdlDirectory 'include\SDL3\SDL.h'),(Join-Path $YamlIncludeDirectory 'yaml-cpp\yaml.h'))) {
         if (-not (Test-Path -LiteralPath $required)) { throw "Required native dependency missing: $required" }
     }
     & $cmake -S $PSScriptRoot -B $BuildDirectory -G Ninja `
@@ -30,7 +31,7 @@ if ($Stage -eq 'Configure') {
         '-DP9_REQUIRE_GAME_SDK=ON' "-DP9_SDL3_INCLUDE=$(Join-Path $SdlDirectory 'include')" `
         "-DP9_MYGUI_INCLUDE=$(Join-Path $installed 'include\MYGUI')" `
         "-DP9_BULLET_INCLUDE=$(Join-Path $installed 'include\bullet')" `
-        "-DP9_YAML_INCLUDE=$env:TEMP\openmw-fullbody-combat-native-build\extern\fetched\yaml-cpp\include" `
+        "-DP9_YAML_INCLUDE=$YamlIncludeDirectory" `
         "-DP9_DETOUR_INCLUDE=$env:TEMP\optimizedmw-phase9-audited-game\extern\fetched\recastnavigation\Detour\Include" `
         "-DP9_RECAST_INCLUDE=$env:TEMP\optimizedmw-phase9-audited-game\extern\fetched\recastnavigation\Recast\Include" `
         "-DOPENMW_PHASE9_INTEROP_FIXTURE=$($Interop.IsPresent.ToString().ToUpperInvariant())"

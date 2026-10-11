@@ -106,6 +106,7 @@ namespace Shader
         void addLinkedShaders(osg::ref_ptr<osg::Shader> shader, osg::ref_ptr<osg::Program> program);
         void attachAssetSource(osg::Shader& shader, const std::string& templateName, const DefineMap& defines,
             bool regeneration = false);
+        void attachIndirectSource(osg::Shader& shader, const std::string& templateName, const DefineMap& defines);
 
         std::filesystem::path mPath;
 

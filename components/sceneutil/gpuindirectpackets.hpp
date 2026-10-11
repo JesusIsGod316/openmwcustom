@@ -99,7 +99,7 @@ namespace SceneUtil::GpuIndirectPackets
         return Shader::IndirectProjection::matches(*program);
     }
 
-    inline bool commandProgramSafe(const osg::Program* program)
+    inline bool commandProgramSafe(const osg::Program* program, const osg::State& state)
     {
         if (!program) return true;
         // Custom shaders can observe changed draw boundaries or vertex-cache
@@ -107,7 +107,7 @@ namespace SceneUtil::GpuIndirectPackets
         // purity certificate. Exact shipped object recipes (including their
         // read-only clustered-light SSBOs) and legacy fixed function are the
         // entire initial command-repacking scope.
-        return Shader::IndirectProjection::matches(*program);
+        return Shader::IndirectProjection::matches(*program) && Shader::IndirectProjection::safeImports(*program, state);
     }
 
     inline const char* computeSource()
@@ -153,10 +153,11 @@ void main() {
         }
         void drawImplementation(osg::RenderInfo& info, const osg::Drawable* drawable) const override
         {
+            Shader::IndirectProjection::ProducerReadScope producer;
             const auto* geometry = drawable ? drawable->asGeometry() : nullptr;
             const auto* state = info.getState();
             const auto* pcp = state ? state->getLastAppliedProgramObject() : nullptr;
-            const bool safeProgram = commandProgramSafe(pcp ? pcp->getProgram() : nullptr);
+            const bool safeProgram = producer && state && commandProgramSafe(pcp ? pcp->getProgram() : nullptr, *state);
             if (!safeProgram) ++Counters::unknownShaders;
             bool current = geometry && geometry->getVertexArray() == mVertex.get()
                 && mVertex->getModifiedCount() == mVertexGeneration && geometry->getStateSet() == mMaterial.get()
