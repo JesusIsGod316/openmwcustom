@@ -50,6 +50,17 @@ def outputs():
         "keeps that strong control. Collision, picking, shadows and secondary views\n"
         "retain original geometry. Selection alone does not establish runtime use.\n\n"
         "ADDITIONAL INDEPENDENT CONTROLS\n"
+        "[Lua] protected call reuse = false\n"
+        "Startup-only private registry reuse of the zero-upvalue protected-call C\n"
+        "trampoline. Nested jobs remain stack-local; lua_pcall, error propagation,\n"
+        "script initialization and event order remain ordinary. Caller environments\n"
+        "keep the original boundary. Measured closure counts establish engagement.\n"
+        "[Optimizations] paged static vertex arrays = false\n"
+        "Certified ordinary paging geometry may retain native vertex-array layouts.\n"
+        "Exact source, context, native storage and alias ownership must remain valid.\n"
+        "Changed inputs use live ordinary fallback. First draw after preparation still\n"
+        "uses conservative setup. Metadata cap excludes driver storage. No indirect\n"
+        "submission, quality reduction or dynamic barrier removal is enabled.\n"
         "[Optimizations] owned cell cull snapshots = false\n"
         "Cell-root-owned direct-child bounds and classification, invalidated by the\n"
         "same OSG dirty-bound contract as ordinary traversal. Current cull order and\n"
@@ -140,6 +151,7 @@ def outputs():
         ("Optimizations", "indirect projection proof reuse"): "false",
         ("Optimizations", "indirect early admission fallback"): "false",
         ("Optimizations", "owned cell cull snapshots"): "false",
+        ("Optimizations", "paged static vertex arrays"): "false",
         ("Optimizations", "unchanged transform bounds"): "false",
         ("Optimizations", "temporal history lookup"): "false",
         ("Cells", "scene template coalescing"): "false",
@@ -149,6 +161,7 @@ def outputs():
         ("Camera", "focus refresh interval frames"): "2",
         ("Camera", "full body first person"): "true",
         ("Lua", "idle timer fast path"): "true",
+        ("Lua", "protected call reuse"): "false",
         ("Lua", "object userdata cache"): "true",
         ("Cells", "ram cache mode"): "normal",
         ("Cells", "cache expiry delay"): "120",

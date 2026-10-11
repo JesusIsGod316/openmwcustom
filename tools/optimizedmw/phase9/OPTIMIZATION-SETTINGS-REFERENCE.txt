@@ -28,13 +28,14 @@ ADDITIONAL INDEPENDENT CONTROLS
 [Lua] protected call reuse = false
 Startup-only private registry reuse of the zero-upvalue protected-call C
 trampoline. Nested jobs remain stack-local; lua_pcall, error propagation,
-script initialization and event order remain ordinary. Does not defer timers
-or parallelize the shared VM. Measured closure counts establish engagement.
+script initialization and event order remain ordinary. Caller environments
+keep the original boundary. Measured closure counts establish engagement.
 [Optimizations] paged static vertex arrays = false
-Ordinary paged static Geometry may use OSG's native vertex-array objects when
-its exact immutable arrays, primitive layout and callbacks are certified.
-Changed inputs select ordinary fallback. Does not enable indirect drawing,
-change culling or remove the dynamic draw barrier.
+Certified ordinary paging geometry may retain native vertex-array layouts.
+Exact source, context, native storage and alias ownership must remain valid.
+Changed inputs use live ordinary fallback. First draw after preparation still
+uses conservative setup. Metadata cap excludes driver storage. No indirect
+submission, quality reduction or dynamic barrier removal is enabled.
 [Optimizations] owned cell cull snapshots = false
 Cell-root-owned direct-child bounds and classification, invalidated by the
 same OSG dirty-bound contract as ordinary traversal. Current cull order and
