@@ -34,7 +34,7 @@ namespace
         struct File final : VFS::File
         {
             std::function<void()> waitForMisses;
-            std::string data = "#Ascii Scene\n#Version 161\nosg::Group {\n UniqueID 1\n Name \"CanonicalTemplate\"\n}\n";
+            std::string data;
             Files::IStreamPtr open() override
             {
                 if (waitForMisses) waitForMisses();
@@ -54,6 +54,11 @@ namespace
         ASSERT_NE(reader, nullptr);
         VFS::Manager vfs;
         auto archive=std::make_unique<Archive>(); auto* file=&archive->file;
+        osg::ref_ptr<osg::Group> source=new osg::Group;
+        source->setName("CanonicalTemplate");
+        std::ostringstream serialized;
+        ASSERT_TRUE(reader->writeNode(*source,serialized).success());
+        file->data=serialized.str();
         std::istringstream warmup(file->data);
         ASSERT_TRUE(reader->readNode(warmup).validNode());
         file->waitForMisses=[&]{gate.arrive_and_wait();};
@@ -84,7 +89,16 @@ namespace
         }
         EXPECT_GT(TC::Counters::afterLoadReuses.load()+TC::Counters::publishReuses.load(),reused);
         EXPECT_EQ(results[0]->getName(),"CanonicalTemplate");
-        const TC::Epoch current{scenes,2,vfs.getIndexGeneration(),scenes->getShaderManager().assetGeneration()};
+        const TC::Identity* identity=nullptr;
+        const auto* data=results[0]->getUserDataContainer();
+        ASSERT_NE(data,nullptr);
+        for(unsigned i=0;i<data->getNumUserObjects();++i)
+            if(const auto* item=dynamic_cast<const TC::Identity*>(data->getUserObject(i))) identity=item;
+        ASSERT_NE(identity,nullptr);
+        const auto current=identity->epoch;
+        EXPECT_EQ(current.manager,scenes); EXPECT_GT(current.cache,0u);
+        EXPECT_EQ(current.vfs,vfs.getIndexGeneration());
+        EXPECT_EQ(current.shader,scenes->getShaderManager().assetGeneration());
         EXPECT_TRUE(TC::matches(results[0],current));
         auto changed=current; ++changed.vfs; EXPECT_FALSE(TC::matches(results[0],changed));
         changed=current; ++changed.shader; EXPECT_FALSE(TC::matches(results[0],changed));
@@ -106,7 +120,12 @@ namespace
                 catch(...) {failures[i]=std::current_exception();} });
         for(auto& thread:threads) thread.join(); file->waitForMisses={};
         for(unsigned i=0;i<Count;++i)
-        { ASSERT_FALSE(failures[i]); ASSERT_TRUE(results[i]); EXPECT_FALSE(TC::matches(results[i],current)); }
+        {
+            ASSERT_FALSE(failures[i]); ASSERT_TRUE(results[i]);
+            EXPECT_FALSE(TC::matches(results[i],current));
+            auto invalidated=current; invalidated.cache+=3;
+            EXPECT_FALSE(TC::matches(results[i],invalidated));
+        }
         EXPECT_EQ(TC::Counters::changedEpochs.load()-changedBefore,Count);
         EXPECT_EQ(TC::Counters::afterLoadReuses.load()+TC::Counters::publishReuses.load(),reuseBefore);
     }
