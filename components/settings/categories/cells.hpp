@@ -18,6 +18,11 @@ namespace Settings
     {
         using WithIndex::WithIndex;
 
+        SettingValue<bool> mOptimizedMWOwnedCellCull{ mIndex, "Optimizations", "owned cell cull snapshots" };
+        SettingValue<bool> mOptimizedMWUnchangedTransform{ mIndex, "Optimizations", "unchanged transform bounds" };
+        SettingValue<bool> mOptimizedMWTemplateCoalescing{ mIndex, "Cells", "scene template coalescing" };
+        SettingValue<bool> mOptimizedMWTemporalHistoryLookup{ mIndex, "Optimizations", "temporal history lookup" };
+
         // P2: cancellable, restart-indexed paging optimization and two-phase readiness.
         SettingValue<bool> mOpimizedMWPagingOptimizer{ mIndex, "Cells", "paging optimizer" };
         SettingValue<bool> mOpimizedMWPagingReadinessSplit{ mIndex, "Cells", "paging readiness split" };

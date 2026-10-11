@@ -18,6 +18,7 @@
 #include <components/misc/constants.hpp>
 #include <components/occlusionculling/occludermesh.hpp>
 #include <components/sceneutil/occlusionculling.hpp>
+#include <components/sceneutil/ownedcellcull.hpp>
 #include <components/terrain/terrainoccluder.hpp>
 #include "../mwworld/class.hpp"
 
@@ -527,6 +528,7 @@ namespace MWRender
         }
 
         const unsigned int numChildren = node->getNumChildren();
+        SceneUtil::OwnedCellCull::Read ownedBounds(*node);
 
         struct V322OccluderCandidate
         {
@@ -540,10 +542,12 @@ namespace MWRender
             v322Candidates.reserve(numChildren);
 
         // Pass 1: Large objects — test against terrain depth, optionally rasterize as occluders
-        for (unsigned int i = 0; i < numChildren; ++i)
+        for (unsigned int cursor = 0, position = 0;
+             ownedBounds.next(cursor, position, numChildren, true);)
         {
+            const unsigned i = cursor++;
             osg::Node* child = node->getChild(i);
-            const osg::BoundingSphere& bs = child->getBound();
+            const osg::BoundingSphere& bs = ownedBounds.bound(i, *child);
 
             if (!bs.valid() || bs.radius() < mOccluderMinRadius)
                 continue;
@@ -706,10 +710,12 @@ namespace MWRender
             std::vector<V322OccluderCandidate> v322MidCandidates;
             v322MidCandidates.reserve(numChildren);
 
-            for (unsigned int i = 0; i < numChildren; ++i)
+            for (unsigned int cursor = 0, position = 0;
+                 ownedBounds.next(cursor, position, numChildren, false);)
             {
+                const unsigned i = cursor++;
                 osg::Node* child = node->getChild(i);
-                const osg::BoundingSphere& bs = child->getBound();
+                const osg::BoundingSphere& bs = ownedBounds.bound(i, *child);
                 if (!bs.valid() || bs.radius() < v322EligibilityRadius || bs.radius() >= mOccluderMinRadius)
                     continue;
 
@@ -783,10 +789,12 @@ namespace MWRender
         }
 
         // Pass 2: Small objects — test against enriched depth buffer (terrain + buildings)
-        for (unsigned int i = 0; i < numChildren; ++i)
+        for (unsigned int cursor = 0, position = 0;
+             ownedBounds.next(cursor, position, numChildren, false);)
         {
+            const unsigned i = cursor++;
             osg::Node* child = node->getChild(i);
-            const osg::BoundingSphere& bs = child->getBound();
+            const osg::BoundingSphere& bs = ownedBounds.bound(i, *child);
 
             if (!bs.valid())
             {

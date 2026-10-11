@@ -378,6 +378,32 @@ class Benchmarks(unittest.TestCase):
             fields['preload_priority_submitted'] = 1
             self.assertTrue(matrix.engagement(path, requested, work=work)['all_requested_positive'])
 
+    def test_owned_cull_transform_template_and_temporal_need_interval_consumption(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            (path/'openmw.log').write_text('OptimizedMW owned cell cull: publications=999 bounds_avoided=999\n')
+            requested = {'owned cell cull snapshots':'true', 'unchanged transform bounds':'true',
+                         'scene template coalescing':'true', 'temporal history lookup':'true'}
+            self.assertFalse(matrix.engagement(path, requested)['all_requested_positive'])
+            fields = dict.fromkeys(matrix.indirect_work.OWNERSHIP_EXTENDED_COUNTERS, 0)
+            work = {'phases': {'moving': {'counts': fields}}}
+            fields['cull_snapshot_publications'] = fields['template_canonical_publications'] = 999
+            fields['transform_changed_inputs'] = fields['temporal_history_compatibility_comparisons'] = 999
+            self.assertFalse(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            for key in ('cull_bound_reads_avoided', 'cull_classification_visits_avoided',
+                        'transform_dirty_calls_avoided', 'template_after_load_reuses',
+                        'temporal_history_indexed_lookups'):
+                fields[key] = 1
+            self.assertTrue(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            fields['template_after_load_reuses'] = 0
+            self.assertFalse(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            fields['template_publication_reuses'] = 1
+            self.assertTrue(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            fields['cull_classification_visits_avoided'] = 0
+            self.assertFalse(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            legacy = {'phases': {'moving': {'counts': dict.fromkeys(matrix.indirect_work.COUNTERS, 999)}}}
+            self.assertFalse(matrix.engagement(path, requested, work=legacy)['all_requested_positive'])
+
     def test_ordinary_packet_submission_cannot_qualify_inert_indirect_or_gpu_work(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)

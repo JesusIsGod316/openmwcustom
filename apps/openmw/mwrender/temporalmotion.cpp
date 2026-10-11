@@ -1,4 +1,5 @@
 #include "temporalmotion.hpp"
+#include <components/sceneutil/temporalhistorylookup.hpp>
 #include "temporaldynamic.hpp"
 
 #include <components/rendercore/temporalframe.hpp>
@@ -100,6 +101,7 @@ namespace MWRender
             ConsumerFrame consumer;
             osg::ref_ptr<osg::StateSet> dynamicState;
             std::vector<PreviousSurface> previousSurfaces;
+            std::unique_ptr<SceneUtil::TemporalHistoryLookup::Scratch> historyLookupScratch;
         };
         osg::ref_ptr<osg::Program> program;
         osg::ref_ptr<osg::Program> dynamicProgram;
@@ -287,13 +289,15 @@ namespace MWRender
                 static_cast<float>(camera.renderWidth), static_cast<float>(camera.renderHeight)));
             c.dynamicState->getUniform("clearDepth")->set(static_cast<float>(camera.clearDepth));
             nextSurfaces.reserve(camera.dynamic->surfaces.size());
+            SceneUtil::TemporalHistoryLookup::Read historyLookup(c.previousSurfaces,
+                [](const auto& previous) { return previous.surface.instance; }, c.historyLookupScratch);
             for (const auto& surface : camera.dynamic->surfaces)
             {
                 // The cull snapshot cannot authorize a material/source changed
                 // before its motion draw. Keep camera motion and refuse only
                 // this unsupported overlay; never mark dense completeness.
                 if (!surface.materialCurrent()) { ++dynamicUnsupported; continue; }
-                const auto previous = std::find_if(c.previousSurfaces.begin(), c.previousSurfaces.end(), [&](const auto& value) {
+                const auto previous = historyLookup.find(surface.instance, [&](const auto& value) {
                     return surface.compatibleHistory(value.surface);
                 });
                 const bool history = frame->hasHistory() && previous != c.previousSurfaces.end()
@@ -392,6 +396,7 @@ namespace MWRender
                 c.status = {};
                 c.consumer = {};
                 c.previousSurfaces.clear();
+                c.historyLookupScratch.reset();
                 if (c.dynamicState) c.dynamicState->releaseGLObjects(state);
                 c.dynamicState = nullptr;
                 c.haveProjection = false;

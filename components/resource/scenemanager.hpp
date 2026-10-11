@@ -244,12 +244,14 @@ namespace Resource
         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
         void reportRuntimeDiagnostics(double referenceTime) const noexcept override;
 
-        void setSupportsNormalsRT(bool supports) { mSupportsNormalsRT = supports; }
+        void setSupportsNormalsRT(bool supports)
+        { mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel); mSupportsNormalsRT = supports; }
         bool getSupportsNormalsRT() const { return mSupportsNormalsRT; }
 
         void setUpNormalsRTForStateSet(osg::StateSet* stateset, bool enabled);
 
-        void setWeatherParticleOcclusion(bool value) { mWeatherParticleOcclusion = value; }
+        void setWeatherParticleOcclusion(bool value)
+        { mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel); mWeatherParticleOcclusion = value; }
 
     private:
         osg::ref_ptr<Shader::ShaderVisitor> createShaderVisitor(const std::string& shaderPrefix = "objects");
@@ -259,6 +261,7 @@ namespace Resource
         mutable std::mutex mSharedStateMutex;
 
         std::atomic_bool mPreparedInstanceEnabled{ false };
+        std::atomic_uint64_t mTemplatePublicationEpoch{1};
         mutable std::mutex mPreparedInstanceMutex;
         struct PreparedInstance
         {

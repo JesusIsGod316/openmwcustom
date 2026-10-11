@@ -50,6 +50,22 @@ def outputs():
         "keeps that strong control. Collision, picking, shadows and secondary views\n"
         "retain original geometry. Selection alone does not establish runtime use.\n\n"
         "ADDITIONAL INDEPENDENT CONTROLS\n"
+        "[Optimizations] owned cell cull snapshots = false\n"
+        "Cell-root-owned direct-child bounds and classification, invalidated by the\n"
+        "same OSG dirty-bound contract as ordinary traversal. Current cull order and\n"
+        "MSOC decisions remain; callbacks that change bounds select live fallback.\n"
+        "Metadata is capped at 4096 children/root and 8 MiB total with safe refusal.\n"
+        "[Optimizations] unchanged transform bounds = false\n"
+        "Only identical finite setter inputs avoid dirtyBound. Real changes, signed\n"
+        "zero assignment, nonfinite inputs and independent child dirtying remain.\n"
+        "[Cells] scene template coalescing = false\n"
+        "Concurrent misses can adopt an already finished template in the same exact\n"
+        "manager/VFS/shader generation. No wait or second decoder. An in-place file\n"
+        "edit still requires the existing explicit reload/invalidation contract.\n"
+        "[Optimizations] temporal history lookup = false\n"
+        "Bounded exact instance index over existing previous motion surfaces. First\n"
+        "compatible match and all material/pose checks remain. Does not enable DLSS,\n"
+        "jitter or dense motion. Requires the separately enabled dynamic producer.\n"
         "[Cells] preload priority promotion = false\n"
         "Move an already admitted, still-queued cell job into the near-future lane and\n"
         "enqueue new near-future jobs there. Preserve existing urgent/front jobs, FIFO\n"
@@ -123,6 +139,10 @@ def outputs():
         ("Optimizations", "gpu visibility opportunity filter"): "false",
         ("Optimizations", "indirect projection proof reuse"): "false",
         ("Optimizations", "indirect early admission fallback"): "false",
+        ("Optimizations", "owned cell cull snapshots"): "false",
+        ("Optimizations", "unchanged transform bounds"): "false",
+        ("Optimizations", "temporal history lookup"): "false",
+        ("Cells", "scene template coalescing"): "false",
         ("Cells", "paging score value reuse"): "false",
         ("Cells", "preload priority promotion"): "false",
         ("Camera", "coarse chunk occlusion"): "true",

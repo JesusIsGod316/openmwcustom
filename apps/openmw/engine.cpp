@@ -76,6 +76,10 @@
 #include <components/sceneutil/gpuindirectpackets.hpp>
 #include <components/sceneutil/frozenrigdeformation.hpp>
 #include <components/sceneutil/pagingwork.hpp>
+#include <components/sceneutil/ownedcellcull.hpp>
+#include <components/sceneutil/unchangedtransform.hpp>
+#include <components/sceneutil/temporalhistorylookup.hpp>
+#include <components/resource/templatecoalescing.hpp>
 #include <components/shader/programvariant.hpp>
 #include <components/shader/assetgeometrycontract.hpp>
 #include <components/sceneutil/workqueue.hpp>
@@ -2002,6 +2006,18 @@ void OMW::Engine::prepareEngine()
     }
     SceneUtil::reusePagingScoreValues.store(Settings::cells().mOptimizedMWPagingScoreValues,
         std::memory_order_relaxed);
+    osgViewer::ViewerBase::Contexts cullContexts;
+    mViewer->getContexts(cullContexts, false);
+    const bool ownedCellCullThreading = !mUseVulkanRenderer && cullContexts.size() == 1
+        && (mViewer->getThreadingModel() == osgViewer::ViewerBase::SingleThreaded
+            || mViewer->getThreadingModel() == osgViewer::ViewerBase::DrawThreadPerContext);
+    SceneUtil::OwnedCellCull::enabled.store(Settings::cells().mOptimizedMWOwnedCellCull && ownedCellCullThreading,
+        std::memory_order_relaxed);
+    if (Settings::cells().mOptimizedMWOwnedCellCull && !ownedCellCullThreading)
+        Log(Debug::Info) << "OptimizedMW owned cell cull: ordinary fallback for unsupported context/threading ownership";
+    SceneUtil::UnchangedTransform::enabled.store(Settings::cells().mOptimizedMWUnchangedTransform, std::memory_order_relaxed);
+    Resource::TemplateCoalescing::enabled.store(Settings::cells().mOptimizedMWTemplateCoalescing, std::memory_order_relaxed);
+    SceneUtil::TemporalHistoryLookup::enabled.store(Settings::cells().mOptimizedMWTemporalHistoryLookup, std::memory_order_relaxed);
     if (SceneUtil::GpuIndirectPackets::indirectEnabled() && !mUseVulkanRenderer)
     {
         SceneUtil::GpuIndirectPackets::reuseIndirectCommands.store(Settings::cells().mOptimizedMWIndirectCommandReuse,
@@ -2643,7 +2659,19 @@ void OMW::Engine::go()
                     SceneUtil::WorkQueue::PriorityStats::submitted.load(std::memory_order_relaxed),
                     SceneUtil::WorkQueue::PriorityStats::promoted.load(std::memory_order_relaxed),
                     SceneUtil::WorkQueue::PriorityStats::consumed.load(std::memory_order_relaxed),
-                    SceneUtil::WorkQueue::PriorityStats::fairness.load(std::memory_order_relaxed)});
+                    SceneUtil::WorkQueue::PriorityStats::fairness.load(std::memory_order_relaxed),
+                    SceneUtil::OwnedCellCull::Counters::publications.load(std::memory_order_relaxed),
+                    SceneUtil::OwnedCellCull::Counters::boundReadsAvoided.load(std::memory_order_relaxed),
+                    SceneUtil::OwnedCellCull::Counters::classificationVisitsAvoided.load(std::memory_order_relaxed),
+                    SceneUtil::OwnedCellCull::Counters::invalidatedReads.load(std::memory_order_relaxed),
+                    SceneUtil::OwnedCellCull::Counters::refusals.load(std::memory_order_relaxed),
+                    SceneUtil::UnchangedTransform::dirtyCallsAvoided.load(std::memory_order_relaxed),
+                    SceneUtil::UnchangedTransform::changedInputs.load(std::memory_order_relaxed),
+                    Resource::TemplateCoalescing::Counters::afterLoadReuses.load(std::memory_order_relaxed),
+                    Resource::TemplateCoalescing::Counters::publishReuses.load(std::memory_order_relaxed),
+                    Resource::TemplateCoalescing::Counters::publications.load(std::memory_order_relaxed),
+                    SceneUtil::TemporalHistoryLookup::indexedLookups.load(std::memory_order_relaxed),
+                    SceneUtil::TemporalHistoryLookup::compatibilityComparisons.load(std::memory_order_relaxed)});
         }
         if (!cleanCapture && stats.is_open())
         {
@@ -2983,6 +3011,28 @@ void OMW::Engine::go()
             << " per_cell_pin_mib=" << static_cast<int>(Settings::cells().mOptimizedMWMaterialImageBudget)
             << " scope=ordinary_cpu_decoder_cache_no_gl";
     }
+    if (SceneUtil::OwnedCellCull::enabled.load(std::memory_order_relaxed))
+    {
+        using C = SceneUtil::OwnedCellCull::Counters;
+        Log(Debug::Info) << std::dec << "OptimizedMW owned cell cull: publications=" << C::publications.load()
+            << " bound_reads_avoided=" << C::boundReadsAvoided.load()
+            << " classification_visits_avoided=" << C::classificationVisitsAvoided.load()
+            << " invalidated_reads=" << C::invalidatedReads.load() << " refused=" << C::refusals.load()
+            << " live_bytes=" << C::liveBytes.load() << " peak_bytes=" << C::peakBytes.load()
+            << " scope=current_cull_order_and_osg_bound_invalidation_no_previous_visibility";
+    }
+    if (Resource::TemplateCoalescing::enabled.load(std::memory_order_relaxed))
+    {
+        using C = Resource::TemplateCoalescing::Counters;
+        Log(Debug::Info) << std::dec << "OptimizedMW scene template coalescing: after_load_reuses=" << C::afterLoadReuses.load()
+            << " publication_reuses=" << C::publishReuses.load() << " canonical_publications=" << C::publications.load()
+            << " changed_epochs=" << C::changedEpochs.load()
+            << " scope=stable_manager_vfs_shader_generation_no_wait_no_in_place_file_reload_contract";
+    }
+    if (SceneUtil::UnchangedTransform::enabled.load(std::memory_order_relaxed))
+        Log(Debug::Info) << std::dec << "OptimizedMW unchanged transform bounds: dirty_calls_avoided="
+            << SceneUtil::UnchangedTransform::dirtyCallsAvoided.load() << " changed_inputs="
+            << SceneUtil::UnchangedTransform::changedInputs.load() << " scope=identical_finite_setters";
     if (SceneUtil::GpuIndirectPackets::indirectEnabled())
     {
         using C=SceneUtil::GpuIndirectPackets::Counters;

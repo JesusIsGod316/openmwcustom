@@ -202,6 +202,16 @@ def engagement(profile, requested, asset_mask=0, architecture_mask=0, work=None)
             and indirect_work.positive_counts(work, 'preload_priority_started')
             and (indirect_work.positive_counts(work, 'preload_priority_promoted')
                 or indirect_work.positive_counts(work, 'preload_priority_submitted')))
+    if requested.get('owned cell cull snapshots') == 'true':
+        positive['owned_cell_cull_snapshots'] = bool(work and indirect_work.positive_counts(work, 'cull_bound_reads_avoided')
+            and indirect_work.positive_counts(work, 'cull_classification_visits_avoided'))
+    if requested.get('unchanged transform bounds') == 'true':
+        positive['unchanged_transform_bounds'] = bool(work and indirect_work.positive_counts(work, 'transform_dirty_calls_avoided'))
+    if requested.get('scene template coalescing') == 'true':
+        positive['scene_template_coalescing'] = bool(work and (indirect_work.positive_counts(work, 'template_after_load_reuses')
+            or indirect_work.positive_counts(work, 'template_publication_reuses')))
+    if requested.get('temporal history lookup') == 'true':
+        positive['temporal_history_lookup'] = bool(work and indirect_work.positive_counts(work, 'temporal_history_indexed_lookups'))
     return {'positive_work': positive, 'all_requested_positive': all(positive.values()),
             'limit': 'Preparation/dispatch engagement; visible resource adoption and performance require separate evidence'}
 

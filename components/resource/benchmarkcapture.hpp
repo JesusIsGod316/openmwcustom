@@ -78,7 +78,7 @@ namespace Resource
         struct IndirectWorkRecord
         {
             unsigned snapshotFrame;
-            std::array<std::uint64_t, 20> values;
+            std::array<std::uint64_t, 32> values;
         };
     public:
         BenchmarkCapture()
@@ -90,7 +90,7 @@ namespace Resource
             mCameras.reserve(32);
         }
         ~BenchmarkCapture() { finish(false); }
-        void captureIndirectWork(unsigned frame, const std::array<std::uint64_t, 20>& values)
+        void captureIndirectWork(unsigned frame, const std::array<std::uint64_t, 32>& values)
         {
             if (Debug::DeferredCapture::enabled()) mIndirectWork.push({frame, values});
         }
@@ -170,7 +170,11 @@ namespace Resource
                     "capability_draws,gpu_function_resolutions_avoided,opportunity_original_draws,requested_dispatches_avoided,"
                     "projection_proof_reuses,early_admission_fallbacks,early_busy_fallbacks,paging_score_table_runs,"
                     "paging_pow_reuses,paging_pow_computations,paging_uncached_pow_computations,"
-                    "preload_priority_submitted,preload_priority_promoted,preload_priority_started,preload_priority_fairness\n";
+                    "preload_priority_submitted,preload_priority_promoted,preload_priority_started,preload_priority_fairness,"
+                    "cull_snapshot_publications,cull_bound_reads_avoided,cull_classification_visits_avoided,"
+                    "cull_snapshot_invalidations,cull_snapshot_refusals,transform_dirty_calls_avoided,transform_changed_inputs,"
+                    "template_after_load_reuses,template_publication_reuses,template_canonical_publications,"
+                    "temporal_history_indexed_lookups,temporal_history_compatibility_comparisons\n";
                 for (const auto& record : mIndirectWork)
                 {
                     indirect << record.snapshotFrame;
@@ -192,6 +196,7 @@ namespace Resource
                        << "\noutput_ok=" << (render.good() && resources.good() && indirect.good())
                        << "\nindirect_work_scope=cumulative_all_views_observed_after_main_frame_not_render_origin_attribution"
                        << "\npreload_priority_scope=cumulative_queue_admissions_and_starts_not_cpu_ready_or_origin_frame"
+                       << "\nowned_cull_scope=cumulative_all_views_read_and_classification_work_not_saved_milliseconds"
                        << "\nproxy_visits_are_cull_visits_not_driver_draws=1\n";
             }
             catch (...) { /* Missing status explicitly means incomplete capture. */ }

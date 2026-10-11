@@ -25,6 +25,22 @@ keeps that strong control. Collision, picking, shadows and secondary views
 retain original geometry. Selection alone does not establish runtime use.
 
 ADDITIONAL INDEPENDENT CONTROLS
+[Optimizations] owned cell cull snapshots = false
+Cell-root-owned direct-child bounds and classification, invalidated by the
+same OSG dirty-bound contract as ordinary traversal. Current cull order and
+MSOC decisions remain; callbacks that change bounds select live fallback.
+Metadata is capped at 4096 children/root and 8 MiB total with safe refusal.
+[Optimizations] unchanged transform bounds = false
+Only identical finite setter inputs avoid dirtyBound. Real changes, signed
+zero assignment, nonfinite inputs and independent child dirtying remain.
+[Cells] scene template coalescing = false
+Concurrent misses can adopt an already finished template in the same exact
+manager/VFS/shader generation. No wait or second decoder. An in-place file
+edit still requires the existing explicit reload/invalidation contract.
+[Optimizations] temporal history lookup = false
+Bounded exact instance index over existing previous motion surfaces. First
+compatible match and all material/pose checks remain. Does not enable DLSS,
+jitter or dense motion. Requires the separately enabled dynamic producer.
 [Cells] preload priority promotion = false
 Move an already admitted, still-queued cell job into the near-future lane and
 enqueue new near-future jobs there. Preserve existing urgent/front jobs, FIFO

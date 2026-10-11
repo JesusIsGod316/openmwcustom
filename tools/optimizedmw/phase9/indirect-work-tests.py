@@ -4,10 +4,21 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from indirect_work import COUNTERS, EXTENDED_COUNTERS, PREPARATION_EXTENDED_COUNTERS, interval_work, positive_counts
+from indirect_work import COUNTERS, EXTENDED_COUNTERS, PREPARATION_EXTENDED_COUNTERS, OWNERSHIP_EXTENDED_COUNTERS, interval_work, positive_counts
 
 
 class IndirectWork(unittest.TestCase):
+    def test_owned_work_requires_measured_intervals_and_complete_transport(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            windows = self.make(root, [0, 0, 0, 2, 4, 7, 10, 13, 999], counters=OWNERSHIP_EXTENDED_COUNTERS)
+            result = interval_work(root, windows)
+            self.assertEqual(result['schema'], 4)
+            self.assertEqual(result['phases']['moving']['counts']['cull_bound_reads_avoided'], 9)
+            self.assertTrue(positive_counts(result, 'template_publication_reuses'))
+            self.make(root, [30] * 9, counters=OWNERSHIP_EXTENDED_COUNTERS)
+            self.assertFalse(positive_counts(interval_work(root, windows), 'cull_bound_reads_avoided'))
+
     def make(self, root, values, flags=None, counters=COUNTERS):
         flags = flags or {}
         with (root/'v3-frame.csv').open('w', newline='') as stream:

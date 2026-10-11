@@ -89,6 +89,13 @@ target_link_libraries(p9-selective-hlod PRIVATE ${OPENSCENEGRAPH_LIBRARIES} Open
 add_test(NAME p9-selective-hlod COMMAND p9-selective-hlod)
 set_tests_properties(p9-selective-hlod PROPERTIES TIMEOUT 90 ENVIRONMENT "OPENMW_P9_ASSET_MASK=2")
 add_executable(p9-exact-paging-work exact-paging-work-tests.cpp)
+add_executable(p9-owned-cell-cull owned-cell-cull-tests.cpp ${ROOT}/components/sceneutil/positionattitudetransform.cpp)
+add_executable(p9-temporal-history-lookup temporal-history-lookup-tests.cpp)
+add_test(NAME p9-temporal-history-lookup COMMAND p9-temporal-history-lookup)
+set_tests_properties(p9-temporal-history-lookup PROPERTIES TIMEOUT 45)
+target_link_libraries(p9-owned-cell-cull PRIVATE ${OPENSCENEGRAPH_LIBRARIES})
+add_test(NAME p9-owned-cell-cull COMMAND p9-owned-cell-cull)
+set_tests_properties(p9-owned-cell-cull PROPERTIES TIMEOUT 45)
 add_executable(p9-preload-priority preload-priority-tests.cpp ${ROOT}/components/sceneutil/workqueue.cpp)
 target_link_libraries(p9-preload-priority PRIVATE Threads::Threads)
 add_test(NAME p9-preload-priority COMMAND p9-preload-priority)
@@ -507,6 +514,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 add_test(NAME p9-temporal-dynamic COMMAND p9-temporal-dynamic)
 set_tests_properties(p9-temporal-dynamic PROPERTIES TIMEOUT 45 ENVIRONMENT "OPENMW_P9_DYNAMIC_MOTION=1")
+add_test(NAME p9-temporal-dynamic-indexed COMMAND p9-temporal-dynamic)
+set_tests_properties(p9-temporal-dynamic-indexed PROPERTIES TIMEOUT 45
+  ENVIRONMENT "OPENMW_P9_DYNAMIC_MOTION=1;OPENMW_TEMPORAL_HISTORY_LOOKUP_FIXTURE=1")
 add_executable(p9-nis-owner nis-owner-tests.cpp
   ${ROOT}/apps/openmw/mwrender/nisscaler.cpp ${ROOT}/components/debug/debuglog.cpp
   ${ROOT}/components/files/conversion.cpp)

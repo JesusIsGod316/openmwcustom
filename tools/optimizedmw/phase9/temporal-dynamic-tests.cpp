@@ -1,5 +1,6 @@
 #include <apps/openmw/mwrender/temporaldynamic.hpp>
 #include <apps/openmw/mwrender/temporalmotion.hpp>
+#include <components/sceneutil/temporalhistorylookup.hpp>
 #include <components/sceneutil/riggeometry.hpp>
 #include <components/sceneutil/morphgeometry.hpp>
 #include <components/sceneutil/skeleton.hpp>
@@ -95,6 +96,8 @@ const Shader::AssetGeometry::Samplers opaqueSamplers{{"diffuseMap",0},{"normalMa
 #endif
 int main(int argc,char** argv) try
 {
+    const char* historyLookup = std::getenv("OPENMW_TEMPORAL_HISTORY_LOOKUP_FIXTURE");
+    SceneUtil::TemporalHistoryLookup::enabled = historyLookup && std::string_view(historyLookup)=="1";
     require(SceneUtil::temporalDynamicMotionEnabled(), "fixture must enable the independent dynamic producer");
 #ifdef P9_ASSET_PRODUCER_FIXTURE
     require(argc == 4,"usage: p9-temporal-asset-producer stockShaderRoot stagedPbrShaderRoot defaultsCfg");
@@ -397,6 +400,15 @@ int main(int argc,char** argv) try
     std::cout << "TEMPORAL_ASSET_PASS stock=1 pbr=1 index_lineage=1 real_motion_pixels=1 opaque_only=1 current_material=1"
         << " bounded=1 no_dense_claim=1 no_dlss_claim=1 indirect_unchanged=1 temporal_only=1\n";
 #endif
+    if (SceneUtil::TemporalHistoryLookup::enabled.load())
+    {
+        require(SceneUtil::TemporalHistoryLookup::indexedLookups.load()>0
+            && SceneUtil::TemporalHistoryLookup::compatibilityComparisons.load()>0,
+            "indexed fixture did not consume actual previous-pose history");
+        std::cout << "TEMPORAL_HISTORY_PIXELS_PASS indexed_lookups="
+            << SceneUtil::TemporalHistoryLookup::indexedLookups.load()
+            << " comparisons=" << SceneUtil::TemporalHistoryLookup::compatibilityComparisons.load() << "\n";
+    }
     pass.releaseGLObjects(state); context->releaseContext(); context->close(true);
     std::cout << "PASS: production rigid transforms, real CPU rig/morph previous/current poses, unproved lineage refusal, immutable capture, gap reset, transparent/shader-cutout fallback, depth visibility and bounded memory\n";
 }

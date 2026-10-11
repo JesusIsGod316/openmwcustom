@@ -1,5 +1,6 @@
 #include <components/debug/hitchtrace.hpp>
 #include "scenemanager.hpp"
+#include "templatecoalescing.hpp"
 #include "materialimagedependencies.hpp"
 #include "sharedstatecache.hpp"
 #include "hostmemorybudget.hpp"
@@ -589,31 +590,37 @@ namespace Resource
 
     void SceneManager::setAutoUseNormalMaps(bool use)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mAutoUseNormalMaps = use;
     }
 
     void SceneManager::setNormalMapPattern(const std::string& pattern)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mNormalMapPattern = pattern;
     }
 
     void SceneManager::setNormalHeightMapPattern(const std::string& pattern)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mNormalHeightMapPattern = pattern;
     }
 
     void SceneManager::setAutoUseSpecularMaps(bool use)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mAutoUseSpecularMaps = use;
     }
 
     void SceneManager::setSpecularMapPattern(const std::string& pattern)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mSpecularMapPattern = pattern;
     }
 
     void SceneManager::setSupportsClusteredLighting(bool supported)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mSupportsClusteredLighting = supported;
     }
 
@@ -624,16 +631,19 @@ namespace Resource
 
     void SceneManager::setConvertAlphaTestToAlphaToCoverage(bool convert)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mConvertAlphaTestToAlphaToCoverage = convert;
     }
 
     void SceneManager::setAdjustCoverageForAlphaTest(bool adjustCoverage)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mAdjustCoverageForAlphaTest = adjustCoverage;
     }
 
     void SceneManager::setOpaqueDepthTex(osg::ref_ptr<osg::Texture> texturePing, osg::ref_ptr<osg::Texture> texturePong)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mOpaqueDepthTex = { texturePing, texturePong };
     }
 
@@ -659,6 +669,7 @@ namespace Resource
 
     void SceneManager::setShaderPath(const std::filesystem::path& path)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mShaderManager->setShaderPath(path);
     }
 
@@ -1075,6 +1086,13 @@ namespace Resource
         else
         {
             Debug::V3Diagnostics::TraceScope trace("render", "scene_template_miss", path.value(), 0.1);
+            const bool coalesce = TemplateCoalescing::enabled.load(std::memory_order_relaxed);
+            const auto epoch = [&] {
+                return TemplateCoalescing::Epoch{this, mTemplatePublicationEpoch.load(std::memory_order_acquire),
+                    mVFS->getIndexGeneration(), mShaderManager->assetGeneration()};
+            };
+            const auto before = coalesce ? epoch() : TemplateCoalescing::Epoch{};
+            bool loadedOriginal = true;
             Debug::V3Diagnostics::ScopedCsvTimer timer(
                 Debug::V3Diagnostics::renderWriter(), "scene_template_miss", path.value(), 0.25);
             auto claim = SpeculativeScope::claim(SpeculativeScope::active()
@@ -1091,8 +1109,22 @@ namespace Resource
             catch (const SpeculativeDeferred&) { throw; }
             catch (const std::exception& e)
             {
+                loadedOriginal = false;
                 Log(Debug::Error) << "Failed to load '" << path << "': " << e.what() << ", using marker_error instead";
                 loaded = cloneErrorMarker();
+            }
+
+            // No waits or second decoder. Another existing producer may have
+            // finished during this read. Reuse only its exact stable epoch and
+            // skip our remaining filter/shader/optimizer work in that case.
+            if (coalesce && loadedOriginal && before == epoch())
+            {
+                auto ready = mCache->getRefFromObjectCache(path);
+                if (TemplateCoalescing::matches(ready.get(), before) && before == epoch())
+                {
+                    ++TemplateCoalescing::Counters::afterLoadReuses;
+                    return osg::ref_ptr<const osg::Node>(static_cast<const osg::Node*>(ready.get()));
+                }
             }
 
             // set filtering settings
@@ -1154,6 +1186,18 @@ namespace Resource
                 loaded->getBound();
             }
 
+            if (coalesce && loadedOriginal && before == epoch())
+            {
+                TemplateCoalescing::mark(*loaded, before);
+                auto [canonical, inserted] = mCache->getOrInsert(path.value(), loaded);
+                if (TemplateCoalescing::matches(canonical.get(), before) && before == epoch())
+                {
+                    if (inserted) ++TemplateCoalescing::Counters::publications;
+                    else ++TemplateCoalescing::Counters::publishReuses;
+                    return osg::ref_ptr<const osg::Node>(static_cast<const osg::Node*>(canonical.get()));
+                }
+            }
+            if (coalesce) ++TemplateCoalescing::Counters::changedEpochs;
             mCache->addEntryToObjectCache(path.value(), loaded);
             return loaded;
         }
@@ -1398,12 +1442,14 @@ namespace Resource
 
     void SceneManager::setParticleSystemMask(unsigned int mask)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mParticleSystemMask = mask;
     }
 
     void SceneManager::setFilterSettings(
         const std::string& magfilter, const std::string& minfilter, const std::string& mipmap, float maxAnisotropy)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         osg::Texture::FilterMode min = osg::Texture::LINEAR;
         osg::Texture::FilterMode mag = osg::Texture::LINEAR;
 
@@ -1454,6 +1500,7 @@ namespace Resource
 
     void SceneManager::setUnRefImageDataAfterApply(bool unref)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mUnRefImageDataAfterApply = unref;
     }
 
@@ -1576,6 +1623,7 @@ namespace Resource
 
     void SceneManager::clearCache()
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         decltype(mPreparedInstances) released;
         {
             std::lock_guard<std::mutex> lock(mPreparedInstanceMutex);

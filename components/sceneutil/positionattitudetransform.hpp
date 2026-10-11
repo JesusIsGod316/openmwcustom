@@ -3,6 +3,7 @@
 
 #include <osg/Transform>
 #include "rendermutation.hpp"
+#include "unchangedtransform.hpp"
 
 namespace SceneUtil
 {
@@ -27,6 +28,7 @@ namespace SceneUtil
 
         inline void setPosition(const osg::Vec3f& pos)
         {
+            if (UnchangedTransform::reuse(_position, pos)) return;
             if (_position != pos) publishRenderMutation();
             _position = pos;
             dirtyBound();
@@ -35,6 +37,7 @@ namespace SceneUtil
 
         inline void setAttitude(const osg::Quat& quat)
         {
+            if (UnchangedTransform::reuse(_attitude, quat)) return;
             if (_attitude != quat) publishRenderMutation();
             _attitude = quat;
             dirtyBound();
@@ -43,6 +46,7 @@ namespace SceneUtil
 
         inline void setScale(const osg::Vec3f& scale)
         {
+            if (UnchangedTransform::reuse(_scale, scale)) return;
             if (_scale != scale) publishRenderMutation();
             _scale = scale;
             dirtyBound();
