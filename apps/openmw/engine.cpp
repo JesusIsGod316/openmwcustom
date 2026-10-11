@@ -2004,6 +2004,10 @@ void OMW::Engine::prepareEngine()
     {
         SceneUtil::GpuIndirectPackets::reuseIndirectCommands.store(Settings::cells().mOptimizedMWIndirectCommandReuse,
             std::memory_order_relaxed);
+        SceneUtil::GpuIndirectPackets::reuseContextCapabilities.store(
+            Settings::cells().mOptimizedMWIndirectContextCapabilityReuse, std::memory_order_relaxed);
+        SceneUtil::GpuIndirectPackets::filterVisibilityOpportunity.store(
+            Settings::cells().mOptimizedMWGpuVisibilityOpportunityFilter, std::memory_order_relaxed);
         SceneUtil::GpuIndirectPackets::sample=&Resource::ResourceSystem::speculativeSample;
         SceneUtil::GpuIndirectPackets::sampleOwner=mResourceSystem.get();
         SceneUtil::GpuIndirectPackets::ledger=mResourceSystem->speculativeBudget();
@@ -2616,7 +2620,16 @@ void OMW::Engine::go()
         }
 
         if (cleanCapture)
+        {
             numericCapture.capture(mViewer->getFrameStamp()->getFrameNumber(), *mViewer);
+            using C = SceneUtil::GpuIndirectPackets::Counters;
+            numericCapture.captureIndirectWork(mViewer->getFrameStamp()->getFrameNumber(),
+                {C::draws.load(std::memory_order_relaxed), C::commands.load(std::memory_order_relaxed),
+                    C::dispatches.load(std::memory_order_relaxed), C::commandUploads.load(std::memory_order_relaxed),
+                    C::commandUploadsAvoided.load(std::memory_order_relaxed), C::capabilityDraws.load(std::memory_order_relaxed),
+                    C::gpuResolutionsAvoided.load(std::memory_order_relaxed), C::visibilityOriginalDraws.load(std::memory_order_relaxed),
+                    C::visibilityDispatchesAvoided.load(std::memory_order_relaxed)});
+        }
         if (!cleanCapture && stats.is_open())
         {
             // The delay is required because rendering happens in parallel to the main thread and stats from there is
@@ -2970,6 +2983,12 @@ void OMW::Engine::go()
             << " live_owned_bytes=" << C::liveBytes.load();
         Log(Debug::Info) << std::dec << "OptimizedMW indirect command reuse: uploads=" << C::commandUploads.load()
             << " uploaded_bytes=" << C::commandUploadBytes.load() << " command_uploads_avoided=" << C::commandUploadsAvoided.load();
+        Log(Debug::Info) << "OptimizedMW indirect context capability reuse: draws=" << C::capabilityDraws.load()
+            << " snapshots=" << C::capabilitySnapshots.load()
+            << " gpu_function_resolutions_avoided=" << C::gpuResolutionsAvoided.load();
+        Log(Debug::Info) << "OptimizedMW gpu visibility opportunity: original_draws=" << C::visibilityOriginalDraws.load()
+            << " requested_dispatches_avoided=" << C::visibilityDispatchesAvoided.load()
+            << " scope=strict_whole_bound_containment_no_private_submission";
     }
     if (SceneUtil::FrozenRigDeformation::enabled())
     {

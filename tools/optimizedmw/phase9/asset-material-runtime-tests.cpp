@@ -267,23 +267,38 @@ namespace
         osg::ref_ptr<osg::Node> control=osg::clone(source.get(),osg::CopyOp::DEEP_COPY_NODES|osg::CopyOp::DEEP_COPY_DRAWABLES|osg::CopyOp::DEEP_COPY_PRIMITIVES);
         require(P::installCertifiedSubtrees(*source,1024,true,gpu)==1,"actual object/PBR nested indirect installation declined");
         const auto draws=P::Counters::draws.load(),dispatches=P::Counters::dispatches.load();
+        const auto originalDraws=P::Counters::visibilityOriginalDraws.load();
+        const auto submissions=[&] {return P::Counters::draws.load()+P::Counters::visibilityOriginalDraws.load();};
         const auto avoided=P::Counters::commandUploadsAvoided.load();
         for(unsigned i=0;i<12;++i)
         {
             fixture.show(*control);fixture.frame();const auto expected=fixture.pixels->data;
             require(rgbPixels(expected)>500,"actual control material must produce visible RGB pixels");
             fixture.show(*source);fixture.frame();parity(expected,fixture.pixels->data);
-            require(P::Counters::draws.load()==draws+i+1,"actual object/PBR callback did not submit indirect work");
+            require(submissions()==draws+originalDraws+i+1,"actual object/PBR callback did not submit certified work");
         }
         if(!gpu) require(P::Counters::commandUploadsAvoided.load()>avoided,"actual CPU PBR command reuse did no work");
-        require(gpu?(P::Counters::dispatches.load()>dispatches):(P::Counters::dispatches.load()==dispatches),
+        const bool filter=gpu && P::filterVisibilityOpportunity.load();
+        require(filter?(P::Counters::visibilityOriginalDraws.load()>originalDraws && P::Counters::dispatches.load()==dispatches)
+            :gpu?(P::Counters::dispatches.load()>dispatches):(P::Counters::dispatches.load()==dispatches),
             "actual object/PBR CPU/GPU visibility selection did not engage its requested path");
         auto globals=fixture.shaders.getGlobalDefines();globals["radialFog"]="1";
         fixture.shaders.setGlobalDefines(globals);
         require(Shader::IndirectProjection::matches(*program),"trusted actual shader regeneration lost indirect proof");
         fixture.show(*control);fixture.frame();const auto regenerated=fixture.pixels->data;
         fixture.show(*source);fixture.frame();parity(regenerated,fixture.pixels->data);
-        require(P::Counters::draws.load()==draws+13,"regenerated actual program did no indirect work");
+        require(submissions()==draws+originalDraws+13,"regenerated actual program did no certified work");
+        if(filter)
+        {
+            const auto view=fixture.camera->getViewMatrix();
+            fixture.camera->setViewMatrix(osg::Matrixd::translate(-2,0,0)*view);
+            const auto before=P::Counters::dispatches.load();
+            fixture.show(*control);fixture.frame();const auto partial=fixture.pixels->data;
+            require(rgbPixels(partial)>0,"partial actual-material control produced no visible pixels");
+            fixture.show(*source);fixture.frame();parity(partial,fixture.pixels->data);
+            require(P::Counters::dispatches.load()>before,"partially clipped actual stock/PBR geometry stopped using GPU visibility");
+            fixture.camera->setViewMatrix(view);
+        }
         // A legal GLSL preprocessor injection changes the actual compile
         // recipe without touching the reviewed Shader object's source bytes.
         // The native control can render it, but repacking must decline it.
@@ -311,6 +326,8 @@ namespace
         P::sample=nullptr;P::ledger=nullptr;
         std::cout<<"ACTUAL_OBJECT_INDIRECT_PASS gpu="<<gpu<<" draws="<<(P::Counters::draws.load()-draws)
             <<" dispatches="<<(P::Counters::dispatches.load()-dispatches)<<" reuse="<<(P::Counters::commandUploadsAvoided.load()-avoided)
+            <<" opportunity_original_draws="<<(P::Counters::visibilityOriginalDraws.load()-originalDraws)
+            <<" capability_draws="<<P::Counters::capabilityDraws.load()
             <<" exact_material_pixels=1 regenerated_recipe=1 imported_recipe_control=1 unknown_shader_control=1 gl_error=0\n";
     }
     void cases(Fixture& fixture,bool hlod)
@@ -443,8 +460,8 @@ namespace
 }
 int main(int argc,char** argv) try
 {
-    require(argc>=3 && argc<=6 && std::string_view(argv[1])=="--shader-dir",
-        "usage: p9-asset-material-runtime --shader-dir exact-shader-tree [--reverse-z] [--indirect-cpu|--indirect-gpu] [--clustered]");
+    require(argc>=3 && argc<=8 && std::string_view(argv[1])=="--shader-dir",
+        "usage: p9-asset-material-runtime --shader-dir exact-shader-tree [--reverse-z] [--indirect-cpu|--indirect-gpu] [--clustered] [--reuse-capabilities] [--filter-opportunities]");
     bool reversed=false,indirect=false,gpu=false,clustered=false;
     for(int i=3;i<argc;++i)
     {
@@ -452,6 +469,8 @@ int main(int argc,char** argv) try
         if(option=="--reverse-z") reversed=true;
         else if(option=="--clustered") clustered=true;
         else if(option=="--indirect-cpu" || option=="--indirect-gpu") {indirect=true;gpu=option=="--indirect-gpu";}
+        else if(option=="--reuse-capabilities") SceneUtil::GpuIndirectPackets::reuseContextCapabilities=true;
+        else if(option=="--filter-opportunities") SceneUtil::GpuIndirectPackets::filterVisibilityOpportunity=true;
         else require(false,"unrecognized actual material fixture option");
     }
     SceneUtil::AutoDepth::setReversed(reversed);

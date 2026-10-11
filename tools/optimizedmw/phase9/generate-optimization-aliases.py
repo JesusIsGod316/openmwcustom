@@ -58,6 +58,14 @@ def outputs():
         "Requires the opaque indirect or GPU visibility pipeline. Reuse populated\n"
         "CPU command slots; refill a slot after GPU visibility has changed it.\n"
         "Existing slot fences, pressure admission and ordinary fallbacks remain.\n\n"
+        "[Optimizations] indirect context capability reuse = false\n"
+        "Requires the indirect lane. Reuse current-owner version/function metadata;\n"
+        "resolve GPU-only functions only for actual GPU requests. Mutable bindings,\n"
+        "program readiness, pressure admission and fence retirement still apply.\n"
+        "[Optimizations] gpu visibility opportunity filter = false\n"
+        "Requires GPU visibility. Strictly contained immutable bounds use original\n"
+        "primitives without private allocation, dispatch or submission. Partial,\n"
+        "ambiguous and unsupported projections keep the existing GPU/control path.\n\n"
         "LEGACY LOCATION -> DESCRIPTIVE LOCATION\n"
     )
     reference += "\n".join(
@@ -91,6 +99,8 @@ def outputs():
         ("Optimizations", "experimental concurrent builds"): "1",
         ("Optimizations", "render handoff attribution"): "false",
         ("Optimizations", "indirect command reuse"): "false",
+        ("Optimizations", "indirect context capability reuse"): "false",
+        ("Optimizations", "gpu visibility opportunity filter"): "false",
         ("Camera", "coarse chunk occlusion"): "true",
         ("Camera", "focus refresh interval frames"): "2",
         ("Camera", "full body first person"): "true",

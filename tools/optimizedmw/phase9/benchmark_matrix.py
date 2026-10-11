@@ -16,6 +16,7 @@ import statistics
 import sys
 
 import benchmark_desktop
+import indirect_work
 
 
 def read_json(path):
@@ -125,14 +126,17 @@ def analyze(profile):
             value = float(row['wall_ms']); groups['route'].append(value)
             if windows['movement']:
                 groups['fixed_view' if epoch < windows['movement']-1000 else 'moving'].append(value)
-    return {'schema': 1, 'phase_clock': 'approximate logged wall-time prefixes joined to system-clock frame starts',
+    result = {'schema': 1, 'phase_clock': 'approximate logged wall-time prefixes joined to system-clock frame starts',
             'phase_limit': 'One-second boundary margins; buffered log delivery is not an exact CPU span join',
             'context_limit': 'route_all_frames retains loading/UI deviations; route/fixed_view/moving require zero context flags',
             'windows_epoch_ms': windows, 'excluded_context_frames': excluded,
             'metrics': {key:pacing(values) for key,values in groups.items() if values}}
+    if (profile/'p9-indirect-work.csv').is_file():
+        result['indirect_interval_work'] = indirect_work.interval_work(profile, windows)
+    return result
 
 
-def engagement(profile, requested, asset_mask=0, architecture_mask=0):
+def engagement(profile, requested, asset_mask=0, architecture_mask=0, work=None):
     text = (profile/'openmw.log').read_text(encoding='utf-8-sig')
     positive = {}
     if asset_mask & 1:
@@ -161,9 +165,23 @@ def engagement(profile, requested, asset_mask=0, architecture_mask=0):
             positive['ordinary_nested_indirect'] = fields.get('nested_built',0)>0
         if architecture_mask & 32:
             positive['gpu_visibility_dispatches'] = fields.get('dispatches',0)>0
+        if work is not None:
+            positive['indirect_measured_interval'] = indirect_work.positive_counts(work, 'indirect_draws')
+            if architecture_mask & 32:
+                positive['gpu_measured_interval'] = indirect_work.positive_counts(work, 'gpu_dispatches')
     if requested.get('indirect command reuse') == 'true':
         matches = re.findall(r'command_uploads_avoided=(\d+)(?=\s|$)',text)
         positive['indirect_command_reuse'] = bool(matches and int(matches[-1])>0)
+        if work is not None:
+            positive['indirect_command_reuse'] &= indirect_work.positive_counts(work, 'command_uploads_avoided')
+    if requested.get('indirect context capability reuse') == 'true':
+        matches = re.findall(r'OptimizedMW indirect context capability reuse:.*?draws=(\d+)(?=\s|$)',text)
+        positive['indirect_context_capability_reuse'] = bool(matches and int(matches[-1])>0 and work is not None
+            and indirect_work.positive_counts(work, 'capability_draws'))
+    if requested.get('gpu visibility opportunity filter') == 'true':
+        matches = re.findall(r'OptimizedMW gpu visibility opportunity:.*?original_draws=(\d+)(?=\s|$)',text)
+        positive['gpu_visibility_opportunity_filter'] = bool(matches and int(matches[-1])>0 and work is not None
+            and indirect_work.positive_counts(work, 'opportunity_original_draws'))
     return {'positive_work': positive, 'all_requested_positive': all(positive.values()),
             'limit': 'Preparation/dispatch engagement; visible resource adoption and performance require separate evidence'}
 
@@ -335,6 +353,7 @@ def run_matrix(plan_path, output):
     tools = ('OptimizedMW_Test.ps1','OptimizedMW_RoutePlayback.ps1','OptimizedMW_RouteRecorder.ps1')
     pins = [identity(game/'openmw.exe'),identity(plan['symbols']),identity(game/'BUILD-IDENTITY.json'),
             identity(plan_path),identity(plan['route_catalog']),identity(__file__),identity(benchmark_desktop.__file__)]
+    pins.append(identity(indirect_work.__file__))
     pins += [identity(path) for path in sorted(game.glob('OptimizedMW_*.ps1'))]
     pins += [identity(path) for path in sorted((game/'RoutePlayback').rglob('*')) if path.is_file()]
     for route in routes.values():
@@ -388,8 +407,9 @@ def run_matrix(plan_path, output):
             quality = route_quality(receipt,profile)
             requested = {entry['key']:entry['value'] for entry in settings
                          if entry['section'] in ('Cells', 'Optimizations')}
-            engaged = engagement(profile,requested,case.get('asset_mask',0),case.get('architecture_mask',0))
             metrics = analyze(profile)
+            engaged = engagement(profile,requested,case.get('asset_mask',0),case.get('architecture_mask',0),
+                metrics.get('indirect_interval_work'))
             benchmark_desktop.save(directory/'ANALYSIS.json',metrics)
             result = {'id':case['id'],'route':case['route'],'depth':case.get('depth','Normal'),
                       'receipt':str(receipt_path),'zip':receipt['zip'],'route_quality':quality,

@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
+#include <limits>
 #include <mutex>
 #include <vector>
 
@@ -50,10 +52,17 @@ namespace SceneUtil::GpuIndirectPackets
         inline static std::atomic_uint64_t commandUploads{0}, commandUploadBytes{0}, commandUploadsAvoided{0};
         inline static std::atomic_uint64_t nestedGeometry{0}, nestedBuilt{0}, nestedBranchDeclines{0};
         inline static std::atomic_uint64_t installSourceDeclines{0}, installCommandShapeDeclines{0};
+        inline static std::atomic_uint64_t capabilityDraws{0}, capabilitySnapshots{0}, gpuResolutionsAvoided{0};
+        inline static std::atomic_uint64_t visibilityOriginalDraws{0}, visibilityDispatchesAvoided{0};
+#ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
+        inline static std::atomic_uint64_t actualVersionQueries{0}, actualFunctionResolutions{0};
+#endif
     };
     // Configure before paging workers start. Each produced primitive captures
     // its cohort, so no live draw changes policy underneath pending commands.
     inline std::atomic_bool reuseIndirectCommands{false};
+    inline std::atomic_bool reuseContextCapabilities{false};
+    inline std::atomic_bool filterVisibilityOpportunity{false};
     using Sample = Resource::OpenGlPressureSample (*)(void*);
     // Startup/shutdown only, beside the existing upload-pool sampler; no new
     // OS query is introduced on a draw or paging worker.
@@ -108,6 +117,39 @@ namespace SceneUtil::GpuIndirectPackets
         // read-only clustered-light SSBOs) and legacy fixed function are the
         // entire initial command-repacking scope.
         return Shader::IndirectProjection::matches(*program) && Shader::IndirectProjection::safeImports(*program, state);
+    }
+
+    // Prove that the exact compute transform cannot reject any contained command
+    // against its four side planes. Use double arithmetic on the actual float
+    // inputs and a conservative allowance for float products, summation and FMA.
+    // Ambiguous/boundary/non-finite cases keep the existing visibility pipeline.
+    inline bool wholeBoundInside(const osg::BoundingBoxf& bounds, const osg::Matrixf& mvp)
+    {
+        if (!bounds.valid()) return false;
+        for (unsigned row = 0; row < 4; ++row)
+            for (unsigned column = 0; column < 4; ++column)
+                if (!std::isfinite(mvp(row, column))) return false;
+        for (unsigned corner = 0; corner < 8; ++corner)
+        {
+            const auto position = bounds.corner(corner);
+            const std::array<double, 4> p{position.x(), position.y(), position.z(), 1.0};
+            std::array<double, 3> clip{}, magnitude{};
+            constexpr std::array<unsigned, 3> columns{0, 1, 3};
+            for (unsigned axis = 0; axis < columns.size(); ++axis)
+                for (unsigned row = 0; row < 4; ++row)
+                {
+                    const double term = p[row] * static_cast<double>(mvp(row, columns[axis]));
+                    if (!std::isfinite(term)) return false;
+                    clip[axis] += term;
+                    magnitude[axis] += std::abs(term);
+                }
+            const double scale = std::max({1.0, magnitude[0], magnitude[1], magnitude[2]});
+            if (!std::isfinite(scale) || scale > std::numeric_limits<float>::max() / 64.0) return false;
+            const double margin = (64.0 * std::numeric_limits<float>::epsilon() + 0.0002) * scale;
+            if (!(clip[2] > margin && std::abs(clip[0]) + margin < clip[2]
+                && std::abs(clip[1]) + margin < clip[2])) return false;
+        }
+        return true;
     }
 
     inline const char* computeSource()

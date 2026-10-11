@@ -312,6 +312,21 @@ class Benchmarks(unittest.TestCase):
             (path/'openmw.log').write_text('command_uploads_avoided=25\n')
             self.assertTrue(matrix.engagement(path,{'indirect command reuse':'true'})['all_requested_positive'])
 
+    def test_new_draw_controls_require_measured_interval_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            (path/'openmw.log').write_text('OptimizedMW opaque indirect pipeline: built=1 draws=12 commands=24 dispatches=12\n'
+                'OptimizedMW indirect context capability reuse: draws=12 snapshots=1 gpu_function_resolutions_avoided=22\n'
+                'OptimizedMW gpu visibility opportunity: original_draws=12 requested_dispatches_avoided=12\n')
+            requested = {'indirect context capability reuse':'true', 'gpu visibility opportunity filter':'true'}
+            self.assertFalse(matrix.engagement(path, requested, 0, 48)['all_requested_positive'])
+            fields = dict.fromkeys(matrix.indirect_work.COUNTERS, 0)
+            work = {'phases': {'moving': {'counts': fields}}}
+            self.assertFalse(matrix.engagement(path, requested, 0, 48, work)['all_requested_positive'])
+            for key in ('indirect_draws', 'gpu_dispatches', 'capability_draws', 'opportunity_original_draws'):
+                fields[key] = 1
+            self.assertTrue(matrix.engagement(path, requested, 0, 48, work)['all_requested_positive'])
+
     def test_ordinary_packet_submission_cannot_qualify_inert_indirect_or_gpu_work(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)

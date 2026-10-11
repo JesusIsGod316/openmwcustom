@@ -34,6 +34,15 @@ Requires the opaque indirect or GPU visibility pipeline. Reuse populated
 CPU command slots; refill a slot after GPU visibility has changed it.
 Existing slot fences, pressure admission and ordinary fallbacks remain.
 
+[Optimizations] indirect context capability reuse = false
+Requires the indirect lane. Reuse current-owner version/function metadata;
+resolve GPU-only functions only for actual GPU requests. Mutable bindings,
+program readiness, pressure admission and fence retirement still apply.
+[Optimizations] gpu visibility opportunity filter = false
+Requires GPU visibility. Strictly contained immutable bounds use original
+primitives without private allocation, dispatch or submission. Partial,
+ambiguous and unsupported projections keep the existing GPU/control path.
+
 LEGACY LOCATION -> DESCRIPTIVE LOCATION
 [Camera] v3.21 full body first person -> [Camera] full body first person
 [Camera] v3.21 full body first person shadow compatibility -> [Camera] full body first person shadow compatibility

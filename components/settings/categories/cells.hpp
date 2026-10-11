@@ -44,6 +44,10 @@ namespace Settings
             mIndex, "Cells", "ordinary opaque packets" };
         SettingValue<bool> mOptimizedMWIndirectCommandReuse{
             mIndex, "Optimizations", "indirect command reuse" };
+        SettingValue<bool> mOptimizedMWIndirectContextCapabilityReuse{
+            mIndex, "Optimizations", "indirect context capability reuse" };
+        SettingValue<bool> mOptimizedMWGpuVisibilityOpportunityFilter{
+            mIndex, "Optimizations", "gpu visibility opportunity filter" };
         SettingValue<bool> mOptimizedMWActiveShadowBatching{ mIndex, "Shadows", "active batching" };
         SettingValue<bool> mOptimizedMWShadowStaticBatching{
             mIndex, "Shadows", "static batching" };

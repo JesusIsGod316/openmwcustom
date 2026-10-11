@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -74,15 +75,25 @@ namespace Resource
             unsigned frame;
             std::array<double, ResourceNames.size()> values;
         };
+        struct IndirectWorkRecord
+        {
+            unsigned snapshotFrame;
+            std::array<std::uint64_t, 9> values;
+        };
     public:
         BenchmarkCapture()
         {
             if (!Debug::DeferredCapture::enabled()) return;
             mRender.prepare(262144);
             mResources.prepare(8192);
+            mIndirectWork.prepare(131072);
             mCameras.reserve(32);
         }
         ~BenchmarkCapture() { finish(false); }
+        void captureIndirectWork(unsigned frame, const std::array<std::uint64_t, 9>& values)
+        {
+            if (Debug::DeferredCapture::enabled()) mIndirectWork.push({frame, values});
+        }
         void capture(unsigned currentFrame, osgViewer::Viewer& viewer)
         {
             if (!Debug::DeferredCapture::enabled()) return;
@@ -141,6 +152,7 @@ namespace Resource
                 if (!raw || !*raw) return;
                 const auto root = std::filesystem::path(reinterpret_cast<const char8_t*>(raw));
                 std::ofstream render(root / "p8g4-render.csv"), resources(root / "p8g4-resource.csv");
+                std::ofstream indirect(root / "p9-indirect-work.csv");
                 render << "frame,read_frame,camera,main_camera,cull_ms,draw_ms,gpu_ms,available_bits\n" << std::fixed << std::setprecision(6);
                 for (const auto& record : mRender)
                     render << record.frame << ',' << record.readFrame << ',' << record.camera << ',' << record.mainCamera
@@ -154,16 +166,28 @@ namespace Resource
                     for (double value : record.values) resources << ',' << value;
                     resources << '\n';
                 }
-                render.flush(); resources.flush();
+                indirect << "snapshot_frame,indirect_draws,commands,gpu_dispatches,command_uploads,command_uploads_avoided,"
+                    "capability_draws,gpu_function_resolutions_avoided,opportunity_original_draws,requested_dispatches_avoided\n";
+                for (const auto& record : mIndirectWork)
+                {
+                    indirect << record.snapshotFrame;
+                    for (auto value : record.values) indirect << ',' << value;
+                    indirect << '\n';
+                }
+                render.flush(); resources.flush(); indirect.flush();
                 std::ofstream status(root / "p8g4-render.capture-status.txt");
                 status << "format=p8g4-numeric-v1\nnormal_finish=" << normal << "\nrender_rows=" << mRender.size()
                        << "\nrender_dropped=" << mRender.dropped() << "\nresource_rows=" << mResources.size()
                        << "\nresource_dropped=" << mResources.dropped()
-                       << "\nallocation_failed=" << (mRender.allocationFailed() || mResources.allocationFailed())
+                       << "\nindirect_work_rows=" << mIndirectWork.size()
+                       << "\nindirect_work_dropped=" << mIndirectWork.dropped()
+                       << "\nallocation_failed=" << (mRender.allocationFailed() || mResources.allocationFailed()
+                           || mIndirectWork.allocationFailed())
                        << "\nexpired_origin_frames=" << mUnavailableFrames
                        << "\nlast_read_frame=" << mLastReadFrame << "\nread_delay_frames=8"
                        << "\nterminal_render_frames_not_read=8\nresource_sample_interval=60"
-                       << "\noutput_ok=" << (render.good() && resources.good())
+                       << "\noutput_ok=" << (render.good() && resources.good() && indirect.good())
+                       << "\nindirect_work_scope=cumulative_all_views_observed_after_main_frame_not_render_origin_attribution"
                        << "\nproxy_visits_are_cull_visits_not_driver_draws=1\n";
             }
             catch (...) { /* Missing status explicitly means incomplete capture. */ }
@@ -172,6 +196,7 @@ namespace Resource
         static constexpr double NaN = std::numeric_limits<double>::quiet_NaN();
         Debug::DeferredCapture::Buffer<RenderRecord> mRender;
         Debug::DeferredCapture::Buffer<ResourceRecord> mResources;
+        Debug::DeferredCapture::Buffer<IndirectWorkRecord> mIndirectWork;
         osgViewer::Viewer::Cameras mCameras;
         unsigned mNextFrame = 0, mLastReadFrame = 0;
         std::size_t mUnavailableFrames = 0;

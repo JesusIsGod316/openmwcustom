@@ -182,3 +182,41 @@ read of OSG's effective define stack/cache refuses statement-bearing imported
 values, including a legal preprocessor injection that leaves original Shader
 source bytes unchanged. Actual stock/PBR CPU/GPU fixtures verify that this
 case renders exact control pixels through the original primitive path.
+
+Independent draw overhead controls (both default false)
+[Optimizations] indirect context capability reuse = true
+The current GL extension owner supplies its captured version. GPU-only indexed
+query functions are resolved only when visibility needs them, then retained for
+that exact private context/retirement generation and extension owner. CPU-only
+draws resolve neither GPU function. Mutable actual bindings, linked-program
+readiness and fence availability are still checked. Missing mandatory support
+keeps original draws; missing optional GPU functions keeps CPU commands.
+
+[Optimizations] gpu visibility opportunity filter = true
+The complete private immutable command-bound union must be strictly contained
+in the actual consumer's current side clip planes. Double evaluation of float
+inputs uses conservative float/FMA roundoff and clip-epsilon margins. Boundary,
+partial, non-finite and extreme cancellation cases retain the existing GPU path.
+Contained cases submit the original primitives before any private allocation,
+dispatch or MDI submission. Prior private buffers/fences remain owned. The
+requested-dispatch avoidance counter describes this chosen path; paired draws
+and dispatch counts are needed to establish actual work reduction.
+
+Native fixtures independently exercise each control and their combination with
+command reuse. Capability hooks count actual version queries and function
+resolutions. Context release, missing support, a second real GL namespace and
+return to the first must not reuse another owner's functions or storage.
+Production stock/PBR fixtures accept --reuse-capabilities and
+--filter-opportunities, including reverse depth and clustered-light variants.
+Both real GPU dispatch and exact original submissions are required by these
+fixtures; untested source/compilation is not a native pass.
+
+Clean captures also write p9-indirect-work.csv from a bounded, preallocated
+single-producer buffer. It samples cumulative all-view work after the main
+frame without GL queries, waits or formatting. snapshot_frame is an observation
+point, not an asynchronous render-origin frame. Offline joins use the same
+phase clock/margins and zero-context policy as pacing, reject lost/truncated
+output, reset counters and bad joins, and retain observation-gap uncertainty.
+New matrix controls require positive measured-interval work; engine startup
+totals alone cannot qualify them. Older captures without this family retain
+their older explicit aggregate-engagement limit.

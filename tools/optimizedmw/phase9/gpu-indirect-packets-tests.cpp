@@ -15,12 +15,14 @@ Resource::OpenGlPressureSample sample(void*) { return sampleValue; }
 
 struct GlState final : osg::Camera::DrawCallback
 {
+    inline static bool allowMissingMdi = false;
     mutable std::array<GLuint, 3> buffers{};
     mutable GLint alignment = 0;
     void operator()(osg::RenderInfo& info) const override
     {
         auto* ext = info.getState()->get<osg::GLExtensions>();
-        require(ext && ext->glDispatchCompute && ext->glMultiDrawElementsIndirect, "real GL 4.3 fixture required");
+        require(ext && ext->glDispatchCompute && (allowMissingMdi || ext->glMultiDrawElementsIndirect),
+            "real GL 4.3 fixture required");
         if (!buffers[0])
         {
             glGetIntegerv(GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT, &alignment);
@@ -141,8 +143,35 @@ osg::ref_ptr<osg::Program> fixtureProgram(bool certified)
 
 int main(int argc, char** argv) try
 {
-    const bool reuse = argc > 1 && std::string_view(argv[1]) == "--reuse-commands";
+    bool reuse = false, capabilities = false, opportunity = false;
+    for (int i = 1; i < argc; ++i)
+    {
+        const std::string_view option = argv[i];
+        if (option == "--reuse-commands") reuse = true;
+        else if (option == "--reuse-capabilities") capabilities = true;
+        else if (option == "--filter-opportunities") opportunity = true;
+        else require(false, "unknown indirect fixture option");
+    }
     Packet::reuseIndirectCommands.store(reuse);
+    Packet::reuseContextCapabilities.store(capabilities);
+    Packet::filterVisibilityOpportunity.store(opportunity);
+    const osg::BoundingBoxf inside(-.5f, -.5f, -.5f, .5f, .5f, .5f);
+    require(Packet::wholeBoundInside(inside, osg::Matrixf::identity()), "strict inside bound was declined");
+    require(Packet::wholeBoundInside(inside, osg::Matrixf::scale(-1, 1, -1)), "mirrored/reverse depth inside bound was declined");
+    require(!Packet::wholeBoundInside(osg::BoundingBoxf(-1, -1, 0, 1, 1, 0), osg::Matrixf::identity()),
+        "boundary-touching bound bypassed GPU visibility");
+    require(!Packet::wholeBoundInside(osg::BoundingBoxf(-.5f, -.5f, 0, 1.1f, .5f, 0), osg::Matrixf::identity()),
+        "partially clipped bound bypassed GPU visibility");
+    require(!Packet::wholeBoundInside(osg::BoundingBoxf(2, 2, 0, 3, 3, 0), osg::Matrixf::identity()),
+        "offscreen bound bypassed GPU visibility");
+    auto ambiguous = osg::Matrixf::identity(); ambiguous(3, 3) = -1;
+    require(!Packet::wholeBoundInside(inside, ambiguous), "negative perspective w was treated as inside");
+    ambiguous = osg::Matrixf::identity(); ambiguous(0, 0) = std::numeric_limits<float>::infinity();
+    require(!Packet::wholeBoundInside(inside, ambiguous), "infinite transform was treated as inside");
+    ambiguous(0, 0) = std::numeric_limits<float>::quiet_NaN();
+    require(!Packet::wholeBoundInside(inside, ambiguous), "NaN transform was treated as inside");
+    require(!Packet::wholeBoundInside(osg::BoundingBoxf(1e8f, 0, 0, 1e8f, .1f, 0),
+        osg::Matrixf::translate(-1e8f, 0, 0)), "extreme cancellation bypassed the roundoff margin");
     const auto initialBytes = Packet::Counters::liveBytes.load();
     auto original = geometry();
     osg::ref_ptr<osg::Geometry> control = new osg::Geometry(*original, osg::CopyOp::SHALLOW_COPY);
@@ -202,6 +231,7 @@ int main(int argc, char** argv) try
     osg::ref_ptr<osg::GraphicsContext::Traits> traits = new osg::GraphicsContext::Traits;
     traits->readDISPLAY(); traits->setUndefinedScreenDetailsToDefaultScreen();
     traits->width = 32; traits->height = 32; traits->doubleBuffer = false; traits->windowDecoration = false;
+    traits->pbuffer = true;
     osg::ref_ptr<osg::GraphicsContext> context = osg::GraphicsContext::createGraphicsContext(traits);
     require(context, "no actual GL fixture context");
     auto* camera = viewer.getCamera();
@@ -229,11 +259,20 @@ int main(int argc, char** argv) try
     const auto uploads = Packet::Counters::commandUploads.load();
     const auto avoided = Packet::Counters::commandUploadsAvoided.load();
     const auto consumed = Packet::Counters::draws.load();
+    const auto cpuResolutions = Packet::Counters::actualFunctionResolutions.load();
     // At least one slot contains a real GPU-written visibility result. Return
     // to CPU commands, then reuse both slots, comparing actual pixels each time.
     Packet::Primitive::forceCpuCommands = true;
     for (unsigned i=0;i<12;++i) compare();
     Packet::Primitive::forceCpuCommands = false;
+    if (capabilities)
+        require(Packet::Counters::actualVersionQueries.load() == 0
+            && Packet::Counters::actualFunctionResolutions.load() == cpuResolutions,
+            "capability candidate queried GL version or resolved GPU-only functions on CPU draws");
+    else
+        require(Packet::Counters::actualVersionQueries.load() > 0
+            && Packet::Counters::actualFunctionResolutions.load() == cpuResolutions + 24,
+            "capability control lost its original query/resolver work");
     require(Packet::Counters::draws.load() == consumed+12,"command reuse fixture fell back instead of drawing");
     if (reuse)
         require(Packet::Counters::commandUploads.load() <= uploads+2
@@ -252,6 +291,18 @@ int main(int argc, char** argv) try
         && pixels->commands[1].instanceCount == 1 && pixels->commands[2].instanceCount == 0,
         "GPU did not conservatively reject the actual offscreen cluster");
     require(std::count(pixels->data.begin(), pixels->data.end(), 255) > 1024, "fixture drew no visible geometry");
+    if (opportunity)
+    {
+        const auto dispatches = Packet::Counters::dispatches.load(), draws = Packet::Counters::draws.load();
+        const auto originals = Packet::Counters::visibilityOriginalDraws.load();
+        camera->setProjectionMatrix(osg::Matrix::scale(.2, .2, 1));
+        for (unsigned i = 0; i < 3; ++i) compare();
+        require(Packet::Counters::dispatches.load() == dispatches && Packet::Counters::draws.load() == draws
+            && Packet::Counters::visibilityOriginalDraws.load() == originals + 3,
+            "strictly contained bounds still used private dispatch/submission or lost original pixels");
+        camera->setProjectionMatrix(osg::Matrix::identity()); compare();
+        require(Packet::Counters::dispatches.load() > dispatches, "partially offscreen bounds stopped using GPU visibility");
+    }
     for (unsigned view = 0; view < 6; ++view)
     {
         camera->setName(view % 3 == 0 ? "SceneCam" : view % 3 == 1 ? "RefractionCamera" : "ShadowCamera");
@@ -272,6 +323,17 @@ int main(int argc, char** argv) try
     draw = dynamic_cast<const Packet::Draw*>(original->getDrawCallback());
     packet = SceneUtil::PersistentOpaquePackets::buildCertifiedSubtrees(*group, 1024, true, true);
     compare();
+    if (opportunity)
+    {
+        const auto before = Packet::Counters::dispatches.load(), originalDraws = Packet::Counters::visibilityOriginalDraws.load();
+        material->getUniform("projectionMatrix")->set(osg::Matrixf::scale(.2f, .2f, 1));
+        for (unsigned i = 0; i < 3; ++i) compare();
+        require(Packet::Counters::dispatches.load() == before
+            && Packet::Counters::visibilityOriginalDraws.load() == originalDraws + 3,
+            "actual certified projection uniform did not drive the containment decision");
+        material->getUniform("projectionMatrix")->set(osg::Matrixf::identity()); compare();
+        require(Packet::Counters::dispatches.load() > before, "restored certified projection did not resume GPU visibility");
+    }
     const auto dispatched = Packet::Counters::dispatches.load();
     require(dispatched >= 8, "certified PBR projection did not reach GPU");
     osg::ref_ptr<osg::Uniform> inherited = new osg::Uniform("projectionMatrix", osg::Matrixf::scale(.5f, .5f, 1));
@@ -317,6 +379,32 @@ int main(int argc, char** argv) try
     // Restore a fresh actual consumed-source certificate for this controlled
     // fixture before exercising command-slot release/publication.
     program = fixtureProgram(true); material->setAttribute(program);
+    if (capabilities)
+    {
+        const auto resolutions = Packet::Counters::actualFunctionResolutions.load();
+        draw->testPrimitive()->dropCapabilityCertificate(); compare();
+        require(Packet::Counters::actualFunctionResolutions.load() == resolutions + 2,
+            "replaced capability owner did not reacquire actual current-owner functions");
+        Packet::Primitive::forceMissingGpuFunctions = true;
+        draw->testPrimitive()->dropCapabilityCertificate();
+        const auto dispatchedBefore = Packet::Counters::dispatches.load(), drawnBefore = Packet::Counters::draws.load();
+        compare(); compare();
+        require(Packet::Counters::dispatches.load() == dispatchedBefore && Packet::Counters::draws.load() == drawnBefore + 2,
+            "missing GPU functions used stale pointers instead of exact CPU command fallback");
+        Packet::Primitive::forceMissingGpuFunctions = false;
+        draw->testPrimitive()->dropCapabilityCertificate(); compare();
+        require(Packet::Counters::dispatches.load() > dispatchedBefore, "new capability owner did not recover GPU functions");
+        context->makeCurrent();
+        auto* ext = context->getState()->get<osg::GLExtensions>();
+        const auto mdi = ext->glMultiDrawElementsIndirect;
+        ext->glMultiDrawElementsIndirect = nullptr;
+        GlState::allowMissingMdi = true;
+        context->releaseContext();
+        requireOriginal();
+        ext->glMultiDrawElementsIndirect = mdi;
+        GlState::allowMissingMdi = false;
+        compare();
+    }
     const auto busy = Packet::Counters::busySlots.load();
     Packet::Primitive::forceBusy = true; compare(); Packet::Primitive::forceBusy = false;
     require(Packet::Counters::busySlots.load() > busy, "busy command slots did not take control");
@@ -332,11 +420,53 @@ int main(int argc, char** argv) try
         require(Packet::Counters::draws.load() == before, "pending storage generation was reallocated");
         draw->testPrimitive()->releaseGLObjects(context->getState());
         Packet::SyncRetirement::holdRetirement = false;
+        const auto resolutionsBefore = Packet::Counters::actualFunctionResolutions.load();
         context->getState()->get<Packet::SyncRetirement>()->flushAllDeletedGLObjects();
         context->releaseContext(); compare(); context->makeCurrent();
         require(Packet::Counters::draws.load() > before, "retired storage generation never resumed");
+        if (capabilities)
+            require(Packet::Counters::actualFunctionResolutions.load() == resolutionsBefore + 2,
+                "retired storage generation inherited a stale capability snapshot");
     }
     context->releaseContext();
+    if (capabilities)
+    {
+        // A distinct real namespace must acquire its own functions/storage,
+        // while returning to the original namespace retains only its own proof.
+        osg::ref_ptr<osg::GraphicsContext::Traits> secondTraits = new osg::GraphicsContext::Traits;
+        secondTraits->readDISPLAY(); secondTraits->setUndefinedScreenDetailsToDefaultScreen();
+        secondTraits->width = 32; secondTraits->height = 32; secondTraits->doubleBuffer = false;
+        secondTraits->pbuffer = true;
+        osg::ref_ptr<osg::GraphicsContext> second = osg::GraphicsContext::createGraphicsContext(secondTraits);
+        require(second && second->getState()->getContextID() != context->getState()->getContextID(),
+            "second actual GL owner did not receive a distinct namespace");
+        second->realize(); require(second->isRealized(), "second actual GL owner did not realize");
+        osg::ref_ptr<GlState> secondPrevious = new GlState;
+        camera->setGraphicsContext(second); camera->setPreDrawCallback(secondPrevious);
+        pixels->previous = secondPrevious;
+        const auto resolutions = Packet::Counters::actualFunctionResolutions.load();
+        const auto snapshots = Packet::Counters::capabilitySnapshots.load();
+        compare(); compare();
+        require(Packet::Counters::actualFunctionResolutions.load() == resolutions + 2
+            && Packet::Counters::capabilitySnapshots.load() == snapshots + 1,
+            "second actual GL namespace reused stale functions or repeated resolution");
+        require(second->makeCurrent(), "second owner unavailable for exact retirement");
+        draw->testPrimitive()->releaseGLObjects(second->getState());
+        glFinish(); second->getState()->get<Packet::SyncRetirement>()->flushAllDeletedGLObjects();
+        second->getState()->get<osg::GLExtensions>()->glDeleteBuffers(3, secondPrevious->buffers.data());
+        second->releaseContext();
+        camera->setGraphicsContext(context); camera->setPreDrawCallback(previous); pixels->previous = previous;
+        compare();
+        require(Packet::Counters::actualFunctionResolutions.load() == resolutions + 2,
+            "returning to the original owner inherited or rebuilt another namespace's certificate");
+        second->close(true);
+    }
+    std::cout << "INDIRECT_CAPABILITY_PROOF enabled=" << capabilities
+        << " actual_version_queries=" << Packet::Counters::actualVersionQueries.load()
+        << " actual_function_resolutions=" << Packet::Counters::actualFunctionResolutions.load()
+        << " snapshots=" << Packet::Counters::capabilitySnapshots.load()
+        << " resolvers_avoided=" << Packet::Counters::gpuResolutionsAvoided.load()
+        << " opportunity_original_draws=" << Packet::Counters::visibilityOriginalDraws.load() << '\n';
     auto* positions = static_cast<osg::Vec3Array*>(original->getVertexArray());
     (*positions)[0].x() += .1f; positions->dirty(); original->dirtyBound(); control->dirtyBound();
     const auto fallback = Packet::Counters::fallbacks.load();

@@ -123,6 +123,10 @@ target_compile_definitions(p9-gpu-indirect-packets PRIVATE OPENMW_INDIRECT_PACKE
 target_link_libraries(p9-gpu-indirect-packets PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
 add_test(NAME p9-gpu-indirect-packets COMMAND p9-gpu-indirect-packets)
 add_test(NAME p9-gpu-indirect-command-reuse COMMAND p9-gpu-indirect-packets --reuse-commands)
+add_test(NAME p9-gpu-indirect-capability-reuse COMMAND p9-gpu-indirect-packets --reuse-capabilities)
+add_test(NAME p9-gpu-indirect-opportunity-filter COMMAND p9-gpu-indirect-packets --filter-opportunities)
+add_test(NAME p9-gpu-indirect-overhead-combined COMMAND p9-gpu-indirect-packets --reuse-commands --reuse-capabilities --filter-opportunities)
+set_tests_properties(p9-gpu-indirect-capability-reuse p9-gpu-indirect-opportunity-filter p9-gpu-indirect-overhead-combined PROPERTIES TIMEOUT 90)
 set_tests_properties(p9-gpu-indirect-command-reuse PROPERTIES TIMEOUT 90)
 set_tests_properties(p9-gpu-indirect-packets PROPERTIES TIMEOUT 90)
 set_tests_properties(p9-persistent-opaque-packets p9-persistent-opaque-packets-deep PROPERTIES TIMEOUT 60)
@@ -143,6 +147,9 @@ add_test(NAME p9-composite-cpu-mips-pool COMMAND p9-composite-cpu-mips --gl ${RO
 set_tests_properties(p9-composite-cpu-mips-pool PROPERTIES TIMEOUT 90 ENVIRONMENT "OPENMW_P9_UPLOAD_POOL=1")
 set_tests_properties(p9-composite-cpu-mips p9-composite-cpu-mips-gl PROPERTIES TIMEOUT 90)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME p9-indirect-interval-work COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/indirect-work-tests.py)
+set_tests_properties(p9-indirect-interval-work PROPERTIES TIMEOUT 30)
 add_test(NAME p9-optimization-aliases COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/generate-optimization-aliases.py --check)
 set_tests_properties(p9-optimization-aliases PROPERTIES TIMEOUT 30)

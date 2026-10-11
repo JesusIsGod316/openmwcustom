@@ -214,3 +214,26 @@ The source defines the actual shipped mechanism and limits. Useful primary refer
 - [OSG 3.6.5 GraphicsContext implementation](https://raw.githubusercontent.com/openscenegraph/OpenSceneGraph/OpenSceneGraph-3.6.5/src/osg/GraphicsContext.cpp): context release and native closure.
 - [OpenGL 4.6 Core specification](https://registry.khronos.org/OpenGL/specs/gl/glspec46.core.pdf): shared-object visibility, synchronization, indirect commands and storage lifetimes.
 - [LZ4 public API](https://github.com/lz4/lz4/blob/dev/lib/lz4.h): the cold buffer codec; package/build dependency versions remain those of this project.
+# Independent indirect draw overhead controls
+
+The direct complete GPU candidate did not outperform the ordinary renderer in
+the 2026-10-11 private Balmora comparison. Its earlier improvement against CPU
+indirect is a different comparison. Keep ordinary controls and do not promote
+the architecture from that earlier result.
+
+Two descriptive settings under `[Optimizations]` default to false:
+
+- `indirect context capability reuse` removes repeated version/resolver work
+  using exact current-owner metadata. Binding restoration and resource fences
+  remain mandatory.
+- `gpu visibility opportunity filter` submits original primitive boundaries
+  when every immutable command bound must remain visible under the exact
+  current view. Partial/ambiguous bounds keep the GPU path. Existing private
+  storage remains charged until its ordinary retirement.
+
+Both can be tested separately or together with command reuse in one executable.
+Native stock/PBR parity, actual dispatch/original work and owner-change gates
+precede natural route engagement. New cumulative-work snapshots require
+measured-interval activity and preserve their asynchronous observation limits.
+Neither control implements owned multi-object submission, a general dependency
+preparation system or DLSS. Those remain independent architecture lanes.

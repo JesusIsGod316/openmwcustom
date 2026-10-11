@@ -70,6 +70,25 @@ private:
     bool mAlive = true;
 };
 
+using GetIndexed = void (GL_APIENTRY*)(GLenum, GLuint, GLint*);
+using GetIndexed64 = void (GL_APIENTRY*)(GLenum, GLuint, GLint64*);
+
+inline float queryGlVersion()
+{
+#ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
+    ++Counters::actualVersionQueries;
+#endif
+    return osg::getGLVersionNumber();
+}
+
+inline void* resolveGpuFunction(const char* name)
+{
+#ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
+    ++Counters::actualFunctionResolutions;
+#endif
+    return osg::getGLExtensionFuncPtr(name);
+}
+
 struct Context
 {
     unsigned id = ~0u, next = 0;
@@ -77,6 +96,10 @@ struct Context
     std::array<bool, 2> gpuCommands{};
     RetiredStorage storage;
     osg::ref_ptr<SyncRetirement> retirement;
+    osg::ref_ptr<osg::GLExtensions> capabilityOwner;
+    GetIndexed indexed = nullptr;
+    GetIndexed64 indexed64 = nullptr;
+    bool gpuFunctionsResolved = false;
 };
 
 class Primitive final : public osg::DrawElementsUInt
@@ -86,7 +109,8 @@ public:
     Primitive(const Primitive& copy, const osg::CopyOp& op = osg::CopyOp::SHALLOW_COPY)
         : osg::DrawElementsUInt(copy, op), mBase(copy.mBase), mBounds(copy.mBounds), mLeaf(copy.mLeaf)
         , mCompute(copy.mCompute), mCapacity(copy.mCapacity), mOriginal(copy.mOriginal)
-        , mReuseCommands(copy.mReuseCommands) {}
+        , mReuseCommands(copy.mReuseCommands), mReuseCapabilities(copy.mReuseCapabilities)
+        , mOpportunityFilter(copy.mOpportunityFilter) {}
     META_Object(SceneUtil, Primitive)
 
     Primitive(std::vector<unsigned>&& indices, std::vector<osg::DrawElementsIndirectCommand>&& commands,
@@ -95,17 +119,26 @@ public:
         : osg::DrawElementsUInt(GL_TRIANGLES, indices.begin(), indices.end()), mBase(std::move(commands))
         , mBounds(bounds), mLeaf(leaf), mGpu(gpu), mCapacity(std::move(capacity)), mProduced(true), mOriginal(original)
         , mReuseCommands(reuseIndirectCommands.load(std::memory_order_relaxed))
+        , mReuseCapabilities(reuseContextCapabilities.load(std::memory_order_relaxed))
+        , mOpportunityFilter(filterVisibilityOpportunity.load(std::memory_order_relaxed))
     {
+        for (unsigned i = 0; i + 2 < mBounds->size(); i += 3)
+        {
+            const auto& lo = (*mBounds)[i]; const auto& hi = (*mBounds)[i + 1];
+            mWholeBounds.expandBy(osg::Vec3f(lo.x(), lo.y(), lo.z()));
+            mWholeBounds.expandBy(osg::Vec3f(hi.x(), hi.y(), hi.z()));
+        }
         mCompute = new osg::Program;
         mCompute->addShader(new osg::Shader(osg::Shader::COMPUTE, computeSource()));
     }
 
-    static bool supported(osg::State& state)
+    static bool supported(osg::State& state, bool reuseCapabilities = false)
     {
         auto* ext = state.get<osg::GLExtensions>();
-        const bool mdi = osg::getGLVersionNumber() >= 4.3f
+        if (reuseCapabilities && !ext) return false;
+        const bool mdi = (reuseCapabilities && ext ? ext->glVersion : queryGlVersion()) >= 4.3f
             || osg::isGLExtensionSupported(state.getContextID(), "GL_ARB_multi_draw_indirect");
-        const bool sync = osg::getGLVersionNumber() >= 3.2f
+        const bool sync = (reuseCapabilities && ext ? ext->glVersion : queryGlVersion()) >= 3.2f
             || osg::isGLExtensionSupported(state.getContextID(), "GL_ARB_sync");
         return mdi && sync && ext && ext->glMultiDrawElementsIndirect && ext->glFenceSync
             && ext->glClientWaitSync && ext->glDeleteSync && ext->glGenBuffers && ext->glDeleteBuffers
@@ -115,6 +148,13 @@ public:
 #ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
     inline static bool forceBusy = false;
     inline static bool forceCpuCommands = false;
+    inline static bool forceMissingGpuFunctions = false;
+    void dropCapabilityCertificate() const
+    {
+        std::lock_guard lock(mContextMutex);
+        for (auto& context : mContexts)
+        { context.capabilityOwner = nullptr; context.gpuFunctionsResolved = false; }
+    }
     std::vector<osg::DrawElementsIndirectCommand> readLastCommands(osg::State& state) const
     {
         std::vector<osg::DrawElementsIndirectCommand> output;
@@ -141,7 +181,37 @@ public:
             // fallback never turns a custom gl_PrimitiveID shader into one merged draw.
             for (const auto& primitive : mOriginal) primitive->draw(state, useVbo);
         };
-        if (!mProduced || !useVbo || state.getContextID() >= 4 || !supported(state)) { fallback(); return; }
+        if (!mProduced || !useVbo || state.getContextID() >= 4) { fallback(); return; }
+        const auto* consumer = state.getLastAppliedProgramObject();
+        const osg::Program* program = consumer ? consumer->getProgram() : nullptr;
+        osg::Matrixf projection(state.getProjectionMatrix());
+        bool projectionKnown = false, projectionChecked = false;
+        const auto resolveProjection = [&] {
+            if (!projectionChecked)
+            {
+                projectionChecked = true; projectionKnown = linearObjectProjection(program);
+                if (program && projectionKnown)
+                {
+                    const auto* applied = appliedProjection(state, mLeaf);
+                    projectionKnown = applied && applied->get(projection);
+                }
+            }
+            return projectionKnown;
+        };
+        if (mGpu && mOpportunityFilter && resolveProjection()
+#ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
+            && !forceCpuCommands
+#endif
+            && wholeBoundInside(mWholeBounds, osg::Matrixf(state.getModelViewMatrix()) * projection))
+        {
+            // Keep all original primitive boundaries and any previously allocated
+            // private generations/fences. No private GL allocation or submission
+            // is needed when every command must remain visible.
+            for (const auto& primitive : mOriginal) primitive->draw(state, useVbo);
+            ++Counters::visibilityOriginalDraws; ++Counters::visibilityDispatchesAvoided;
+            return;
+        }
+        if (!supported(state, mReuseCapabilities)) { fallback(); return; }
         std::unique_lock lock(mContextMutex, std::try_to_lock);
         if (!lock.owns_lock()) { fallback(); return; }
 #ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
@@ -181,21 +251,36 @@ public:
         glGetIntegerv(GL_DRAW_INDIRECT_BUFFER_BINDING, &oldIndirect);
         ext->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER_ARB, found->storage.buffers[0]);
         ext->glBindBuffer(GL_DRAW_INDIRECT_BUFFER, found->storage.buffers[2 + selected]);
-        const auto* consumer = state.getLastAppliedProgramObject();
-        const osg::Program* program = consumer ? consumer->getProgram() : nullptr;
-        bool gpu = mGpu && osg::getGLVersionNumber() >= 4.3f && ext->glDispatchCompute && ext->glMemoryBarrier
+        bool gpu = mGpu && (mReuseCapabilities ? ext->glVersion : queryGlVersion()) >= 4.3f
+            && ext->glDispatchCompute && ext->glMemoryBarrier
             && ext->glBindBufferRange && ext->glBindBufferBase && ext->glUniform1ui && ext->glUniformMatrix4fv;
 #ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
         if (forceCpuCommands) gpu = false;
 #endif
-        osg::Matrixf projection(state.getProjectionMatrix());
-        if (gpu && (!linearObjectProjection(program)
-            || (program && (!appliedProjection(state, mLeaf) || !appliedProjection(state, mLeaf)->get(projection)))))
+        if (gpu && !resolveProjection())
         { gpu = false; ++Counters::unknownShaders; }
-        using GetIndexed = void (GL_APIENTRY*)(GLenum, GLuint, GLint*);
-        using GetIndexed64 = void (GL_APIENTRY*)(GLenum, GLuint, GLint64*);
-        const auto indexed = reinterpret_cast<GetIndexed>(osg::getGLExtensionFuncPtr("glGetIntegeri_v"));
-        const auto indexed64 = reinterpret_cast<GetIndexed64>(osg::getGLExtensionFuncPtr("glGetInteger64i_v"));
+        GetIndexed indexed = nullptr; GetIndexed64 indexed64 = nullptr;
+        if (!mReuseCapabilities || gpu)
+        {
+            if (mReuseCapabilities && found->capabilityOwner.get() == ext && found->gpuFunctionsResolved)
+            {
+                indexed = found->indexed; indexed64 = found->indexed64;
+                Counters::gpuResolutionsAvoided.fetch_add(2, std::memory_order_relaxed);
+            }
+            else
+            {
+                indexed = reinterpret_cast<GetIndexed>(resolveGpuFunction("glGetIntegeri_v"));
+                indexed64 = reinterpret_cast<GetIndexed64>(resolveGpuFunction("glGetInteger64i_v"));
+#ifdef OPENMW_INDIRECT_PACKET_TEST_HOOKS
+                if (forceMissingGpuFunctions) { indexed = nullptr; indexed64 = nullptr; }
+#endif
+                if (mReuseCapabilities)
+                {
+                    found->capabilityOwner = ext; found->indexed = indexed; found->indexed64 = indexed64;
+                    found->gpuFunctionsResolved = true; ++Counters::capabilitySnapshots;
+                }
+            }
+        }
         gpu = gpu && indexed && indexed64;
         if (gpu)
         {
@@ -264,6 +349,7 @@ public:
         ext->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER_ARB, static_cast<GLuint>(oldElement));
         ext->glBindBuffer(GL_DRAW_INDIRECT_BUFFER, static_cast<GLuint>(oldIndirect));
         ++Counters::draws; Counters::commands.fetch_add(mBase.size(), std::memory_order_relaxed);
+        if (mReuseCapabilities) ++Counters::capabilityDraws;
     }
 
     void releaseGLObjects(osg::State* state = nullptr) const override
@@ -321,6 +407,8 @@ private:
             context.storage.capacity->pendingContexts[context.storage.context].store(true, std::memory_order_release);
         if (context.retirement) context.retirement->retire(std::move(context.storage));
         context.storage = {}; context.retirement = nullptr; context.id = ~0u; context.next = 0; context.failed = false;
+        context.capabilityOwner = nullptr; context.indexed = nullptr; context.indexed64 = nullptr;
+        context.gpuFunctionsResolved = false;
     }
     const std::vector<osg::DrawElementsIndirectCommand> mBase;
     osg::ref_ptr<const osg::Vec4Array> mBounds;
@@ -331,6 +419,8 @@ private:
     bool mProduced = false;
     const osg::Geometry::PrimitiveSetList mOriginal;
     bool mReuseCommands = false;
+    bool mReuseCapabilities = false, mOpportunityFilter = false;
+    osg::BoundingBoxf mWholeBounds;
     mutable std::array<Context, 4> mContexts;
     mutable std::mutex mContextMutex;
 };
