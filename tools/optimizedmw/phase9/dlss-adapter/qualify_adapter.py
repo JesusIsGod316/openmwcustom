@@ -50,6 +50,23 @@ def checked_run(directory: Path, negative: bool):
     assert not source or gpu, "Private source import requires the GPU path"
     assert device[0].get("gpu_transfers", False) is gpu
     assert device[0].get("source_textures", False) is source
+    if source:
+        borrowed = [r for r in evidence if r["check"] == "borrowed_gl_source_import_qualified"]
+        assert len(borrowed) == (1 if negative else 12)
+        for row in borrowed:
+            assert all(row[field] for field in ("exact_frame_lease", "wrong_owner_context_refused",
+                "borrowed_source_overwrite_retirement_refused", "fallback_image_untouched", "adversarial_gl_state_restored"))
+        imported = [r for r in evidence if r["check"] == "source_pre_evaluation_pixels"]
+        assert len(imported) == (1 if negative else 12)
+        assert all(row["color_depth_motion_exact"] for row in imported)
+        if not negative:
+            isolated = [r for r in evidence if r["check"] == "isolated_legacy_consumer_state"]
+            assert [row["trial"] for row in isolated] == list(range(16))
+            assert all(row["mismatched_components"] >= 0 for row in isolated)
+            completed = [r for r in evidence if r["check"] == "isolated_legacy_consumer_complete"]
+            assert len(completed) == 1 and completed[0]["trials"] == 16
+            assert completed[0]["actual_ngx_output_unchanged"]
+            assert completed[0]["failing_states"] == sum(row["mismatched_components"] > 0 for row in isolated)
     if negative:
         assert not any(r["check"] == "real_dlss_evaluated" for r in evidence + stdout)
         marker = [r for r in stdout if r["check"] == "negative_no_evaluation"]
@@ -84,6 +101,10 @@ def checked_run(directory: Path, negative: bool):
             if source:
                 assert row["exact_private_source_pixels"]
                 assert row["source_stale_frame_generation_extent_refused"] and row["source_destination_alias_refused"]
+                assert all(row[field] for field in ("exact_frame_source_lease",
+                    "source_overwrite_retirement_while_borrowed_refused", "actual_wrong_context_import_refused",
+                    "ordinary_fallback_image_untouched_on_refusal", "borrowed_gl_import_state_restored",
+                    "borrowed_gl_consumer_state_restored"))
                 extent = created[row["generation"] - 1]
                 moving = row["sequence"] % 4 in (2, 0)
                 assert row["nonzero_motion_pixels"] == (
@@ -141,6 +162,10 @@ def qualify(positive: Path, negative: Path, binary: Path):
         "private_source_formats": ["RGBA16F", "DEPTH_COMPONENT32F", "RG16F"] if actual.get("source_textures", False) else [],
         "evaluations_with_nonzero_motion": sum(row.get("nonzero_motion_pixels", 0) > 0
             for row in evidence if row["check"] == "real_dlss_evaluated"),
+        "synchronous_exact_frame_lease_proved": actual.get("source_textures", False),
+        "adversarial_borrowed_gl_state_proved": actual.get("source_textures", False),
+        "legacy_consumer_inherited_state_trials": [row for row in evidence
+            if row["check"] == "isolated_legacy_consumer_state"],
         "feature_extents": [{k: row[k] for k in ("generation", "input_width", "input_height", "output_width", "output_height")}
             for row in evidence if row["check"] == "real_feature_created"],
         "negative_control": "Untouched output rejected by the same real output validator; zero evaluations",
@@ -151,7 +176,7 @@ def qualify(positive: Path, negative: Path, binary: Path):
         "limits": [
             ("Separate owned GL color/depth/motion with synthetic translation and reset, zero jitter and controlled exposure; not dense game coverage."
              if actual.get("source_textures", False) else "Synthetic images, zero motion/jitter and controlled exposure; not dense game coverage."),
-            "Source import modifies private-context GL state; production game state restoration and async leases are not proved.",
+            "Source import/consumer restore the tested borrowed GL state on private owners; production OSG ownership/cache integration and async leases are not proved.",
             "Costs include synthetic production, completion observation and readback; not gameplay or isolated GPU timing.",
             "No in-game DLSS/jitter/frame generation enabled and no performance promotion.",
             "Signed runtime input validated by the launcher; SDK source or compilation alone is not runtime proof."

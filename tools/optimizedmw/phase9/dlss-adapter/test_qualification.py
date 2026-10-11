@@ -107,6 +107,45 @@ class ReceiptRejection(unittest.TestCase):
         with self.assertRaises(AssertionError):
             checked_run(path, False)
 
+    def test_source_import_requires_borrowed_state_and_exact_lease_proofs(self):
+        inputs = json.loads((self.positive / 'INPUTS.json').read_text(encoding='utf-8-sig'))
+        if not inputs.get('source_textures', False):
+            self.skipTest('Borrowed-state lease proof applies to the private source cohort')
+        path = self.copied(self.positive)
+        evidence = path / 'adapter-evidence.jsonl'
+        original = evidence.read_text()
+        for field in ('exact_frame_source_lease', 'source_overwrite_retirement_while_borrowed_refused',
+                      'actual_wrong_context_import_refused', 'ordinary_fallback_image_untouched_on_refusal',
+                      'borrowed_gl_import_state_restored', 'borrowed_gl_consumer_state_restored'):
+            with self.subTest(field=field):
+                evidence.write_text(original)
+                self.edit_rows(evidence, lambda rows:
+                    next(row for row in rows if row['check'] == 'real_dlss_evaluated').__setitem__(field, False))
+                with self.assertRaises(AssertionError):
+                    checked_run(path, False)
+
+    def test_negative_source_case_requires_independent_import_proof(self):
+        inputs = json.loads((self.negative / 'INPUTS.json').read_text(encoding='utf-8-sig'))
+        if not inputs.get('source_textures', False):
+            self.skipTest('Independent import proof applies to the private source cohort')
+        path = self.copied(self.negative)
+        self.edit_rows(path / 'adapter-evidence.jsonl', lambda rows:
+            next(row for row in rows if row['check'] == 'borrowed_gl_source_import_qualified').__setitem__(
+                'fallback_image_untouched', False))
+        with self.assertRaises(AssertionError):
+            checked_run(path, True)
+
+    def test_source_pixels_checked_before_evaluation(self):
+        inputs = json.loads((self.positive / 'INPUTS.json').read_text(encoding='utf-8-sig'))
+        if not inputs.get('source_textures', False):
+            self.skipTest('Pre-evaluation source proof applies to the source cohort')
+        path = self.copied(self.positive)
+        self.edit_rows(path / 'adapter-evidence.jsonl', lambda rows:
+            next(row for row in rows if row['check'] == 'source_pre_evaluation_pixels').__setitem__(
+                'color_depth_motion_exact', False))
+        with self.assertRaises(AssertionError):
+            checked_run(path, False)
+
     def test_source_import_requires_actual_depth_format(self):
         inputs = json.loads((self.positive / 'INPUTS.json').read_text(encoding='utf-8-sig'))
         if not inputs.get('source_textures', False):

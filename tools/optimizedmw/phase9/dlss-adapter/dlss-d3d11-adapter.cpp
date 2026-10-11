@@ -70,6 +70,8 @@ namespace
     }
     void write(const Texture& texture, GLenum format, const float* data)
     {
+        BorrowedGlState restore;
+        restore.active(BorrowedGlState::Texture0);
         glBindTexture(GL_TEXTURE_2D, texture.gl);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -78,6 +80,8 @@ namespace
     }
     std::vector<float> read(const Texture& texture, GLenum format, unsigned channels)
     {
+        BorrowedGlState restore;
+        restore.active(BorrowedGlState::Texture0);
         std::vector<float> values(static_cast<std::size_t>(texture.width) * texture.height * channels, NAN);
         glBindTexture(GL_TEXTURE_2D, texture.gl);
         glGetTexImage(GL_TEXTURE_2D, 0, format, GL_FLOAT, values.data());
@@ -106,6 +110,45 @@ namespace
         bool negativeNoEvaluation = false;
         bool gpuTransfersEnabled = false;
         bool sourceTexturesEnabled = false;
+        void diagnoseInheritedConsumer(Evidence& evidence)
+        {
+            // Negative fixture: reproduce the old consumer's unnormalized
+            // blit with one foreign state at a time. This never modifies NGX
+            // output/input images, and the qualified consumer rewrites its
+            // private destination afterward. It is not a production path.
+            const auto expected=read(textures[4],GL_RGBA,4);
+            for(const float value:expected)require(std::isfinite(value) && value>-.5f && value<2.f,
+                "Actual NGX output is finite before consumer state isolation");
+            unsigned failureCount=0;
+            for(unsigned trial=0;trial<16;++trial)
+            {
+                BorrowedGlState ordinary;
+                ordinary.prepareImport();gpuTransfers.colorMaskIndexed(0,GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+                gpuTransfers.fill(gpuTransfers.consumerImage,{-13.f,-13.f,-13.f,-13.f});
+                if(trial<13)glEnable(BorrowedGlState::capabilities[trial]);
+                else if(trial==13)ordinary.clipControl(0x8CA2,ordinary.clipDepth);
+                else if(trial==14)glPolygonMode(GL_FRONT_AND_BACK,GL_LINE);
+                else gpuTransfers.colorMaskIndexed(0,GL_FALSE,GL_TRUE,GL_FALSE,GL_TRUE);
+                gpuTransfers.bind(GpuTransfers::ReadFramebuffer,gpuTransfers.framebuffers[1]);
+                gpuTransfers.attach(GpuTransfers::ReadFramebuffer,GpuTransfers::ColorAttachment,GL_TEXTURE_2D,textures[4].gl,0);
+                glReadBuffer(GpuTransfers::ColorAttachment);
+                gpuTransfers.bind(GpuTransfers::DrawFramebuffer,gpuTransfers.framebuffers[2]);
+                gpuTransfers.attach(GpuTransfers::DrawFramebuffer,GpuTransfers::ColorAttachment,GL_TEXTURE_2D,gpuTransfers.consumerImage.gl,0);
+                glDrawBuffer(GpuTransfers::ColorAttachment);glDisable(GL_SCISSOR_TEST);
+                gpuTransfers.blit(0,0,textures[4].width,textures[4].height,0,0,textures[4].width,textures[4].height,
+                    GL_COLOR_BUFFER_BIT,GL_NEAREST);
+                glCheck("Isolated inherited consumer state negative fixture");
+                const auto actual=read(gpuTransfers.consumerImage,GL_RGBA,4);
+                std::size_t mismatched=0;
+                for(std::size_t i=0;i<expected.size();++i)if(actual[i]!=expected[i])++mismatched;
+                if(mismatched)++failureCount;
+                evidence.row("isolated_legacy_consumer_state", "\"status\":\"observing\",\"trial\":"
+                    +std::to_string(trial)+",\"capability\":"+std::to_string(trial<13?BorrowedGlState::capabilities[trial]:0)
+                    +",\"mismatched_components\":"+std::to_string(mismatched));
+            }
+            evidence.row("isolated_legacy_consumer_complete","\"status\":\"pass\",\"trials\":16,\"failing_states\":"
+                +std::to_string(failureCount)+",\"actual_ngx_output_unchanged\":true");
+        }
         explicit Fixture(const std::filesystem::path& logDirectory)
             : applicationDataPath(logDirectory)
         {
@@ -234,7 +277,50 @@ namespace
                     textures[0].gl=sourceTextures.images[0].gl;
                     require(!sourceTextures.accepts(sequence,generation,textures),"Aliased source/destination must refuse import");
                     textures[0].gl=sharedName;
-                    sourceTextures.copyToShared(gpuTransfers,sequence,generation,textures);
+                    const auto request=sourceTextures.request(sequence,generation);
+                    gpuTransfers.fill(textures[0],{-7.f,-7.f,-7.f,-7.f});
+                    {
+                        ForeignGlSentinel sentinelState(sourceTextures.program,unsigned(sequence));
+                        const BorrowedGlState before(false);
+                        const auto untouched=read(textures[0],GL_RGBA,4);
+                        for(unsigned field=0;field<7;++field)
+                        {
+                            auto bad=request;
+                            switch(field)
+                            {
+                                case 0:++bad.ticket;break;case 1:++bad.frame;break;case 2:++bad.view;break;
+                                case 3:++bad.context;break;case 4:++bad.generation;break;
+                                case 5:++bad.width;break;case 6:++bad.height;break;
+                            }
+                            require(!sourceTextures.copyToShared(gpuTransfers,bad,textures),"Mismatched exact-frame lease refuses import");
+                        }
+                        const auto borrowed=sourceTextures.leases.acquire(request);
+                        require(bool(borrowed),"Acquire exact source lease on draw owner");
+                        const auto published=*sourceTextures.leases.inputs(*borrowed);
+                        require(!sourceTextures.leases.publish(published) && !sourceTextures.leases.retire(),
+                            "Borrowed source owner refuses overwrite and retirement");
+                        require(!sourceTextures.copyToShared(gpuTransfers,request,textures),"No duplicate concurrent source lease");
+                        require(!sourceTextures.leases.release({borrowed->serial+1}),"A stale token cannot release another lease");
+                        require(sourceTextures.leases.release(*borrowed),"Release exact source lease");
+                        const auto foreignContext=wglCreateContext(context.dc);
+                        require(foreignContext && wglMakeCurrent(context.dc,foreignContext),"Actual foreign GL owner context");
+                        require(!sourceTextures.copyToShared(gpuTransfers,request,textures),"Actual wrong context refuses before import");
+                        require(wglMakeCurrent(context.dc,context.context) && wglDeleteContext(foreignContext),
+                            "Restore exact draw context after wrong-owner refusal");
+                        require(read(textures[0],GL_RGBA,4)==untouched,"Refused adapter leaves ordinary fallback image untouched");
+                        const BorrowedGlState refused(false);
+                        require(before.same(refused),"Refused lease preserves all borrowed GL state");
+                        require(sourceTextures.copyToShared(gpuTransfers,request,textures),"Real exact-frame leased source import");
+                        const BorrowedGlState after(false);
+                        require(before.same(after),"Import restores adversarial borrowed GL state");
+                        require(!sourceTextures.leases.accepts(*borrowed) && !sourceTextures.leases.borrowed(),
+                            "Import releases synchronous source before producer reuse");
+                        sentinelState.close();
+                    }
+                    evidence.row("borrowed_gl_source_import_qualified","\"status\":\"pass\",\"sequence\":"
+                        +std::to_string(sequence)+",\"exact_frame_lease\":true,\"wrong_owner_context_refused\":true,"
+                        "\"borrowed_source_overwrite_retirement_refused\":true,\"fallback_image_untouched\":true,"
+                        "\"adversarial_gl_state_restored\":true");
                 }
                 else
                 {
@@ -244,6 +330,13 @@ namespace
                 }
                 gpuTransfers.fill(textures[3], {exposure, 0.f, 0.f, 1.f});
                 gpuTransfers.fill(textures[4], {-9.f, -9.f, -9.f, -9.f});
+                if(sourceTexturesEnabled)
+                {
+                    require(read(textures[0],GL_RGBA,4)==colors && read(textures[1],Red,1)==depths
+                        && read(textures[2],Rg,2)==motion,"Exact shared source inputs before NGX submission");
+                    evidence.row("source_pre_evaluation_pixels","\"status\":\"pass\",\"sequence\":"
+                        +std::to_string(sequence)+",\"color_depth_motion_exact\":true");
+                }
             }
             else
             {
@@ -272,7 +365,20 @@ namespace
             const double completeMs = milliseconds(completeStart);
             const auto consumeStart = Clock::now();
             bridge.lock(handles);
-            if (gpuTransfersEnabled) gpuTransfers.consume(textures[4]);
+            if (gpuTransfersEnabled)
+            {
+                if(sourceTexturesEnabled)
+                {
+                    if(sequence==1 && !negativeNoEvaluation)diagnoseInheritedConsumer(evidence);
+                    ForeignGlSentinel sentinelState(sourceTextures.program,unsigned(sequence)+1);
+                    const BorrowedGlState before(false);
+                    gpuTransfers.consume(textures[4]);
+                    const BorrowedGlState after(false);
+                    require(before.same(after),"GPU output consume restores adversarial borrowed GL state");
+                    sentinelState.close();
+                }
+                else gpuTransfers.consume(textures[4]);
+            }
             bridge.unlock(handles);
             const double graphicsConsumeMs = milliseconds(consumeStart);
             const auto verifyStart = Clock::now();
@@ -344,6 +450,12 @@ namespace
                 << ",\"exact_private_source_pixels\":" << (sourceTexturesEnabled ? "true" : "false")
                 << ",\"source_stale_frame_generation_extent_refused\":" << (sourceTexturesEnabled ? "true" : "false")
                 << ",\"source_destination_alias_refused\":" << (sourceTexturesEnabled ? "true" : "false")
+                << ",\"exact_frame_source_lease\":" << (sourceTexturesEnabled ? "true" : "false")
+                << ",\"source_overwrite_retirement_while_borrowed_refused\":" << (sourceTexturesEnabled ? "true" : "false")
+                << ",\"actual_wrong_context_import_refused\":" << (sourceTexturesEnabled ? "true" : "false")
+                << ",\"ordinary_fallback_image_untouched_on_refusal\":" << (sourceTexturesEnabled ? "true" : "false")
+                << ",\"borrowed_gl_import_state_restored\":" << (sourceTexturesEnabled ? "true" : "false")
+                << ",\"borrowed_gl_consumer_state_restored\":" << (sourceTexturesEnabled ? "true" : "false")
                 << ",\"nonzero_motion_pixels\":" << (sourceTexturesEnabled && (frame==1 || frame==3) ? colorTexture.width*colorTexture.height : 0)
                 << ",\"exact_graphics_consumer_pixels\":" << (gpuTransfersEnabled ? "true" : "false")
                 << ",\"gl_production_lock_write_unlock_ms\":" << produceMs

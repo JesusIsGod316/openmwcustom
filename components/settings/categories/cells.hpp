@@ -22,6 +22,7 @@ namespace Settings
         SettingValue<bool> mOptimizedMWUnchangedTransform{ mIndex, "Optimizations", "unchanged transform bounds" };
         SettingValue<bool> mOptimizedMWTemplateCoalescing{ mIndex, "Cells", "scene template coalescing" };
         SettingValue<bool> mOptimizedMWTemporalHistoryLookup{ mIndex, "Optimizations", "temporal history lookup" };
+        SettingValue<bool> mOptimizedMWStaticVao{ mIndex, "Optimizations", "paged static vertex arrays" };
 
         // P2: cancellable, restart-indexed paging optimization and two-phase readiness.
         SettingValue<bool> mOpimizedMWPagingOptimizer{ mIndex, "Cells", "paging optimizer" };

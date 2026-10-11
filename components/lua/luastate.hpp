@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <type_traits>
 #include <typeinfo>
 
 #include <sol/sol.hpp>
@@ -56,6 +57,7 @@ namespace LuaUtil
     public:
         template <class Function>
         friend int invokeProtectedCall(lua_State*, Function&&);
+        friend int invokeReusableProtectedCall(lua_State*);
         // Returns underlying sol::state.
         sol::state_view& sol() { return mSol; }
 
@@ -82,17 +84,15 @@ namespace LuaUtil
         lua_pushcfunction(luaState, [](lua_State* state) {
             void* f = lua_touserdata(state, 1);
             LuaView view(state);
-            (*static_cast<Function*>(f))(view);
+            (*static_cast<std::remove_reference_t<Function>*>(f))(view);
             return 0;
         });
-        lua_pushlightuserdata(luaState, &function);
+        lua_pushlightuserdata(luaState, const_cast<void*>(static_cast<const void*>(&function)));
         return lua_pcall(luaState, 1, 0, 0);
     }
 
-    template <class Lambda>
-    void protectedCall(lua_State* luaState, Lambda&& f)
+    inline void checkProtectedCallResult(lua_State* luaState, int result)
     {
-        int result = invokeProtectedCall(luaState, std::forward<Lambda>(f));
         switch (result)
         {
             case LUA_OK:
@@ -109,6 +109,29 @@ namespace LuaUtil
             default:
                 throw std::runtime_error("Lua error: " + std::to_string(result));
         }
+    }
+
+    template <class Lambda>
+    void protectedCall(lua_State* luaState, Lambda&& f)
+    {
+        checkProtectedCallResult(luaState, invokeProtectedCall(luaState, std::forward<Lambda>(f)));
+    }
+
+    // One registry-owned zero-upvalue C closure can serve every protected job.
+    // The job and its callable stay on the C++ stack until the synchronous pcall
+    // returns. Nested jobs therefore have separate storage and no shared capture.
+    struct ProtectedCallFrame
+    {
+        void* mCallable;
+        void (*mInvoke)(void*, LuaView&);
+    };
+
+    inline int invokeReusableProtectedCall(lua_State* state)
+    {
+        auto* frame = static_cast<ProtectedCallFrame*>(lua_touserdata(state, 1));
+        LuaView view(state);
+        frame->mInvoke(frame->mCallable, view);
+        return 0;
     }
 
     // Holds Lua state.
@@ -128,14 +151,91 @@ namespace LuaUtil
     public:
         explicit LuaState(const VFS::Manager* vfs, const ScriptsConfiguration* conf,
             const LuaStateSettings& settings = LuaStateSettings{});
+        ~LuaState();
         LuaState(const LuaState&) = delete;
         LuaState(LuaState&&) = delete;
 
         template <class Lambda>
         void protectedCall(Lambda&& f) const
         {
-            LuaUtil::protectedCall(mSol.lua_state(), std::forward<Lambda>(f));
+            lua_State* state = mSol.lua_state();
+            if (!mProtectedCallReuse || mProtectedCallReference == LUA_NOREF)
+            {
+                ++mProtectedCallStats.mOrdinaryCalls;
+                ++mProtectedCallStats.mClosureCreations;
+                LuaUtil::protectedCall(state, std::forward<Lambda>(f));
+                return;
+            }
+            if (!lua_checkstack(state, 3))
+                checkProtectedCallResult(state, LUA_ERRMEM);
+            // lua_pushcclosure inherits its current caller environment on Lua
+            // 5.1/LuaJIT. Only reuse from top-level native code or directly from
+            // our trampoline. A Lua/native API callback may carry a sandbox
+            // environment, so it keeps the original freshly inherited closure.
+            lua_Debug caller{};
+            if (lua_getstack(state, 0, &caller))
+            {
+                const bool identified = lua_getinfo(state, "f", &caller) != 0;
+                const bool ownCaller = identified && lua_tocfunction(state, -1) == &invokeReusableProtectedCall;
+                if (identified)
+                    lua_pop(state, 1);
+                if (!ownCaller)
+                {
+                    ++mProtectedCallStats.mContextFallbacks;
+                    ++mProtectedCallStats.mOrdinaryCalls;
+                    ++mProtectedCallStats.mClosureCreations;
+                    LuaUtil::protectedCall(state, std::forward<Lambda>(f));
+                    return;
+                }
+            }
+            lua_rawgeti(state, LUA_REGISTRYINDEX, mProtectedCallReference);
+            if (lua_tocfunction(state, -1) != &invokeReusableProtectedCall)
+            {
+                // Fail closed if native code has invalidated the private registry
+                // entry. Do not invoke a substituted function or carry extra stack
+                // entries into the ordinary path.
+                lua_pop(state, 1);
+                ++mProtectedCallStats.mRegistryFallbacks;
+                ++mProtectedCallStats.mOrdinaryCalls;
+                ++mProtectedCallStats.mClosureCreations;
+                LuaUtil::protectedCall(state, std::forward<Lambda>(f));
+                return;
+            }
+            using Function = std::remove_reference_t<Lambda>;
+            ProtectedCallFrame frame{ const_cast<void*>(static_cast<const void*>(&f)),
+                [](void* callable, LuaView& view) { (*static_cast<Function*>(callable))(view); } };
+            lua_pushlightuserdata(state, &frame);
+            ++mProtectedCallStats.mReusedCalls;
+            checkProtectedCallResult(state, lua_pcall(state, 1, 0, 0));
         }
+
+        // Startup/owner-thread only. The registry reference belongs to this VM
+        // and is released with its registry when the Lua state is destroyed.
+        void setProtectedCallReuse(bool enabled);
+        bool getProtectedCallReuse() const { return mProtectedCallReuse; }
+        struct ProtectedCallStats
+        {
+            std::uint64_t mOrdinaryCalls = 0;
+            std::uint64_t mReusedCalls = 0;
+            std::uint64_t mClosureCreations = 0;
+            std::uint64_t mRegistryFallbacks = 0;
+            std::uint64_t mContextFallbacks = 0;
+        };
+        ProtectedCallStats protectedCallStats() const { return mProtectedCallStats; }
+
+        // Explicit diagnostic owner only: process-global LuaJIT sampling never
+        // starts for ordinary gameplay. Callbacks only update bounded counters.
+        // Counts are delivered during a scope; timer-triggered VM states may
+        // predate delivery and must not be treated as exact callback blame.
+        bool startDiagnosticVmSampler();
+        void stopDiagnosticVmSampler();
+        struct DiagnosticVmSamples
+        {
+            std::array<std::uint64_t, 6> mStates{}; // native, interpreted, C, GC, JIT, unknown
+            std::uint64_t mCallbacks = 0;
+        };
+        DiagnosticVmSamples diagnosticVmSamples() const { return mDiagnosticVmSamples; }
+        bool diagnosticVmSamplerStarted() const { return mVmProfileStop != nullptr; }
 
         // Note that constructing a sol::state_view is only safe from a Lua context. Use protectedCall to get one
         lua_State* unsafeState() const { return mSol.lua_state(); }
@@ -237,6 +337,7 @@ namespace LuaUtil
         sol::function loadScriptAndCache(const VFS::Path::Normalized& path);
         static void countHook(lua_State* state, lua_Debug* ar);
         static void* trackingAllocator(void* ud, void* ptr, size_t osize, size_t nsize);
+        static void vmProfileCallback(void* data, lua_State*, int samples, int state);
 
         static LuaStatePtr createLuaRuntime(LuaState* luaState);
 
@@ -252,7 +353,9 @@ namespace LuaUtil
         private:
             LuaState* mState;
             DiagnosticAllocations mBefore;
+            DiagnosticVmSamples mVmBefore;
             std::optional<Debug::HitchTrace::Scope> mService, mSmall, mLarge;
+            std::optional<Debug::HitchTrace::Scope> mVmStates, mVmExtra;
         };
         std::pair<std::string_view, std::string_view> diagnosticAllocationContext(ScriptId scriptId) const;
 
@@ -264,6 +367,11 @@ namespace LuaUtil
 
         const LuaStateSettings mSettings;
         DiagnosticAllocations mDiagnosticAllocations;
+        bool mProtectedCallReuse = false;
+        int mProtectedCallReference = LUA_NOREF;
+        mutable ProtectedCallStats mProtectedCallStats;
+        DiagnosticVmSamples mDiagnosticVmSamples;
+        void (*mVmProfileStop)(lua_State*) = nullptr;
 
         // Needed to track resource usage per script, must be initialized before mLuaHolder.
         std::vector<ScriptId> mActiveScriptIdStack;

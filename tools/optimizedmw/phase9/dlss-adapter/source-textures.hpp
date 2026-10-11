@@ -1,5 +1,6 @@
 #pragma once
 #include "gpu-transfers.hpp"
+#include "../../../../components/rendercore/synchronousinputlease.hpp"
 #include <utility>
 
 namespace P9Dlss
@@ -7,7 +8,8 @@ namespace P9Dlss
     // Separate, private GL owners in the game producer's formats. The bridge
     // samples them on the same current draw context; it never registers or
     // transfers ownership of the source textures to NGX/D3D.
-    // This fixture is not an asynchronous game lease or dense motion proof.
+    // The portable no-wait lease is obeyed by this owner. This is not an
+    // asynchronous game lease or dense motion proof.
     struct SourceTextures
     {
         static constexpr GLenum DepthAttachment=0x8D00, DepthComponent32f=0x8CAC, Rg16f=0x822F;
@@ -31,9 +33,13 @@ namespace P9Dlss
         HGLRC ownerContext=nullptr;
         std::uint64_t frame=0,generation=0;
         bool produced=false;
+        RenderCore::Temporal::SynchronousInputLease leases;
+        using Request = RenderCore::Temporal::SynchronousRequest;
+        using Lease = RenderCore::Temporal::SynchronousInputLease::Token;
 
         void initialize(GpuTransfers& gpu)
         {
+            BorrowedGlState restore;
             ownerContext=wglGetCurrentContext(); require(ownerContext,"Private GL source owner context");
             gpu.gen(1,&framebuffer); require(framebuffer!=0,"Private source framebuffer");
             const char* vertex="#version 130\nvoid main(){gl_Position=gl_Vertex;}\n";
@@ -52,6 +58,8 @@ namespace P9Dlss
         }
         void create(unsigned width,unsigned height,std::uint64_t epoch)
         {
+            BorrowedGlState restore;
+            restore.active(BorrowedGlState::Texture0);
             require(wglGetCurrentContext()==ownerContext,"Source generation created on exact owner");
             require(!images[0].gl && width && height && epoch>generation,"New source generation after retirement");
             generation=epoch;produced=false;
@@ -79,6 +87,8 @@ namespace P9Dlss
         template<class ColorFunction>
         void produce(GpuTransfers& gpu,unsigned index,std::uint64_t ticket,ColorFunction&& color)
         {
+            require(!leases.borrowed(),"Cannot overwrite a borrowed source frame");
+            BorrowedGlState restore;
             require(wglGetCurrentContext()==ownerContext && ticket>frame && images[0].gl,"Current fresh source draw owner");
             produced=false;frame=ticket;
             const auto [dx,dy]=shift(index);
@@ -94,7 +104,7 @@ namespace P9Dlss
                 glReadBuffer(lane==1?GL_NONE:GpuTransfers::ColorAttachment);
                 require(gpu.status(GpuTransfers::Framebuffer)==GpuTransfers::Complete,"Exact private producer attachment");
                 glViewport(0,0,images[lane].width,images[lane].height);glDepthMask(GL_TRUE);
-                glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glEnable(GL_SCISSOR_TEST);
+                gpu.colorMaskIndexed(0,GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glEnable(GL_SCISSOR_TEST);
                 const int splitX=int(images[lane].width/2)+dx,splitY=int(images[lane].height/2)+dy;
                 for(unsigned q=0;q<4;++q)
                 {
@@ -107,7 +117,13 @@ namespace P9Dlss
             }
             glDisable(GL_SCISSOR_TEST);gpu.bind(GpuTransfers::Framebuffer,0);glCheck("GPU produces moving owned source images");
             produced=true;
+            require(leases.publish({ticket,ticket,1,reinterpret_cast<std::uintptr_t>(ownerContext),generation,
+                {images[0].gl,images[1].gl,images[2].gl},images[0].width,images[0].height,true,true,true,true,false}),
+                "Publish exact fully produced synthetic source contract");
         }
+        Request request(std::uint64_t ticket,std::uint64_t epoch) const
+        { return {ticket,ticket,1,reinterpret_cast<std::uintptr_t>(wglGetCurrentContext()),epoch,
+            images[0].width,images[0].height}; }
         bool accepts(std::uint64_t ticket,std::uint64_t epoch,const std::array<Texture,5>& shared) const
         {
             if(!produced || ticket!=frame || epoch!=generation || wglGetCurrentContext()!=ownerContext)return false;
@@ -116,10 +132,18 @@ namespace P9Dlss
                     || images[i].height!=shared[i].height || !shared[i].registration)return false;
             return true;
         }
-        void copyToShared(GpuTransfers& gpu,std::uint64_t ticket,std::uint64_t epoch,const std::array<Texture,5>& shared)
+        bool copyToShared(GpuTransfers& gpu,const Request& expected,const std::array<Texture,5>& shared)
         {
-            require(accepts(ticket,epoch,shared),"Same-frame source import ownership/extent gate");
-            // The caller owns this private context and holds every DX lock.
+            // Refusal performs no graphics calls and preserves ordinary output.
+            if(!accepts(expected.ticket,expected.generation,shared)) return false;
+            const auto lease=leases.acquire(expected);
+            if(!lease) return false;
+            struct Release { RenderCore::Temporal::SynchronousInputLease& owner; Lease token;
+                ~Release(){if(!owner.release(token))std::terminate();} } release{leases,*lease};
+            BorrowedGlState restore;
+            restore.prepareImport();
+            // The caller holds every DX lock; we only borrow the same draw
+            // context until the exact source copy commands have been submitted.
             // Exact texelFetch has no filtering, UV flip or CPU pixel transfer.
             activeTexture(0x84C0);glDisable(GL_BLEND);glDisable(GL_DEPTH_TEST);glDisable(GL_ALPHA_TEST);
             glDisable(GL_STENCIL_TEST);glDisable(GL_CULL_FACE);glDisable(GL_SCISSOR_TEST);useProgram(program);
@@ -130,9 +154,12 @@ namespace P9Dlss
             }
             glBindTexture(GL_TEXTURE_2D,0);useProgram(0);gpu.bind(GpuTransfers::Framebuffer,0);
             glCheck("Import exact private GL source pixels into locked shared DLSS inputs");
+            return true;
         }
         void retire(GpuTransfers& gpu)
         {
+            require(leases.retire(),"Source generation cannot retire while borrowed");
+            BorrowedGlState restore;
             require(wglGetCurrentContext()==ownerContext,"Source retirement on exact owner");
             // Only after the fixture's exact source/output verification and
             // completed application work. No destructor retires in-flight GL.

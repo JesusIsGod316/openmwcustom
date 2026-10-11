@@ -77,6 +77,7 @@
 #include <components/sceneutil/frozenrigdeformation.hpp>
 #include <components/sceneutil/pagingwork.hpp>
 #include <components/sceneutil/ownedcellcull.hpp>
+#include <components/sceneutil/staticvaogeometry.hpp>
 #include <components/sceneutil/unchangedtransform.hpp>
 #include <components/sceneutil/temporalhistorylookup.hpp>
 #include <components/resource/templatecoalescing.hpp>
@@ -2671,7 +2672,11 @@ void OMW::Engine::go()
                     Resource::TemplateCoalescing::Counters::publishReuses.load(std::memory_order_relaxed),
                     Resource::TemplateCoalescing::Counters::publications.load(std::memory_order_relaxed),
                     SceneUtil::TemporalHistoryLookup::indexedLookups.load(std::memory_order_relaxed),
-                    SceneUtil::TemporalHistoryLookup::compatibilityComparisons.load(std::memory_order_relaxed)});
+                    SceneUtil::TemporalHistoryLookup::compatibilityComparisons.load(std::memory_order_relaxed),
+                    SceneUtil::StaticVao::Counters::draws.load(std::memory_order_relaxed),
+                    SceneUtil::StaticVao::Counters::layoutReuses.load(std::memory_order_relaxed),
+                    SceneUtil::StaticVao::Counters::producerFallbacks.load(std::memory_order_relaxed),
+                    SceneUtil::StaticVao::Counters::contextFallbacks.load(std::memory_order_relaxed)});
         }
         if (!cleanCapture && stats.is_open())
         {

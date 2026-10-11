@@ -1,5 +1,6 @@
 #pragma once
 #include "shared-d3d11-textures.hpp"
+#include "borrowed-gl-state.hpp"
 
 namespace P9Dlss
 {
@@ -19,6 +20,8 @@ namespace P9Dlss
         void (APIENTRY* blit)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum)
             = function<decltype(blit)>("glBlitFramebuffer");
         std::array<GLuint, 3> framebuffers{};
+        void (APIENTRY* colorMaskIndexed)(GLuint,GLboolean,GLboolean,GLboolean,GLboolean)
+            = function<decltype(colorMaskIndexed)>("glColorMaski");
         Texture consumerImage; // Private GL owner; never registered with DX.
 
         void initialize()
@@ -29,6 +32,8 @@ namespace P9Dlss
         }
         void makeConsumer(unsigned width, unsigned height)
         {
+            BorrowedGlState restore;
+            restore.active(BorrowedGlState::Texture0);
             require(!consumerImage.gl, "No consumer target reuse before retirement");
             consumerImage.width = width; consumerImage.height = height;
             glGenTextures(1, &consumerImage.gl);
@@ -45,13 +50,14 @@ namespace P9Dlss
             attach(Framebuffer, ColorAttachment, GL_TEXTURE_2D, texture.gl, 0);
             glDrawBuffer(ColorAttachment);
             require(status(Framebuffer) == Complete, "Actual shared GL producer target is renderable");
-            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            colorMaskIndexed(0,GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
             glDisable(GL_DITHER);
             glDisable(0x8DB9); // GL_FRAMEBUFFER_SRGB: floating linear producer contract.
             glViewport(0, 0, texture.width, texture.height);
         }
         void fill(const Texture& texture, const std::array<float, 4>& value)
         {
+            BorrowedGlState restore;
             producerTarget(texture);
             glDisable(GL_SCISSOR_TEST);
             // The float-buffer API preserves the negative output sentinel;
@@ -63,6 +69,7 @@ namespace P9Dlss
         template<class ColorFunction>
         void quadrants(const Texture& texture, ColorFunction&& color)
         {
+            BorrowedGlState restore;
             producerTarget(texture);
             glEnable(GL_SCISSOR_TEST);
             const unsigned halfWidth = texture.width / 2, halfHeight = texture.height / 2;
@@ -80,6 +87,12 @@ namespace P9Dlss
         }
         void consume(const Texture& source)
         {
+            BorrowedGlState restore;
+            // A copied image must be independent of the draw owner's raster
+            // policy as well as restore that policy afterward. State equality
+            // alone cannot prove a correct blit under adversarial enables.
+            restore.prepareImport();
+            colorMaskIndexed(0,GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
             require(consumerImage.gl && source.width == consumerImage.width && source.height == consumerImage.height,
                 "Exact generation and extent at actual graphics consumer");
             bind(ReadFramebuffer, framebuffers[1]);

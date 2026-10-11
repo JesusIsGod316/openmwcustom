@@ -25,6 +25,9 @@ OWNERSHIP_COUNTERS = ('cull_snapshot_publications', 'cull_bound_reads_avoided', 
                       'template_after_load_reuses', 'template_publication_reuses', 'template_canonical_publications',
                       'temporal_history_indexed_lookups', 'temporal_history_compatibility_comparisons')
 OWNERSHIP_EXTENDED_COUNTERS = (*PREPARATION_EXTENDED_COUNTERS, *OWNERSHIP_COUNTERS)
+STATIC_VAO_COUNTERS = ('static_vao_draws', 'static_vao_layout_reuses',
+                       'static_vao_producer_fallbacks', 'static_vao_context_fallbacks')
+STATIC_VAO_EXTENDED_COUNTERS = (*OWNERSHIP_EXTENDED_COUNTERS, *STATIC_VAO_COUNTERS)
 
 
 def interval_work(profile, windows):
@@ -61,6 +64,8 @@ def interval_work(profile, windows):
             counters = PREPARATION_EXTENDED_COUNTERS
         elif reader.fieldnames == ['snapshot_frame', *OWNERSHIP_EXTENDED_COUNTERS]:
             counters = OWNERSHIP_EXTENDED_COUNTERS
+        elif reader.fieldnames == ['snapshot_frame', *STATIC_VAO_EXTENDED_COUNTERS]:
+            counters = STATIC_VAO_EXTENDED_COUNTERS
         else:
             raise ValueError('Unknown indirect-work snapshot header')
         for row in reader:
@@ -115,7 +120,7 @@ def interval_work(profile, windows):
             entry['counts'][key] += value - previous
     if not any(value['observation_pairs'] for value in phases.values()):
         raise ValueError('No qualified indirect-work observation intervals')
-    return {'schema': 4 if counters == OWNERSHIP_EXTENDED_COUNTERS else 3 if counters == PREPARATION_EXTENDED_COUNTERS else 2 if counters == EXTENDED_COUNTERS else 1,
+    return {'schema': 5 if counters == STATIC_VAO_EXTENDED_COUNTERS else 4 if counters == OWNERSHIP_EXTENDED_COUNTERS else 3 if counters == PREPARATION_EXTENDED_COUNTERS else 2 if counters == EXTENDED_COUNTERS else 1,
             'scope': 'cumulative_all_views_at_main_thread_observation_points',
             'counter_columns': list(counters),
             'limit': 'Same logged phase margins/context exclusions as pacing; asynchronous draw origins and earlier paging execution within a completed work item are not assigned to exact observation frames',

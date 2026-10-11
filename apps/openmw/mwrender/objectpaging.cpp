@@ -57,6 +57,7 @@
 #include <components/sceneutil/positionattitudetransform.hpp>
 #include <components/sceneutil/shadowproxygroup.hpp>
 #include <components/sceneutil/opaqueshadowbatch.hpp>
+#include <components/sceneutil/staticvaogeometry.hpp>
 #include <components/sceneutil/generatedstaticlod.hpp>
 #include <components/sceneutil/selectivehlod.hpp>
 #include <components/resource/assetpolicy.hpp>
@@ -2499,6 +2500,13 @@ namespace MWRender
             }
             if (postOptimizedLodOnly)
                 wrappedMergeNode = SceneUtil::PersistentOpaquePackets::build(*mergeGroup);
+            // The static native-VAO candidate is ordinary optimized paging,
+            // independently selectable from retained/indirect/derived assets.
+            // Certification above consumes the original representation first.
+            if(!assetControls.contains(mergeGroup) && !postOptimizedLodOnly && !ordinaryPackets
+                && !SceneUtil::PersistentOpaquePackets::enabled()
+                && !SceneUtil::GpuIndirectPackets::indirectEnabled())
+                SceneUtil::StaticVao::install(*mergeGroup,Settings::cells().mOptimizedMWStaticVao);
             if (p3ShadowRoot) wrappedMergeNode = new SceneUtil::ShadowProxyGroup(wrappedMergeNode, p3ShadowRoot);
 
             group->addChild(wrappedMergeNode);

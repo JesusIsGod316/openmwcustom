@@ -232,6 +232,8 @@ namespace MWLua
         : mLua(vfs, &mConfiguration, createLuaStateSettings())
         , mV320LuaProfilerRecorder(std::make_unique<V320LuaProfilerRecorder>())
     {
+        mLua.setProtectedCallReuse(Settings::lua().mProtectedCallReuse);
+        mLua.startDiagnosticVmSampler();
         initializeObjectCaches(mLua.unsafeState(), Settings::lua().mOptimizedMWObjectUserdataCache);
         Log(Debug::Info) << "Lua version: " << LuaUtil::getLuaVersion();
         mLua.addInternalLibSearchPath(libsDir);
@@ -246,6 +248,18 @@ namespace MWLua
 
     LuaManager::~LuaManager()
     {
+        mLua.stopDiagnosticVmSampler();
+        Log(Debug::Info) << "OptimizedMW VM work capture: producer_rows=" << mVmWorkRows
+            << " callback_deliveries=" << mLua.diagnosticVmSamples().mCallbacks;
+        const auto stats = mLua.protectedCallStats();
+        Log(Debug::Info) << "OptimizedMW protected call reuse: enabled=" << mLua.getProtectedCallReuse()
+            << " reused_calls=" << stats.mReusedCalls << " closures_avoided=" << stats.mReusedCalls
+            << " closure_creations=" << stats.mClosureCreations << " ordinary_calls=" << stats.mOrdinaryCalls
+            << " registry_fallbacks=" << stats.mRegistryFallbacks << " context_fallbacks=" << stats.mContextFallbacks
+            << " producer_rows=" << mProtectedWorkRows;
+        Log(Debug::Info) << "OptimizedMW protected work capture: producer_rows=" << mProtectedWorkRows
+            << " reused_total=" << stats.mReusedCalls << " created_total=" << stats.mClosureCreations
+            << " ordinary_total=" << stats.mOrdinaryCalls;
         LuaUi::clearSettings();
     }
 
@@ -435,6 +449,14 @@ namespace MWLua
     void LuaManager::update()
     {
         Debug::HitchTrace::Scope hitchUpdate("lua.worker_update");
+        const auto protectedBefore = mLua.protectedCallStats();
+        const auto vmBefore = mLua.diagnosticVmSamples();
+        static Debug::V3Diagnostics::CsvWriter vmWriter("OPENMW_LUA_VM_STATE_FILE",
+            "frame,epoch_ms,sampler_attempted,callback_deliveries,native,interpreted,c,gc,jit,unknown,"
+            "row_seq,callbacks_total,native_total,interpreted_total,c_total,gc_total,jit_total,unknown_total");
+        static Debug::V3Diagnostics::CsvWriter protectedWriter("OPENMW_LUA_PROTECTED_REUSE_FILE",
+            "frame,epoch_ms,enabled,ordinary_calls,reused_calls,closure_creations,registry_fallbacks,"
+            "context_fallbacks,row_seq,reused_total,created_total,ordinary_total");
         static Debug::V3Diagnostics::CsvWriter writer("OPENMW_V3_LUA_UPDATE_FILE",
             "frame,epoch_ms,total_ms,object_lists_ms,autostart_ms,prune_ms,stats_ms,event_finalize_ms,timers_ms,"
             "event_handlers_ms,callbacks_ms,engine_events_ms,local_update_ms,global_update_ms,tracker_ms,"
@@ -633,6 +655,36 @@ namespace MWLua
                 << engineEventsMs << ',' << localUpdateMs << ',' << globalUpdateMs << ',' << trackerMs << ','
                 << mActiveLocalScripts.size() << ',' << autostartCount << ',' << callbackCount;
             writer.writeLine(row.str());
+        }
+        const auto protectedAfter = mLua.protectedCallStats();
+        hitchUpdate.setMetric(0, "protected_reused", protectedAfter.mReusedCalls - protectedBefore.mReusedCalls);
+        hitchUpdate.setMetric(1, "protected_created", protectedAfter.mClosureCreations - protectedBefore.mClosureCreations);
+        if (protectedWriter.enabled())
+        {
+            std::ostringstream row;
+            row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs() << ','
+                << mLua.getProtectedCallReuse() << ','
+                << protectedAfter.mOrdinaryCalls - protectedBefore.mOrdinaryCalls << ','
+                << protectedAfter.mReusedCalls - protectedBefore.mReusedCalls << ','
+                << protectedAfter.mClosureCreations - protectedBefore.mClosureCreations << ','
+                << protectedAfter.mRegistryFallbacks - protectedBefore.mRegistryFallbacks << ','
+                << protectedAfter.mContextFallbacks - protectedBefore.mContextFallbacks << ','
+                << ++mProtectedWorkRows << ',' << protectedAfter.mReusedCalls << ','
+                << protectedAfter.mClosureCreations << ',' << protectedAfter.mOrdinaryCalls;
+            protectedWriter.writeLine(row.str());
+        }
+        if (vmWriter.enabled())
+        {
+            const auto after = mLua.diagnosticVmSamples();
+            std::ostringstream row;
+            row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs() << ','
+                << mLua.diagnosticVmSamplerStarted() << ',' << after.mCallbacks - vmBefore.mCallbacks;
+            for (std::size_t i = 0; i < after.mStates.size(); ++i)
+                row << ',' << after.mStates[i] - vmBefore.mStates[i];
+            row << ',' << ++mVmWorkRows << ',' << after.mCallbacks;
+            for (auto count : after.mStates)
+                row << ',' << count;
+            vmWriter.writeLine(row.str());
         }
     }
 

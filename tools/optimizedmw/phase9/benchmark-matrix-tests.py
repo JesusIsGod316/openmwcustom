@@ -21,6 +21,20 @@ def runtime_fixture(game):
 
 
 class Benchmarks(unittest.TestCase):
+    def test_build_c_flags_require_real_measured_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root/'openmw.log').write_text('startup installed=99 protected_reuses=99\n')
+            requested = {'paged static vertex arrays':'true', 'protected call reuse':'true'}
+            self.assertFalse(matrix.engagement(root, requested)['all_requested_positive'])
+            vao = {'phases': {'moving': {'counts': {'static_vao_draws':10, 'static_vao_layout_reuses':0}}}}
+            lua = {'enabled':True, 'phases': {'moving': {'counts': {'reused_total':10}}}}
+            self.assertFalse(matrix.engagement(root, requested, work=vao, lua_work=lua)['all_requested_positive'])
+            vao['phases']['moving']['counts']['static_vao_layout_reuses'] = 1
+            self.assertTrue(matrix.engagement(root, requested, work=vao, lua_work=lua)['all_requested_positive'])
+            lua['enabled'] = False
+            self.assertFalse(matrix.engagement(root, requested, work=vao, lua_work=lua)['all_requested_positive'])
+
     def test_temporal_input_modes_do_not_silently_fall_back_to_control(self):
         self.assertEqual(matrix.temporal_arguments({}), [])
         self.assertEqual(matrix.temporal_arguments({'temporal_mode':'Off'}), [])

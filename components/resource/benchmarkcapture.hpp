@@ -78,7 +78,7 @@ namespace Resource
         struct IndirectWorkRecord
         {
             unsigned snapshotFrame;
-            std::array<std::uint64_t, 32> values;
+            std::array<std::uint64_t, 36> values;
         };
     public:
         BenchmarkCapture()
@@ -90,7 +90,7 @@ namespace Resource
             mCameras.reserve(32);
         }
         ~BenchmarkCapture() { finish(false); }
-        void captureIndirectWork(unsigned frame, const std::array<std::uint64_t, 32>& values)
+        void captureIndirectWork(unsigned frame, const std::array<std::uint64_t, 36>& values)
         {
             if (Debug::DeferredCapture::enabled()) mIndirectWork.push({frame, values});
         }
@@ -174,7 +174,8 @@ namespace Resource
                     "cull_snapshot_publications,cull_bound_reads_avoided,cull_classification_visits_avoided,"
                     "cull_snapshot_invalidations,cull_snapshot_refusals,transform_dirty_calls_avoided,transform_changed_inputs,"
                     "template_after_load_reuses,template_publication_reuses,template_canonical_publications,"
-                    "temporal_history_indexed_lookups,temporal_history_compatibility_comparisons\n";
+                    "temporal_history_indexed_lookups,temporal_history_compatibility_comparisons,"
+                    "static_vao_draws,static_vao_layout_reuses,static_vao_producer_fallbacks,static_vao_context_fallbacks\n";
                 for (const auto& record : mIndirectWork)
                 {
                     indirect << record.snapshotFrame;

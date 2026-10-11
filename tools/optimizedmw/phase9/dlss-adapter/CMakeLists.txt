@@ -12,6 +12,8 @@ if(NOT EXISTS "${P9_NGX_SDK_ROOT}/include/nvsdk_ngx_helpers.h"
     message(FATAL_ERROR "Supply P9_NGX_SDK_ROOT; no automatic download or game integration")
 endif()
 add_executable(p9-dlss-d3d11-adapter dlss-d3d11-adapter.cpp)
+add_executable(p9-dlss-synchronous-lease-tests synchronous-lease-tests.cpp)
+target_compile_features(p9-dlss-synchronous-lease-tests PRIVATE cxx_std_20)
 target_compile_features(p9-dlss-d3d11-adapter PRIVATE cxx_std_20)
 target_compile_definitions(p9-dlss-d3d11-adapter PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_include_directories(p9-dlss-d3d11-adapter SYSTEM PRIVATE "${P9_NGX_SDK_ROOT}/include")

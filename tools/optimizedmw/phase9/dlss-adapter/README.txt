@@ -58,15 +58,41 @@ shared input component is checked exactly after evaluation, including sampled
 depth and both signs of motion. The importer must refuse stale frame/generation,
 wrong extent and source/destination alias descriptors before submission.
 Separate sources retire after actual application work and verification, across
-the same three output extents. This proves the missing format/import step under
-a private owner; it does not prove a production game lease, complete dynamic
-motion coverage, async execution or restoration of a borrowed game's GL state.
+the same three output extents. This proves the format/import step under a
+private owner; it does not prove production game integration or dense motion.
+
+Build C adds a draw-owner-only, no-wait exact-frame source lease. The owner
+refuses overwrite and retirement while borrowed. Ticket, frame, view, current
+context, generation and extent must match; incomplete motion, HUD-in-color or
+nonpixel motion refuse before any import. Old/released tokens cannot release a
+later borrow, including a later import of the same frame. A real foreign GL
+context is also tested and must refuse before graphics submission. Rejection
+leaves the ordinary fallback image untouched. Release follows same-context
+copy submission; GL ordering protects it against subsequent producer writes.
+This is not an asynchronous lease, GPU completion fence or cross-context job.
+
+The importer and GPU consumer now restore borrowed GL state. Adversarial
+sentinels install distinct read/draw FBOs, a live program, separate active/unit-0
+textures, a depth-comparison sampler, viewport/scissor, distinct indexed color
+masks, depth mask, wire/point polygon modes, upper-left clip origin, both depth
+conventions and alternating raster enables/clip distances. State observations
+do not repair it before comparison. Inputs and cross-API output must still
+match exactly through actual NGX. The bridge changes only color-mask index 0;
+other draw-buffer masks remain untouched. The native cohort requires the
+NVIDIA compatibility context's clip-control, indexed-mask and sampler APIs.
+These checks qualify this bounded GL operation; OSG state-cache integration,
+active query/conditional-render boundaries and complete game motion remain
+separate integration work. No new setting enables in-game DLSS.
 
 GPU transfer submission/locking is recorded separately from verification
 readbacks. Completion observation includes the native event polling policy;
 these measurements do not isolate the DLSS kernel or predict gameplay FPS.
 Use qualify_adapter.py on finished positive/negative artifacts to seal
 provenance and test_qualification.py to exercise tampered-receipt rejection.
+Build C source manifests must include borrowed-gl-state.hpp and the external
+components/rendercore/synchronousinputlease.hpp dependency. Run the separate
+p9-dlss-synchronous-lease-tests executable for incomplete-contract, stale-token,
+overwrite, retirement and ordinary-refusal checks without a GPU/game launch.
 
 An initial prototype inserted a redundant empty-context D3D event after
 ReleaseFeature and timed out on the tested driver. Its failure is preserved.

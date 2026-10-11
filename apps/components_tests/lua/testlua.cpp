@@ -196,6 +196,194 @@ return {
         lua_gc(lua.unsafeState(), LUA_GCRESTART, 0);
     }
 
+    TEST_F(LuaStateTest, ProtectedReuseKeepsNestedJobsAndStack)
+    {
+        mLua.setProtectedCallReuse(true);
+        const auto before = mLua.protectedCallStats();
+        const int outerTop = lua_gettop(mLua.unsafeState());
+        std::vector<int> order;
+        mLua.protectedCall([&](LuaUtil::LuaView& view) {
+            lua_State* state = view.sol().lua_state();
+            lua_pushinteger(state, 77);
+            const int nestedTop = lua_gettop(state);
+            order.push_back(1);
+            mLua.protectedCall([&](LuaUtil::LuaView&) { order.push_back(2); });
+            EXPECT_EQ(lua_gettop(state), nestedTop);
+            EXPECT_EQ(lua_tointeger(state, -1), 77);
+            order.push_back(3);
+        });
+        EXPECT_EQ(order, (std::vector<int>{ 1, 2, 3 }));
+        EXPECT_EQ(lua_gettop(mLua.unsafeState()), outerTop);
+        const auto after = mLua.protectedCallStats();
+        EXPECT_EQ(after.mReusedCalls - before.mReusedCalls, 2);
+        EXPECT_EQ(after.mClosureCreations, before.mClosureCreations);
+    }
+
+    TEST_F(LuaStateTest, ProtectedReusePreservesLuaErrorBoundary)
+    {
+        for (bool enabled : { false, true })
+        {
+            mLua.setProtectedCallReuse(enabled);
+            const int top = lua_gettop(mLua.unsafeState());
+            EXPECT_ERROR(mLua.protectedCall([](LuaUtil::LuaView& view) {
+                luaL_error(view.sol().lua_state(), "protected_reuse_fixture_error");
+            }), "protected_reuse_fixture_error");
+            // Preserve the original API's error object on the caller's stack.
+            EXPECT_EQ(lua_gettop(mLua.unsafeState()), top + 1);
+            lua_pop(mLua.unsafeState(), 1);
+            int calls = 0;
+            mLua.protectedCall([&](LuaUtil::LuaView&) { ++calls; });
+            EXPECT_EQ(calls, 1);
+            EXPECT_EQ(lua_gettop(mLua.unsafeState()), top);
+        }
+    }
+
+    TEST_F(LuaStateTest, ProtectedReusePreservesCallerEnvironment)
+    {
+        for (bool enabled : { false, true })
+        {
+            mLua.setProtectedCallReuse(enabled);
+            mLua.protectedCall([&](LuaUtil::LuaView& view) {
+                lua_State* state = view.sol().lua_state();
+                lua_pushlightuserdata(state, &mLua);
+                lua_pushcclosure(state, [](lua_State* callback) {
+                    auto* owner = static_cast<LuaUtil::LuaState*>(lua_touserdata(callback, lua_upvalueindex(1)));
+                    int value = 0;
+                    owner->protectedCall([&](LuaUtil::LuaView& nested) {
+                        lua_State* context = nested.sol().lua_state();
+                        lua_pushvalue(context, LUA_ENVIRONINDEX);
+                        lua_getfield(context, -1, "fixture_marker");
+                        value = static_cast<int>(lua_tointeger(context, -1));
+                        lua_pop(context, 2);
+                    });
+                    lua_pushinteger(callback, value);
+                    return 1;
+                }, 1);
+                lua_newtable(state);
+                lua_pushinteger(state, 1234);
+                lua_setfield(state, -2, "fixture_marker");
+                lua_setfenv(state, -2);
+                ASSERT_EQ(lua_pcall(state, 0, 1, 0), 0);
+                EXPECT_EQ(lua_tointeger(state, -1), 1234);
+                lua_pop(state, 1);
+            });
+        }
+        EXPECT_GT(mLua.protectedCallStats().mContextFallbacks, 0);
+    }
+
+    TEST_F(LuaStateTest, ProtectedReuseFallsBackOnRegistryReplacement)
+    {
+        mLua.setProtectedCallReuse(true);
+        mLua.protectedCall([](LuaUtil::LuaView& view) {
+            lua_State* state = view.sol().lua_state();
+            lua_pushnil(state);
+            while (lua_next(state, LUA_REGISTRYINDEX))
+            {
+                if (lua_tocfunction(state, -1) == &LuaUtil::invokeReusableProtectedCall)
+                {
+                    const int reference = static_cast<int>(lua_tointeger(state, -2));
+                    lua_pop(state, 2);
+                    lua_pushinteger(state, 9);
+                    lua_rawseti(state, LUA_REGISTRYINDEX, reference);
+                    return;
+                }
+                lua_pop(state, 1);
+            }
+            FAIL() << "Reusable trampoline was not registered";
+        });
+        const auto before = mLua.protectedCallStats();
+        const int top = lua_gettop(mLua.unsafeState());
+        int called = 0;
+        mLua.protectedCall([&](LuaUtil::LuaView&) { ++called; });
+        const auto after = mLua.protectedCallStats();
+        EXPECT_EQ(called, 1);
+        EXPECT_EQ(lua_gettop(mLua.unsafeState()), top);
+        EXPECT_EQ(after.mRegistryFallbacks - before.mRegistryFallbacks, 1);
+        EXPECT_EQ(after.mClosureCreations - before.mClosureCreations, 1);
+        EXPECT_EQ(after.mReusedCalls, before.mReusedCalls);
+    }
+
+    TEST_F(LuaStateTest, ProtectedReuseOwnsRegistryPerStateAndCanDisable)
+    {
+        mLua.setProtectedCallReuse(true);
+        auto fn = [](LuaUtil::LuaView&) {};
+        mLua.protectedCall(fn);
+        LuaUtil::LuaState independent{ mVFS.get(), &mCfg };
+        independent.setProtectedCallReuse(true);
+        const auto ownBefore = mLua.protectedCallStats();
+        independent.protectedCall(fn);
+        EXPECT_EQ(mLua.protectedCallStats().mReusedCalls, ownBefore.mReusedCalls);
+        mLua.setProtectedCallReuse(false);
+        mLua.protectedCall([](LuaUtil::LuaView&) {});
+        EXPECT_EQ(mLua.protectedCallStats().mReusedCalls, ownBefore.mReusedCalls);
+        EXPECT_EQ(mLua.protectedCallStats().mOrdinaryCalls - ownBefore.mOrdinaryCalls, 1);
+    }
+
+    TEST_F(LuaStateTest, ProtectedReuseAvoidsActualClosureAllocation)
+    {
+#ifdef NO_LUAJIT
+        GTEST_SKIP() << "Closure allocation proof targets the pinned LuaJIT runtime";
+#else
+        const int top = lua_gettop(mLua.unsafeState());
+        mLua.setProtectedCallReuse(true);
+        lua_gc(mLua.unsafeState(), LUA_GCSTOP, 0);
+        const auto heapBefore = mLua.getTotalMemoryUsage();
+        const auto before = mLua.protectedCallStats();
+        for (int i = 0; i < 512; ++i)
+            mLua.protectedCall([](LuaUtil::LuaView&) {});
+        const auto heapCached = mLua.getTotalMemoryUsage();
+        const auto cached = mLua.protectedCallStats();
+        mLua.setProtectedCallReuse(false);
+        for (int i = 0; i < 512; ++i)
+            mLua.protectedCall([](LuaUtil::LuaView&) {});
+        const auto heapOrdinary = mLua.getTotalMemoryUsage();
+        const auto ordinary = mLua.protectedCallStats();
+        lua_gc(mLua.unsafeState(), LUA_GCRESTART, 0);
+        EXPECT_EQ(cached.mReusedCalls - before.mReusedCalls, 512);
+        EXPECT_EQ(cached.mClosureCreations, before.mClosureCreations);
+        EXPECT_EQ(ordinary.mClosureCreations - cached.mClosureCreations, 512);
+        EXPECT_LT(heapCached - heapBefore, heapOrdinary - heapCached);
+        EXPECT_EQ(lua_gettop(mLua.unsafeState()), top);
+#endif
+    }
+
+    TEST_F(LuaStateTest, DiagnosticVmSamplerIsExplicitAndKeepsScriptResult)
+    {
+        const char* request = std::getenv("OPENMW_LUA_VM_STATE_SAMPLER");
+        if (!Debug::HitchTrace::requested() || !request || std::string_view(request) != "1")
+        {
+            EXPECT_FALSE(mLua.startDiagnosticVmSampler());
+            EXPECT_EQ(mLua.diagnosticVmSamples().mCallbacks, 0);
+            return;
+        }
+        if (!mLua.startDiagnosticVmSampler())
+            GTEST_SKIP() << "Pinned runtime does not provide the optional diagnostic sampler";
+        sol::protected_function fn;
+        mLua.protectedCall([&](LuaUtil::LuaView& view) {
+            fn = view.sol().script(R"X(
+                return function()
+                    local sum = 0
+                    for i = 1, 2000000 do
+                        local t = {i, i + 1, i + 2, i + 3}
+                        sum = sum + t[1] - t[2] + t[3] - t[4]
+                    end
+                    return sum
+                end
+            )X").get<sol::protected_function>();
+        });
+        for (int i = 0; i < 4; ++i)
+            EXPECT_EQ(LuaUtil::call(LuaUtil::ScriptId{}, fn).get<int>(), -4000000);
+        const auto samples = mLua.diagnosticVmSamples();
+        mLua.stopDiagnosticVmSampler();
+        EXPECT_GT(samples.mCallbacks, 0);
+        std::uint64_t count = 0;
+        for (auto value : samples.mStates)
+            count += value;
+        EXPECT_GT(count, 0);
+        EXPECT_FALSE(mLua.diagnosticVmSamplerStarted());
+        EXPECT_EQ(LuaUtil::call(LuaUtil::ScriptId{}, fn).get<int>(), -4000000);
+    }
+
     TEST_F(LuaStateTest, HitchAllocationCounters)
     {
         const auto before = mLua.diagnosticAllocations();

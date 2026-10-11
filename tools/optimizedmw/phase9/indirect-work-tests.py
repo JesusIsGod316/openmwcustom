@@ -4,10 +4,20 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from indirect_work import COUNTERS, EXTENDED_COUNTERS, PREPARATION_EXTENDED_COUNTERS, OWNERSHIP_EXTENDED_COUNTERS, interval_work, positive_counts
+from indirect_work import COUNTERS, EXTENDED_COUNTERS, PREPARATION_EXTENDED_COUNTERS, OWNERSHIP_EXTENDED_COUNTERS, STATIC_VAO_EXTENDED_COUNTERS, interval_work, positive_counts
 
 
 class IndirectWork(unittest.TestCase):
+    def test_static_vao_qualifies_reused_layout_in_real_intervals(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            windows = self.make(root, [99]*9, counters=STATIC_VAO_EXTENDED_COUNTERS)
+            self.assertFalse(positive_counts(interval_work(root, windows), 'static_vao_layout_reuses'))
+            self.make(root, [0, 0, 0, 1, 2, 3, 4, 5, 999], counters=STATIC_VAO_EXTENDED_COUNTERS)
+            result = interval_work(root, windows)
+            self.assertEqual(result['schema'], 5)
+            self.assertTrue(positive_counts(result, 'static_vao_layout_reuses'))
+
     def test_owned_work_requires_measured_intervals_and_complete_transport(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

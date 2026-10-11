@@ -25,6 +25,16 @@ keeps that strong control. Collision, picking, shadows and secondary views
 retain original geometry. Selection alone does not establish runtime use.
 
 ADDITIONAL INDEPENDENT CONTROLS
+[Lua] protected call reuse = false
+Startup-only private registry reuse of the zero-upvalue protected-call C
+trampoline. Nested jobs remain stack-local; lua_pcall, error propagation,
+script initialization and event order remain ordinary. Does not defer timers
+or parallelize the shared VM. Measured closure counts establish engagement.
+[Optimizations] paged static vertex arrays = false
+Ordinary paged static Geometry may use OSG's native vertex-array objects when
+its exact immutable arrays, primitive layout and callbacks are certified.
+Changed inputs select ordinary fallback. Does not enable indirect drawing,
+change culling or remove the dynamic draw barrier.
 [Optimizations] owned cell cull snapshots = false
 Cell-root-owned direct-child bounds and classification, invalidated by the
 same OSG dirty-bound contract as ordinary traversal. Current cull order and

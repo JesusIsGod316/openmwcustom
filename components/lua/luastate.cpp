@@ -10,6 +10,11 @@
 #include <regex>
 #include <set>
 #include <cstdlib>
+#include <atomic>
+
+#if defined(_WIN32) && !defined(NO_LUAJIT)
+#include <windows.h>
+#endif
 
 #include <components/debug/debuglog.hpp>
 #include <components/debug/diagnosticobserver.hpp>
@@ -28,6 +33,90 @@
 
 namespace LuaUtil
 {
+    namespace
+    {
+        std::atomic<LuaState*> sDiagnosticVmSamplerOwner{ nullptr };
+    }
+
+    void LuaState::vmProfileCallback(void* data, lua_State*, int samples, int state)
+    {
+        // LuaJIT calls this on the Lua owner at a profile dispatch hook, not on
+        // its timer thread. No stack access, allocation, logging or I/O here.
+        auto* owner = static_cast<LuaState*>(data);
+        unsigned index = 5;
+        switch (state)
+        {
+            case 'N': index = 0; break;
+            case 'I': index = 1; break;
+            case 'C': index = 2; break;
+            case 'G': index = 3; break;
+            case 'J': index = 4; break;
+        }
+        if (samples > 0)
+            owner->mDiagnosticVmSamples.mStates[index] += static_cast<std::uint64_t>(samples);
+        ++owner->mDiagnosticVmSamples.mCallbacks;
+    }
+
+    bool LuaState::startDiagnosticVmSampler()
+    {
+        if (mVmProfileStop)
+            return true;
+        if (!Debug::HitchTrace::requested())
+            return false;
+        const char* requested = std::getenv("OPENMW_LUA_VM_STATE_SAMPLER");
+        if (!requested || std::string_view(requested) != "1")
+            return false;
+        LuaState* expected = nullptr;
+        if (!sDiagnosticVmSamplerOwner.compare_exchange_strong(expected, this))
+        {
+            Log(Debug::Info) << "OptimizedMW Lua VM sampling: refused_multiple_engine_owners";
+            return false;
+        }
+#if defined(_WIN32) && !defined(NO_LUAJIT)
+        HMODULE module = nullptr;
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<const char*>(&lua_pcall), &module);
+        using Start = void (*)(lua_State*, const char*, luaJIT_profile_callback, void*);
+        using Stop = void (*)(lua_State*);
+        const auto start = module ? reinterpret_cast<Start>(GetProcAddress(module, "luaJIT_profile_start")) : nullptr;
+        const auto stop = module ? reinterpret_cast<Stop>(GetProcAddress(module, "luaJIT_profile_stop")) : nullptr;
+        if (start && stop)
+        {
+            // No f/l mode: do not flush JIT traces at start. Stop unavoidably
+            // flushes this diagnostic VM's traces in the pinned LuaJIT source.
+            // There is no public acceptance query; observed callbacks, not the
+            // void return, qualify that the requested sampler actually ran.
+            start(mSol.lua_state(), "i1", &vmProfileCallback, this);
+            mVmProfileStop = stop;
+            Log(Debug::Info) << "OptimizedMW Lua VM sampling: requested=1 api_available=1 interval_ms=1"
+                << " acceptance_requires_callbacks=1 delivery_is_not_sample_time=1 stop_flushes_jit=1";
+            return true;
+        }
+#endif
+        sDiagnosticVmSamplerOwner.store(nullptr);
+        Log(Debug::Info) << "OptimizedMW Lua VM sampling: requested=1 api_available=0 qualified=0";
+        return false;
+    }
+
+    void LuaState::stopDiagnosticVmSampler()
+    {
+        if (!mVmProfileStop)
+            return;
+        mVmProfileStop(mSol.lua_state());
+        mVmProfileStop = nullptr;
+        sDiagnosticVmSamplerOwner.store(nullptr);
+        const auto& s = mDiagnosticVmSamples;
+        Log(Debug::Info) << "OptimizedMW Lua VM sampling: final_callbacks=" << s.mCallbacks
+            << " native=" << s.mStates[0] << " interpreted=" << s.mStates[1] << " c=" << s.mStates[2]
+            << " gc=" << s.mStates[3] << " jit=" << s.mStates[4] << " unknown=" << s.mStates[5]
+            << " delivery_is_not_sample_time=1 stop_flushes_jit=1";
+    }
+
+    LuaState::~LuaState()
+    {
+        stopDiagnosticVmSampler();
+    }
+
     static VFS::Path::Normalized packageNameToVfsPath(std::string_view packageName, const VFS::Manager& vfs)
     {
         std::string pathValue(packageName);
@@ -246,6 +335,12 @@ namespace LuaUtil
         mService.emplace("lua.alloc.service", Debug::HitchTrace::CpuTiming::WallEnvelope, container, path);
         mSmall.emplace("lua.alloc.request_small", Debug::HitchTrace::CpuTiming::WallEnvelope, container, path);
         mLarge.emplace("lua.alloc.request_large", Debug::HitchTrace::CpuTiming::WallEnvelope, container, path);
+        if (mState->diagnosticVmSamplerStarted())
+        {
+            mVmBefore = mState->diagnosticVmSamples();
+            mVmStates.emplace("lua.vm.delivered_states", Debug::HitchTrace::CpuTiming::WallEnvelope, container, path);
+            mVmExtra.emplace("lua.vm.delivered_coverage", Debug::HitchTrace::CpuTiming::WallEnvelope, container, path);
+        }
     }
 
     LuaState::DiagnosticAllocationScope::~DiagnosticAllocationScope()
@@ -264,6 +359,18 @@ namespace LuaUtil
         mLarge->setMetric(1, "req_gt1048576", after.requestedSizes[5] - mBefore.requestedSizes[5]);
         mLarge->setMetric(2, "free_requests", after.frees - mBefore.frees);
         mLarge->setMetric(3, "tracking_available", mState->diagnosticTrackingAllocator());
+        if (mVmStates)
+        {
+            const auto vm = mState->diagnosticVmSamples();
+            mVmStates->setMetric(0, "sample_native", vm.mStates[0] - mVmBefore.mStates[0]);
+            mVmStates->setMetric(1, "sample_interpreted", vm.mStates[1] - mVmBefore.mStates[1]);
+            mVmStates->setMetric(2, "sample_c", vm.mStates[2] - mVmBefore.mStates[2]);
+            mVmStates->setMetric(3, "sample_gc", vm.mStates[3] - mVmBefore.mStates[3]);
+            mVmExtra->setMetric(0, "sample_jit", vm.mStates[4] - mVmBefore.mStates[4]);
+            mVmExtra->setMetric(1, "sample_unknown", vm.mStates[5] - mVmBefore.mStates[5]);
+            mVmExtra->setMetric(2, "delivered_callbacks", vm.mCallbacks - mVmBefore.mCallbacks);
+            mVmExtra->setMetric(3, "delivery_not_sample_time", 1);
+        }
     }
 
     bool LuaState::gcStep(int steps)
@@ -289,6 +396,22 @@ namespace LuaUtil
             detail.setMetric(3, "heap_after_bytes", getTotalMemoryUsage());
         }
         return completed;
+    }
+
+    void LuaState::setProtectedCallReuse(bool enabled)
+    {
+        if (enabled && mProtectedCallReference == LUA_NOREF)
+        {
+            // Create the reusable closure inside an ordinary protected boundary,
+            // so registry growth retains the existing out-of-memory behavior.
+            LuaUtil::protectedCall(mSol.lua_state(), [&](LuaView& view) {
+                lua_State* state = view.sol().lua_state();
+                lua_pushcfunction(state, &invokeReusableProtectedCall);
+                mProtectedCallReference = luaL_ref(state, LUA_REGISTRYINDEX);
+            });
+            ++mProtectedCallStats.mClosureCreations;
+        }
+        mProtectedCallReuse = enabled;
     }
 
     LuaStatePtr LuaState::createLuaRuntime(LuaState* luaState)

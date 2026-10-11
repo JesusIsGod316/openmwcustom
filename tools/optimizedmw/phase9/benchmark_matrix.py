@@ -17,6 +17,8 @@ import sys
 
 import benchmark_desktop
 import indirect_work
+import lua_protected_work
+import lua_vm_states
 import runtime_dependencies
 
 
@@ -134,10 +136,14 @@ def analyze(profile):
             'metrics': {key:pacing(values) for key,values in groups.items() if values}}
     if (profile/'p9-indirect-work.csv').is_file():
         result['indirect_interval_work'] = indirect_work.interval_work(profile, windows)
+    if (profile/'p9-lua-protected-work.csv').is_file():
+        result['lua_protected_interval_work'] = lua_protected_work.interval_work(profile, windows)
+    if (profile/'p9-lua-vm-states.csv').is_file():
+        result['lua_vm_states'] = lua_vm_states.qualify_vm_states(profile, windows)
     return result
 
 
-def engagement(profile, requested, asset_mask=0, architecture_mask=0, work=None):
+def engagement(profile, requested, asset_mask=0, architecture_mask=0, work=None, lua_work=None):
     text = (profile/'openmw.log').read_text(encoding='utf-8-sig')
     positive = {}
     if asset_mask & 1:
@@ -212,6 +218,12 @@ def engagement(profile, requested, asset_mask=0, architecture_mask=0, work=None)
             or indirect_work.positive_counts(work, 'template_publication_reuses')))
     if requested.get('temporal history lookup') == 'true':
         positive['temporal_history_lookup'] = bool(work and indirect_work.positive_counts(work, 'temporal_history_indexed_lookups'))
+    if requested.get('paged static vertex arrays') == 'true':
+        positive['paged_static_vertex_arrays'] = bool(work and indirect_work.positive_counts(work, 'static_vao_draws')
+            and indirect_work.positive_counts(work, 'static_vao_layout_reuses'))
+    if requested.get('protected call reuse') == 'true':
+        positive['lua_protected_call_reuse'] = bool(lua_work and lua_work['enabled']
+            and indirect_work.positive_counts(lua_work, 'reused_total'))
     return {'positive_work': positive, 'all_requested_positive': all(positive.values()),
             'limit': 'Preparation/dispatch engagement; visible resource adoption and performance require separate evidence'}
 
@@ -391,6 +403,7 @@ def run_matrix(plan_path, output):
     pins = [identity(game/'openmw.exe'),identity(plan['symbols']),identity(game/'BUILD-IDENTITY.json'),
             identity(plan_path),identity(plan['route_catalog']),identity(__file__),identity(benchmark_desktop.__file__)]
     pins.append(identity(indirect_work.__file__))
+    pins += [identity(lua_protected_work.__file__), identity(lua_vm_states.__file__)]
     dependencies = runtime_dependencies.runtime_closure(game)
     pins.append(identity(runtime_dependencies.__file__))
     pins += [identity(path) for path in dependencies['files'] if Path(path) != game/'openmw.exe']
@@ -448,10 +461,10 @@ def run_matrix(plan_path, output):
                 raise ValueError('Engine did not confirm actual muted settings')
             quality = route_quality(receipt,profile)
             requested = {entry['key']:entry['value'] for entry in settings
-                         if entry['section'] in ('Cells', 'Optimizations')}
+                         if entry['section'] in ('Cells', 'Optimizations', 'Lua')}
             metrics = analyze(profile)
             engaged = engagement(profile,requested,case.get('asset_mask',0),case.get('architecture_mask',0),
-                metrics.get('indirect_interval_work'))
+                metrics.get('indirect_interval_work'), metrics.get('lua_protected_interval_work'))
             benchmark_desktop.save(directory/'ANALYSIS.json',metrics)
             result = {'id':case['id'],'route':case['route'],'depth':case.get('depth','Normal'),
                       'receipt':str(receipt_path),'zip':receipt['zip'],'route_quality':quality,

@@ -523,7 +523,7 @@ try{
         $script:ApplyingCustomConfiguration=$true
         try{
             foreach($entry in $experimentEntries){
-                if([string]$entry.section -cnotmatch '^(Cells|Optimizations|Terrain|Shaders|Video|Sound)$' -or
+                if([string]$entry.section -cnotmatch '^(Cells|Lua|Optimizations|Terrain|Shaders|Video|Sound)$' -or
                     [string]$entry.key -cnotmatch '^[a-z][a-z0-9 .-]{0,127}$' -or
                     [string]$entry.value -cnotmatch '^(true|false|-?[0-9]+(?:\.[0-9]+)?)$'){throw 'Invalid experiment setting request'}
                 Set-IniValue $SettingsPath $entry.section $entry.key ([string]$entry.value)
@@ -712,6 +712,7 @@ try{
     $env:OPENMW_V32_GPU_MEMORY_FILE=Join-Path $ProfileDir 'v3-gpu-memory.csv'
     $env:OPENMW_P4_COMPILE_FILE=Join-Path $ProfileDir 'p4-compile.csv'
     $env:OPENMW_V3_FRAME_FILE=Join-Path $ProfileDir 'v3-frame.csv'
+    $env:OPENMW_LUA_PROTECTED_REUSE_FILE=Join-Path $ProfileDir 'p9-lua-protected-work.csv'
     $env:OPENMW_P9_BENCHMARK_CONTEXT_FILE=Join-Path $ProfileDir 'benchmark-context.csv'
     $env:OPENMW_V3_HITCH_FILE=Join-Path $ProfileDir 'v3-hitch.csv'
     $env:OPENMW_P6_RENDER_PHASE_FILE=Join-Path $ProfileDir 'p6-render-phase.csv'
@@ -737,6 +738,8 @@ try{
         $env:OPENMW_P9_DLSS_CAPS_FILE=Join-Path $ProfileDir 'p9-dlss-capabilities.csv'
     }
     if($mode.Trace -eq '1'){
+        $env:OPENMW_LUA_VM_STATE_SAMPLER='1'
+        $env:OPENMW_LUA_VM_STATE_FILE=Join-Path $ProfileDir 'p9-lua-vm-states.csv'
         $env:OPENMW_P9_COMPILE_ATTRIBUTION_FILE=Join-Path $ProfileDir 'compile-attribution.csv'
         Set-Phase9HitchRecorderEnvironment -Mode $mode -Transport $HitchTransport
         $env:OPENMW_P9_HITCH_CAPACITY='524288'

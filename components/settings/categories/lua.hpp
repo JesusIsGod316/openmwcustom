@@ -24,6 +24,8 @@ namespace Settings
         SettingValue<int> mLuaNumThreads{ mIndex, "Lua", "lua num threads", makeEnumSanitizerInt({ 0, 1 }) };
         SettingValue<bool> mLuaProfiler{ mIndex, "Lua", "lua profiler" };
         SettingValue<bool> mV33IdleTimerFastPath{ mIndex, "Lua", "idle timer fast path" };
+        // Startup-only, per-state registry trampoline; protected calls and lifecycle order remain unchanged.
+        SettingValue<bool> mProtectedCallReuse{ mIndex, "Lua", "protected call reuse" };
         // V3.20 stock-semantic handler and pure-conversion fast paths.
         SettingValue<bool> mV320EngineLuaFastPaths{ mIndex, "Lua", "engine event fast paths" };
         SettingValue<bool> mV320SoundConversionCache{ mIndex, "Lua", "sound conversion cache" };

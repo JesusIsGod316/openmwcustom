@@ -515,6 +515,66 @@ CUSTOM: descriptorcontainer3.lua
         }
     }
 
+    TEST_F(LuaScriptsContainerTest, ProtectedReusePreservesLazyInitTimersAndSave)
+    {
+        constexpr VFS::Path::NormalizedView path("protected-init.lua");
+        VFSTestFile source(R"X(
+            local fixture = require('fixture.init')
+            fixture.source()
+            local value = 0
+            return {
+                engineHandlers = {
+                    onInit = function() value = 7; fixture.ready() end,
+                    onSave = function() return { value = value } end,
+                    onLoad = function(data) value = data.value; fixture.loaded(value) end,
+                },
+                eventHandlers = { Probe = function() fixture.loaded(value) end },
+            }
+        )X");
+        for (bool reuse : { false, true })
+        {
+            auto vfs = createTestVFS({ { path, &source } });
+            LuaUtil::ScriptsConfiguration cfg;
+            ESM::LuaScriptsCfg scriptsCfg;
+            LuaUtil::parseOMWScripts(scriptsCfg, "NPC: protected-init.lua");
+            cfg.init(std::move(scriptsCfg), false);
+            LuaUtil::LuaState lua(vfs.get(), &cfg);
+            lua.setProtectedCallReuse(reuse);
+            LuaUtil::ScriptsContainer scripts(&lua, "ProtectedInit", nullptr, false);
+            scripts.setAutoStartConf(cfg.getLocalConf(ESM::REC_NPC_, ESM::RefId(), ESM::RefNum()));
+            std::vector<int> order;
+            const int scriptId = *cfg.findId(path);
+            lua.protectedCall([&](LuaUtil::LuaView& view) {
+                sol::table fixture = view.newTable();
+                fixture["source"] = [&] { order.push_back(1); };
+                fixture["ready"] = [&] {
+                    order.push_back(2);
+                    using Timer = LuaUtil::ScriptsContainer::TimerType;
+                    scripts.setupUnsavableTimer(Timer::GAME_TIME, 5, scriptId,
+                        sol::make_object(view.sol(), [&] { order.push_back(4); }));
+                    scripts.setupUnsavableTimer(Timer::SIMULATION_TIME, 5, scriptId,
+                        sol::make_object(view.sol(), [&] { order.push_back(3); }));
+                };
+                fixture["loaded"] = [&](int value) { order.push_back(value); };
+                scripts.addPackage("fixture.init", LuaUtil::makeReadOnly(fixture));
+                // The timer pass must still materialize the previously unloaded
+                // container and fire timers scheduled by initialization, even
+                // with idle fast paths and protected reuse enabled.
+                scripts.processTimers(5, 5, true);
+                EXPECT_EQ(order, (std::vector<int>{ 1, 2, 3, 4 }));
+                scripts.processTimers(5, 5, true);
+                EXPECT_EQ(order, (std::vector<int>{ 1, 2, 3, 4 }));
+                ESM::LuaScripts saved;
+                scripts.save(saved);
+                scripts.load(saved);
+                scripts.receiveEvent("Probe", "");
+                EXPECT_EQ(order, (std::vector<int>{ 1, 2, 3, 4, 1, 7, 7 }));
+            });
+            if (reuse)
+                EXPECT_GT(lua.protectedCallStats().mReusedCalls, 0);
+        }
+    }
+
     TEST_F(LuaScriptsContainerTest, Timers)
     {
         using TimerType = LuaUtil::ScriptsContainer::TimerType;
