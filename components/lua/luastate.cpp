@@ -11,6 +11,9 @@
 #include <set>
 #include <cstdlib>
 #include <atomic>
+#include <cstring>
+#include <limits>
+#include <memory>
 
 #if defined(_WIN32) && !defined(NO_LUAJIT)
 #include <windows.h>
@@ -217,6 +220,14 @@ namespace LuaUtil
 
         if (!ptr)
             osize = 0;
+        const std::uint64_t positiveGrowth = nsize > osize ? nsize - osize : 0;
+        if (self->mPreparedAllocationActive && self->mPreparedAllocationMayDeny
+            && positiveGrowth > self->mPreparedAllocationLimit
+                - (std::min)(self->mPreparedAllocationGrowth, self->mPreparedAllocationLimit))
+        {
+            self->mPreparedAllocationDenied = true;
+            return nullptr;
+        }
         int64_t smallAllocDelta = 0, bigAllocDelta = 0;
         if (osize <= smallAllocSize)
             smallAllocDelta -= osize;
@@ -270,6 +281,15 @@ namespace LuaUtil
             return nullptr;
         }
         self->mTotalMemoryUsage += smallAllocDelta + bigAllocDelta;
+        if (self->mPreparedAllocationActive)
+        {
+            // This scope includes successful temporary growth even if GC frees
+            // unrelated objects. It is independent of Deep diagnostics/clocks.
+            self->mPreparedAllocationGrowth = positiveGrowth > std::numeric_limits<std::uint64_t>::max()
+                    - self->mPreparedAllocationGrowth
+                ? std::numeric_limits<std::uint64_t>::max()
+                : self->mPreparedAllocationGrowth + positiveGrowth;
+        }
         if (diagnostic)
         {
             Debug::DiagnosticObserver::Scope observer(Debug::DiagnosticObserver::Category::LuaAllocatorBookkeeping);
@@ -696,7 +716,7 @@ namespace LuaUtil
         {
             Debug::V36LuaAddScriptTrace::PhaseScope v36CachedChunk(
                 Debug::V36LuaAddScriptTrace::Phase::CachedChunkLoad);
-            script = loadScriptAndCache(path);
+            script = loadDirectScriptAndCache(path);
         }
 
         const auto v36EnvironmentStart = Debug::V36LuaAddScriptTrace::startPhase();
@@ -924,13 +944,311 @@ namespace LuaUtil
         return sol::main_table(prototype);
     }
 
-    sol::function LuaState::loadScriptAndCache(const VFS::Path::Normalized& path)
+    bool LuaState::configurePreparedScriptRoots(PreparedScriptRootLimits limits)
     {
+        if (mPreparingScriptRoot || !mActiveScriptIdStack.empty() || !mVFS || !mConf)
+        {
+            ++mPreparedScriptRootStats.mContextRefusals;
+            return false;
+        }
+        discardPreparedScriptRoots();
+        mPreparedScriptRootLimits = {};
+        if (!limits.mEnabled)
+            return true;
+#if LUA_VERSION_NUM != 501
+        // The preparation entry relies on the real 5.1 protected C call, not
+        // a push-before-pcall compatibility emulation on another Lua runtime.
+        ++mPreparedScriptRootStats.mUnsupportedVmRefusals;
+        return false;
+#endif
+        if (mPreparedScriptRootEpochExhausted)
+        {
+            ++mPreparedScriptRootStats.mGenerationRefusals;
+            return false;
+        }
+        if (!limits.mMaxRoots || limits.mMaxRoots > sMaxPreparedScriptRoots || !limits.mMaxPositiveBytes)
+        {
+            ++mPreparedScriptRootStats.mCapacityRefusals;
+            return false;
+        }
+        mPreparedScriptRootLimits = limits;
+        return true;
+    }
+
+    std::size_t LuaState::preparedScriptRootMetadataBytes() const
+    {
+        // Logical fixed native storage, not an estimate of OS allocation size.
+        return sizeof(mPreparedScriptRoots);
+    }
+
+    void LuaState::discardPreparedScriptRoots()
+    {
+        if (!mPreparedScriptRootStats.mPendingRoots)
+            return;
+        for (auto& root : mPreparedScriptRoots)
+        {
+            if (!root.mFunction)
+                continue;
+            root.mFunction.reset();
+            root.mPath = nullptr;
+            root.mBytecode = nullptr;
+            root.mCacheEpoch = root.mVfsEpoch = root.mPositiveBytes = 0;
+            ++mPreparedScriptRootStats.mDiscarded;
+        }
+        mPreparedScriptRootStats.mPendingRoots = 0;
+        mPreparedScriptRootStats.mPendingPositiveBytes = 0;
+    }
+
+    void LuaState::discardStalePreparedScriptRoots()
+    {
+        if (!mPreparedScriptRootStats.mPendingRoots)
+            return;
+        const auto vfsEpoch = mVFS->getIndexGeneration();
+        for (const auto& root : mPreparedScriptRoots)
+            if (root.mFunction && (root.mCacheEpoch != mScriptCacheEpoch || root.mVfsEpoch != vfsEpoch))
+            {
+                ++mPreparedScriptRootStats.mStaleRefusals;
+                discardPreparedScriptRoots();
+                return;
+            }
+    }
+
+    void LuaState::dropScriptCache()
+    {
+        // Discard borrowed entry/key addresses BEFORE clearing their map. A
+        // preparation in flight owns its input copy and fails the epoch check.
+        discardPreparedScriptRoots();
+        if (mScriptCacheEpoch == std::numeric_limits<std::uint64_t>::max())
+        {
+            mPreparedScriptRootEpochExhausted = true;
+            mPreparedScriptRootLimits.mEnabled = false;
+            ++mPreparedScriptRootStats.mGenerationRefusals;
+        }
+        else
+            ++mScriptCacheEpoch;
+        mCompiledScripts.clear();
+    }
+
+    std::size_t LuaState::prepareScriptRoots(const VFS::Path::Normalized& path, std::size_t count)
+    {
+        if (!mPreparedScriptRootLimits.mEnabled || !count)
+            return 0;
+        if (mPreparingScriptRoot || !mActiveScriptIdStack.empty())
+        {
+            ++mPreparedScriptRootStats.mContextRefusals;
+            return 0;
+        }
+        void* allocatorOwner = nullptr;
+        if (lua_getallocf(mLuaState.get(), &allocatorOwner) != &trackingAllocator || allocatorOwner != this)
+        {
+            ++mPreparedScriptRootStats.mUntrackedRefusals;
+            return 0;
+        }
+        discardStalePreparedScriptRoots();
+        std::size_t created = 0;
+        // At most the fixed slot count, regardless of a caller's requested count.
+        for (std::size_t attempt = 0; attempt < count && attempt < sMaxPreparedScriptRoots; ++attempt)
+        {
+            if (mPreparedScriptRootStats.mPendingRoots >= mPreparedScriptRootLimits.mMaxRoots)
+            {
+                ++mPreparedScriptRootStats.mCapacityRefusals;
+                break;
+            }
+            const auto iter = mCompiledScripts.find(path);
+            if (iter == mCompiledScripts.end())
+            {
+                ++mPreparedScriptRootStats.mMissingBytecodeRefusals;
+                break;
+            }
+            const auto cacheEpoch = mScriptCacheEpoch;
+            const auto vfsEpoch = mVFS->getIndexGeneration();
+            const std::size_t codeSize = iter->second.size();
+            const std::size_t nameSize = iter->first.value().size();
+            const auto remaining = mPreparedScriptRootLimits.mMaxPositiveBytes
+                - mPreparedScriptRootStats.mPendingPositiveBytes;
+            if (!codeSize || nameSize == std::numeric_limits<std::size_t>::max()
+                || codeSize > remaining || nameSize + 1 > remaining - codeSize)
+            {
+                ++mPreparedScriptRootStats.mBudgetRefusals;
+                break;
+            }
+            const std::uint64_t nativeBytes = std::uint64_t(codeSize) + std::uint64_t(nameSize) + 1;
+            std::unique_ptr<char[]> code, name;
+            try
+            {
+                // Exact requested array sizes, including temporary overlap. The
+                // ordinary bytecode cache remains unchanged. GC/native reentry
+                // can clear that cache without invalidating this reader's bytes.
+                code = std::make_unique<char[]>(codeSize);
+                mPreparedScriptRootStats.mPreparationNativeBytes += codeSize;
+                name = std::make_unique<char[]>(nameSize + 1);
+                mPreparedScriptRootStats.mPreparationNativeBytes += nameSize + 1;
+            }
+            catch (const std::bad_alloc&)
+            {
+                ++mPreparedScriptRootStats.mFailures;
+                break;
+            }
+            std::memcpy(code.get(), iter->second.data(), codeSize);
+            std::memcpy(name.get(), iter->first.value().data(), nameSize);
+            name[nameSize] = '\0';
+            sol::function candidate;
+            const int originalTop = lua_gettop(mLuaState.get());
+            mPreparingScriptRoot = true;
+            mPreparedAllocationLimit = remaining - nativeBytes;
+            mPreparedAllocationGrowth = 0;
+            mPreparedAllocationDenied = false;
+            mPreparedAllocationActive = true;
+            mPreparedAllocationMayDeny = true;
+            bool failed = false;
+#if LUA_VERSION_NUM == 501
+            struct PreparationCall
+            {
+                const char* mCode;
+                std::size_t mCodeSize;
+                const char* mName;
+                sol::function* mCandidate;
+                std::uint64_t* mLoads;
+                bool mCppFailure = false;
+            } job{ code.get(), codeSize, name.get(), &candidate,
+                &mPreparedScriptRootStats.mPreparationBytecodeLoads };
+            try
+            {
+                // Unlike protectedCall, lua_cpcall also protects allocation of
+                // its C entry closure and userdata argument. The exact 5.1 API
+                // contains both optional-budget and global VM OOM failures.
+                const int status = lua_cpcall(mLuaState.get(), [](lua_State* state) -> int {
+                    auto* call = static_cast<PreparationCall*>(lua_touserdata(state, 1));
+                    try
+                    {
+                        ++*call->mLoads;
+                        if (luaL_loadbufferx(state, call->mCode, call->mCodeSize, call->mName, "b") == LUA_OK)
+                            *call->mCandidate = sol::stack::get<sol::function>(state, -1);
+                        lua_pop(state, 1); // loaded function or optional load error
+                    }
+                    catch (const std::exception&)
+                    {
+                        call->mCppFailure = true;
+                    }
+                    return 0;
+                }, &job);
+                failed = status != LUA_OK || job.mCppFailure;
+            }
+            catch (...)
+            {
+                failed = true;
+            }
+#else
+            failed = true; // configuration refuses this unsupported VM above
+#endif
+            // These flags live outside the Lua C frame: a longjmp/OOM cannot
+            // leave preparation admission active for ordinary script execution.
+            mPreparedAllocationMayDeny = false;
+            mPreparedAllocationActive = false;
+            mPreparingScriptRoot = false;
+            lua_settop(mLuaState.get(), originalTop);
+            const auto luaBytes = mPreparedAllocationGrowth;
+            mPreparedScriptRootStats.mPreparationPositiveLuaBytes += luaBytes;
+            if (mPreparedAllocationDenied || luaBytes > remaining - nativeBytes)
+            {
+                ++mPreparedScriptRootStats.mBudgetRefusals;
+                break;
+            }
+            if (failed || !candidate.valid())
+            {
+                ++mPreparedScriptRootStats.mFailures;
+                break;
+            }
+            if (cacheEpoch != mScriptCacheEpoch || vfsEpoch != mVFS->getIndexGeneration()
+                || !mPreparedScriptRootLimits.mEnabled)
+            {
+                ++mPreparedScriptRootStats.mStaleRefusals;
+                break;
+            }
+            auto slot = std::find_if(mPreparedScriptRoots.begin(), mPreparedScriptRoots.end(),
+                [](const PreparedScriptRoot& root) { return !root.mFunction; });
+            // Moves transfer a registry reference without another Lua allocation.
+            slot->mFunction.emplace(std::move(candidate));
+            slot->mPath = &iter->first;
+            slot->mBytecode = &iter->second;
+            slot->mCacheEpoch = cacheEpoch;
+            slot->mVfsEpoch = vfsEpoch;
+            slot->mPositiveBytes = nativeBytes + luaBytes;
+            mPreparedScriptRootStats.mPendingPositiveBytes += slot->mPositiveBytes;
+            ++mPreparedScriptRootStats.mPendingRoots;
+            ++mPreparedScriptRootStats.mCreated;
+            mPreparedScriptRootStats.mPeakPendingPositiveBytes = (std::max)(
+                mPreparedScriptRootStats.mPeakPendingPositiveBytes, mPreparedScriptRootStats.mPendingPositiveBytes);
+            ++created;
+        }
+        return created;
+    }
+
+    std::size_t LuaState::prepareConfiguredScriptRoots(std::size_t rootsPerScript)
+    {
+        if (!mPreparedScriptRootLimits.mEnabled || mPreparingScriptRoot || !mActiveScriptIdStack.empty()
+            || !mVFS || !mConf)
+            return 0;
+        std::size_t created = 0;
+        const auto epoch = mScriptCacheEpoch;
+        for (std::size_t i = 0; i < mConf->size(); ++i)
+        {
+            const auto& entry = (*mConf)[i];
+            if (entry.mFlags & (ESM::LuaScriptCfg::sGlobal | ESM::LuaScriptCfg::sMenu
+                    | ESM::LuaScriptCfg::sLoad | ESM::LuaScriptCfg::sPlayer))
+                continue;
+            created += prepareScriptRoots(entry.mScriptPath, rootsPerScript);
+            if (epoch != mScriptCacheEpoch || mPreparedScriptRootEpochExhausted
+                || mPreparedScriptRootStats.mPendingRoots >= mPreparedScriptRootLimits.mMaxRoots)
+                break;
+        }
+        return created;
+    }
+
+    sol::function LuaState::loadDirectScriptAndCache(const VFS::Path::Normalized& path)
+    {
+        if (mPreparedScriptRootLimits.mEnabled)
+        {
+            discardStalePreparedScriptRoots();
+            if (mPreparingScriptRoot || !mActiveScriptIdStack.empty())
+                ++mPreparedScriptRootStats.mContextRefusals;
+            else
+            {
+                const auto entry = mCompiledScripts.find(path);
+                if (entry != mCompiledScripts.end())
+                    for (auto& root : mPreparedScriptRoots)
+                        if (root.mFunction && root.mBytecode == &entry->second && root.mPath == &entry->first)
+                        {
+                            sol::function result(std::move(*root.mFunction));
+                            root.mFunction.reset();
+                            --mPreparedScriptRootStats.mPendingRoots;
+                            mPreparedScriptRootStats.mPendingPositiveBytes -= root.mPositiveBytes;
+                            mPreparedScriptRootStats.mTransferredPositiveBytes += root.mPositiveBytes;
+                            root.mPath = nullptr;
+                            root.mBytecode = nullptr;
+                            root.mCacheEpoch = root.mVfsEpoch = root.mPositiveBytes = 0;
+                            ++mPreparedScriptRootStats.mConsumed;
+                            return result;
+                        }
+            }
+        }
+        return loadScriptAndCache(path, true);
+    }
+
+    sol::function LuaState::loadScriptAndCache(const VFS::Path::Normalized& path, bool direct)
+    {
+        if (mPreparedScriptRootLimits.mEnabled)
+        {
+            if (direct) ++mPreparedScriptRootStats.mOrdinaryDirectLoads;
+            else ++mPreparedScriptRootStats.mOrdinaryModuleLoads;
+        }
         Debug::HitchTrace::Scope cached("lua.chunk_cache", {}, path.value());
         auto iter = mCompiledScripts.find(path);
         cached.setMetric(0, "cache_hit", iter != mCompiledScripts.end());
         if (iter != mCompiledScripts.end())
         {
+            if (mPreparedScriptRootLimits.mEnabled)
+                ++mPreparedScriptRootStats.mOrdinaryBytecodeLoads;
             sol::load_result res = mSol.load(iter->second.as_string_view(), path.value(), sol::load_mode::binary);
             // Unless we have memory corruption issues, the bytecode is valid at this point, but loading might still
             // fail because we've hit our Lua memory cap

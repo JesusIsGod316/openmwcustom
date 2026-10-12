@@ -28,6 +28,11 @@ namespace Settings
         SettingValue<bool> mProtectedCallReuse{ mIndex, "Lua", "protected call reuse" };
         // Startup-only. Instruction hook/watchdog and profiler boundary order remain unchanged.
         SettingValue<bool> mLazyInstructionStatistics{ mIndex, "Lua", "lazy instruction statistics" };
+        // Startup-only fresh closures; existing configured precompile is a
+        // declared prerequisite, never enabled implicitly by this candidate.
+        SettingValue<bool> mPrepareFreshScriptRoots{ mIndex, "Lua", "prepare fresh script roots" };
+        SettingValue<int> mPreparedScriptRootsMax{ mIndex, "Lua", "prepared script roots max", makeClampSanitizerInt(0, 64) };
+        SettingValue<int> mPreparedScriptRootsMib{ mIndex, "Lua", "prepared script roots mib", makeClampSanitizerInt(0, 16) };
         // V3.20 stock-semantic handler and pure-conversion fast paths.
         SettingValue<bool> mV320EngineLuaFastPaths{ mIndex, "Lua", "engine event fast paths" };
         SettingValue<bool> mV320SoundConversionCache{ mIndex, "Lua", "sound conversion cache" };

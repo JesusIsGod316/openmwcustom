@@ -260,6 +260,40 @@ namespace LuaUtil
         DiagnosticVmSamples diagnosticVmSamples() const { return mDiagnosticVmSamples; }
         bool diagnosticVmSamplerStarted() const { return mVmProfileStop != nullptr; }
 
+        // Loading/bootstrap owner only. These are fresh, single-use functions;
+        // neither script bodies nor package factories run during preparation.
+        // Module require and util.loadCode keep their ordinary loader path.
+        static constexpr std::size_t sMaxPreparedScriptRoots = 64;
+        struct PreparedScriptRootLimits
+        {
+            bool mEnabled = false;
+            std::size_t mMaxRoots = 0;
+            std::uint64_t mMaxPositiveBytes = 0;
+        };
+        struct PreparedScriptRootStats
+        {
+            std::uint64_t mCreated = 0, mConsumed = 0, mDiscarded = 0;
+            std::uint64_t mOrdinaryDirectLoads = 0, mOrdinaryModuleLoads = 0;
+            std::uint64_t mUntrackedRefusals = 0, mContextRefusals = 0;
+            std::uint64_t mCapacityRefusals = 0, mBudgetRefusals = 0, mFailures = 0;
+            std::uint64_t mMissingBytecodeRefusals = 0;
+            std::uint64_t mUnsupportedVmRefusals = 0;
+            std::uint64_t mStaleRefusals = 0, mGenerationRefusals = 0;
+            std::uint64_t mOrdinaryBytecodeLoads = 0, mPreparationBytecodeLoads = 0;
+            std::uint64_t mPreparationPositiveLuaBytes = 0, mPreparationNativeBytes = 0;
+            std::uint64_t mTransferredPositiveBytes = 0, mPeakPendingPositiveBytes = 0;
+            std::size_t mPendingRoots = 0;
+            std::uint64_t mPendingPositiveBytes = 0;
+        };
+        bool configurePreparedScriptRoots(PreparedScriptRootLimits limits);
+        std::size_t prepareScriptRoots(const VFS::Path::Normalized& path, std::size_t count = 1);
+        std::size_t prepareConfiguredScriptRoots(std::size_t rootsPerScript = 1);
+        void discardPreparedScriptRoots();
+        // Read only after the VM owner has joined. Charges conservatively include
+        // temporary growth/scratch; transfer is not freed memory or a Proto census.
+        PreparedScriptRootStats preparedScriptRootStats() const { return mPreparedScriptRootStats; }
+        std::size_t preparedScriptRootMetadataBytes() const;
+
         // Note that constructing a sol::state_view is only safe from a Lua context. Use protectedCall to get one
         lua_State* unsafeState() const { return mSol.lua_state(); }
 
@@ -287,7 +321,7 @@ namespace LuaUtil
             const sol::main_object& hiddenData = sol::nil, const sol::main_table* packagePrototype = nullptr,
             ScriptId scriptId = {}, bool additionalPackagesReadOnly = false);
 
-        void dropScriptCache() { mCompiledScripts.clear(); }
+        void dropScriptCache();
 
         // V3.12: compile configured top-level scripts into the existing bytecode
         // cache without creating a sandbox or executing script code.
@@ -352,13 +386,16 @@ namespace LuaUtil
 
     private:
         friend class ScriptsContainer;
+        friend struct PreparedScriptRootTestAccess;
         template <typename... Args>
         friend sol::protected_function_result call(const sol::protected_function& fn, Args&&... args);
         template <typename... Args>
         friend sol::protected_function_result call(
             ScriptId scriptId, const sol::protected_function& fn, Args&&... args);
 
-        sol::function loadScriptAndCache(const VFS::Path::Normalized& path);
+        sol::function loadScriptAndCache(const VFS::Path::Normalized& path, bool direct = false);
+        sol::function loadDirectScriptAndCache(const VFS::Path::Normalized& path);
+        void discardStalePreparedScriptRoots();
         static void countHook(lua_State* state, lua_Debug* ar);
         static void* trackingAllocator(void* ud, void* ptr, size_t osize, size_t nsize);
         static void vmProfileCallback(void* data, lua_State*, int samples, int state);
@@ -410,6 +447,15 @@ namespace LuaUtil
         uint64_t mSmallAllocMemoryUsage = 0;
         std::vector<int64_t> mMemoryUsage;
 
+        // Allocator flags must exist before constructing mLuaState. Positive
+        // successful growth is charged without subtracting unrelated GC frees.
+        bool mPreparingScriptRoot = false;
+        bool mPreparedAllocationActive = false;
+        bool mPreparedAllocationMayDeny = false;
+        bool mPreparedAllocationDenied = false;
+        std::uint64_t mPreparedAllocationLimit = 0;
+        std::uint64_t mPreparedAllocationGrowth = 0;
+
         // Must be declared before mSol and all sol-related objects. Then on exit it will be destructed the last.
         LuaStatePtr mLuaState;
 
@@ -417,6 +463,20 @@ namespace LuaUtil
         const ScriptsConfiguration* mConf;
         sol::table mSandboxEnv;
         std::map<VFS::Path::Normalized, sol::bytecode> mCompiledScripts;
+        struct PreparedScriptRoot
+        {
+            const VFS::Path::Normalized* mPath = nullptr;
+            const sol::bytecode* mBytecode = nullptr;
+            std::uint64_t mCacheEpoch = 0, mVfsEpoch = 0, mPositiveBytes = 0;
+            std::optional<sol::function> mFunction;
+        };
+        // Fixed metadata: no per-token native map, path copy or container lease.
+        // These registry references are destroyed before the Lua VM/cache.
+        std::array<PreparedScriptRoot, sMaxPreparedScriptRoots> mPreparedScriptRoots;
+        PreparedScriptRootLimits mPreparedScriptRootLimits;
+        PreparedScriptRootStats mPreparedScriptRootStats;
+        std::uint64_t mScriptCacheEpoch = 1;
+        bool mPreparedScriptRootEpochExhausted = false;
         std::map<std::string, sol::object> mCommonPackages;
         // Keys and values refer to stable nodes owned by mCommonPackages. Keys
         // are never erased during a LuaState lifetime; registration invalidates

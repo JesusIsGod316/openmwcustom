@@ -234,6 +234,18 @@ namespace MWLua
         , mV320LuaProfilerRecorder(std::make_unique<V320LuaProfilerRecorder>())
     {
         mLua.setProtectedCallReuse(Settings::lua().mProtectedCallReuse);
+        const bool requestedFreshRoots = Settings::lua().mPrepareFreshScriptRoots;
+        const bool precompile = Settings::cells().mV312LuaPrecompile;
+        const bool configuredFreshRoots = mLua.configurePreparedScriptRoots({ requestedFreshRoots && precompile,
+            static_cast<std::size_t>(Settings::lua().mPreparedScriptRootsMax.get()),
+            static_cast<std::uint64_t>(Settings::lua().mPreparedScriptRootsMib.get()) * 1024 * 1024 });
+        if (requestedFreshRoots)
+            Log(Debug::Info) << "OptimizedMW fresh script roots: requested=1 configured="
+                << (precompile && configuredFreshRoots) << " precompile_required=1 precompile_enabled=" << precompile
+                << " max_roots=" << Settings::lua().mPreparedScriptRootsMax.get()
+                << " max_positive_mib=" << Settings::lua().mPreparedScriptRootsMib.get()
+                << " metadata_bytes=" << mLua.preparedScriptRootMetadataBytes()
+                << " scope=fresh_direct_roots_not_executed_function_reuse";
         mLua.startDiagnosticVmSampler();
         initializeObjectCaches(mLua.unsafeState(), Settings::lua().mOptimizedMWObjectUserdataCache);
         Log(Debug::Info) << "Lua version: " << LuaUtil::getLuaVersion();
@@ -249,6 +261,17 @@ namespace MWLua
 
     LuaManager::~LuaManager()
     {
+        if (Settings::lua().mPrepareFreshScriptRoots)
+        {
+            const auto roots = mLua.preparedScriptRootStats();
+            Log(Debug::Info) << "OptimizedMW fresh script root work: created=" << roots.mCreated
+                << " consumed=" << roots.mConsumed << " discarded=" << roots.mDiscarded
+                << " ordinary_direct=" << roots.mOrdinaryDirectLoads << " ordinary_modules=" << roots.mOrdinaryModuleLoads
+                << " missing_bytecode=" << roots.mMissingBytecodeRefusals << " untracked_refusals=" << roots.mUntrackedRefusals
+                << " budget_refusals=" << roots.mBudgetRefusals << " failures=" << roots.mFailures
+                << " pending_roots=" << roots.mPendingRoots << " pending_positive_bytes=" << roots.mPendingPositiveBytes
+                << " scope=lifetime_counts_not_interval_saved_time_or_process_RAM";
+        }
         const auto instructionWork = mLua.instructionStatisticsWork();
         Log(Debug::Info) << "OptimizedMW instruction statistics: enabled=" << mLua.getSettings().mLazyInstructionStatistics
             << " container_boundaries=" << instructionWork.mContainerFrameBoundaries
@@ -378,6 +401,18 @@ namespace MWLua
             mInitialized = true;
             mMenuScripts.addAutoStartedScripts();
         });
+        // loadData's async precompile has joined before this method. Enter the
+        // main VM only after its protected bootstrap call returns; no Worker,
+        // module-yield, script-body or package-factory path is replaced.
+        if (Settings::lua().mPrepareFreshScriptRoots && Settings::cells().mV312LuaPrecompile)
+        {
+            const auto created = mLua.prepareConfiguredScriptRoots();
+            const auto roots = mLua.preparedScriptRootStats();
+            Log(Debug::Info) << "OptimizedMW fresh script root bootstrap: created=" << created
+                << " pending_roots=" << roots.mPendingRoots << " pending_positive_bytes=" << roots.mPendingPositiveBytes
+                << " missing_bytecode=" << roots.mMissingBytecodeRefusals
+                << " scope=bootstrap_deserialization_only_later_consumption_required";
+        }
     }
 
     void LuaManager::loadPermanentStorage(const std::filesystem::path& userConfigPath)
