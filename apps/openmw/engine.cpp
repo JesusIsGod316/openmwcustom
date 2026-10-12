@@ -1934,7 +1934,7 @@ void OMW::Engine::prepareEngine()
     mResourceSystem = std::make_unique<Resource::ResourceSystem>(mVFS.get(), effectiveResourceCacheExpiry,
         &mEncoder.get()->getStatelessEncoder(), Settings::RamCache::retainNifFiles());
     mResourceSystem->configureLoadingNifMaintenance(
-        Settings::Manager::getBool("loading nif maintenance", "Cells"));
+            Settings::cells().mLoadingNifMaintenance);
     mResourceSystem->getImageManager()->configureCanonicalPublication(Settings::cells().mCanonicalImagePublication);
     Log(Debug::Info) << "OptimizedMW canonical image publication: enabled="
         << static_cast<bool>(Settings::cells().mCanonicalImagePublication)

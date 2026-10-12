@@ -2,6 +2,8 @@
 #include "components/settings/parser.hpp"
 #include "components/settings/values.hpp"
 
+#include <iostream>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -35,6 +37,32 @@ namespace Settings
             Index index;
             Values values(index);
             EXPECT_EQ(values.mCamera.mFieldOfView.get(), 60);
+        }
+
+        TEST_F(SettingsValuesTest, shouldRegisterEveryDefaultBeforeEngineConstruction)
+        {
+            // Full Values construction alone used to miss extra defaults. The
+            // real startup loader additionally rejects every unregistered key.
+            // Prefer the actual installed/generated payload when run from a
+            // package or build directory, before launching a world instance.
+            const auto installed = std::filesystem::current_path() / "defaults.bin";
+            const bool encoded = std::filesystem::exists(installed);
+            Manager::clear();
+            struct Cleanup { ~Cleanup() { Manager::clear(); } } cleanup;
+            SettingsFileParser parser;
+            parser.loadSettingsFile(encoded ? installed : mSettingsDefaultPath,
+                Manager::mDefaultSettings, encoded);
+            const auto declared = Manager::mDefaultSettings;
+            StaticValues::initDefaults();
+            Manager::mUserSettings[{ "Cells", "loading nif maintenance" }] = "true";
+            StaticValues::init();
+            for (const auto& [key, value] : declared)
+                EXPECT_TRUE(Manager::sInitialized.contains(key))
+                    << "Unregistered startup default [" << key.first << "] " << key.second;
+            EXPECT_TRUE(cells().mLoadingNifMaintenance);
+            EXPECT_FALSE(lua().mLazyInstructionStatistics);
+            std::cout << "Settings registry checked " << declared.size() << " defaults from "
+                      << (encoded ? installed : mSettingsDefaultPath) << '\n';
         }
 
         TEST_F(SettingsValuesTest, shouldFillIndexOnLoad)
