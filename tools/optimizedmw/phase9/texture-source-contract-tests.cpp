@@ -5,7 +5,6 @@
 #include <components/resource/sharedstatecache.hpp>
 #include <components/vfs/archive.hpp>
 #include <osg/DisplaySettings>
-#include <osg/ContextData>
 #include <osg/GraphicsContext>
 #include <osg/Group>
 #include <osg/State>
@@ -258,12 +257,18 @@ int main() try
     // The real nonzero pool steals an active object irrespective of an extra
     // ref_ptr pin. Its GL name, pointer, extent and format can all stay the
     // same while the color/source changes: also a DLSS storage-identity gate.
-    auto* pool=osg::get<osg::TextureObjectManager>(state->getContextID());
-    pool->flushAllDeletedGLObjects();state->setMaxTexturePoolSize(8192);pool->newFrame(nullptr);
+    state->setMaxTexturePoolSize(8192);
     osg::ref_ptr<PersistentTexture> poolSource=new PersistentTexture(manager->getImage(VFS::Path::Normalized("textures/green.tga")),budget,true);
     manager->clearCache();poolSource->apply(*state);pixels(*poolSource,*state,green);
     require(!poolSource->getImage() && !budget->stats().knownOwnerBytes,"Independent immutable-source candidate retires its CPU backing with an actual nonzero pool");
     osg::ref_ptr<osg::Texture::TextureObject> pinnedObject=poolSource->getTextureObject(state->getContextID());
+    // Follow the actual allocated object's production owner. ContextData's
+    // template registry keys type_info addresses; the EXE/DLL boundary may
+    // give a separately-created manager, not the one which owns this pool.
+    auto* pool=pinnedObject->_set->getParent();
+    require(pool && pool->getMaxTexturePoolSize()==state->getMaxTexturePoolSize()
+        && pool->getCurrTexturePoolSize()!=0,"Native workload advances the actual allocated texture's production pool manager");
+    pool->flushAllDeletedGLObjects();pool->newFrame(nullptr);
     const auto pinnedName=pinnedObject->id();std::vector<osg::ref_ptr<PersistentTexture>> competitors;bool stolen=false;
     for(unsigned i=0;i<12 && !stolen;++i)
     {
