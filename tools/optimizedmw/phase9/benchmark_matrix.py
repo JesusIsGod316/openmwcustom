@@ -421,6 +421,8 @@ def run_matrix(plan_path, output):
     pins.append(identity(indirect_work.__file__))
     pins.append(identity(image_publication_work.__file__))
     pins += [identity(lua_protected_work.__file__), identity(lua_vm_states.__file__)]
+    if plan.get('runtime_guard_checkpoint'):
+        pins.append(identity(game/'benchmark_supervisor.py'))
     dependencies = runtime_dependencies.runtime_closure(game)
     pins.append(identity(runtime_dependencies.__file__))
     pins += [identity(path) for path in dependencies['files'] if Path(path) != game/'openmw.exe']
