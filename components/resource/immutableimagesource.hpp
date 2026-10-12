@@ -9,6 +9,8 @@
 #include <osgDB/Options>
 #include <osgDB/Registry>
 #include <osgDB/FileNameUtils>
+#include <osg/UserDataContainer>
+#include <osg/observer_ptr>
 #include <atomic>
 #include <compare>
 #include <istream>
@@ -21,6 +23,41 @@
 
 namespace Resource::ImageSource
 {
+    // An allocation charge follows the actual Image's CPU lifetime, including
+    // readers which outlive the returned decoder lease. Copying user metadata
+    // never transfers this original allocation authority to a cloned Image.
+    class BackingReceipt final : public osg::Object
+    {
+    public:
+        BackingReceipt() = default;
+        BackingReceipt(osg::Image* image,SpeculativeBudget::ChargePtr charge)
+            : mCharge(std::move(charge)),mOwner(image),mData(image->data()),mBytes(imagePayloadExtent(*image).bytes) {}
+        BackingReceipt(const BackingReceipt& other,const osg::CopyOp& copy)
+            : osg::Object(other,copy) {} // Deliberately no copied charge/owner.
+        META_Object(Resource,BackingReceipt)
+        const SpeculativeBudget::ChargePtr mCharge;
+        const osg::observer_ptr<osg::Image> mOwner;
+        const unsigned char* const mData=nullptr;
+        const std::uint64_t mBytes=0;
+    };
+    inline std::uint64_t ownedBackingBytes(const osg::Image& image)
+    {
+        const auto* data=image.getUserDataContainer();
+        if (!data) return 0;
+        for (unsigned i=0;i<data->getNumUserObjects();++i)
+            if (const auto* receipt=dynamic_cast<const BackingReceipt*>(data->getUserObject(i));
+                receipt && receipt->mOwner.get()==&image && receipt->mData==image.data() && receipt->mCharge)
+                return receipt->mBytes;
+        return 0;
+    }
+    inline bool adoptBacking(osg::Image& image,SpeculativeBudget* budget,SpeculativeBudget::Stage& stage)
+    {
+        const auto extent=imagePayloadExtent(image);
+        if (!budget || !extent || stage.future()<extent.bytes || !image.data()) return false;
+        auto charge=budget->track({image.data(),1},extent.bytes,true,&stage);
+        image.getOrCreateUserDataContainer()->addUserObject(new BackingReceipt(&image,std::move(charge)));
+        return true;
+    }
     class SourceBuffer : public std::streambuf
     {
     public:
@@ -276,6 +313,48 @@ namespace Resource::ImageSource
                 // Source bytes and their separate reservation die locally.
                 // Only the output/decode grant survives with the image lease.
                 return {std::move(decodedReservation),std::move(image)};
+            }
+            catch (...) { return {}; }
+        }
+        // Factory/CPU-consumer boundary. Unlike extracting Decoded::image,
+        // this transfers the output grant to the actual backing lifetime and
+        // ends only source/scratch debt locally. A surviving ref_ptr stays
+        // charged after the temporary decoder lease and manager are gone.
+        osg::ref_ptr<osg::Image> reconstructOwned(SpeculativeBudget* budget,
+            const OpenGlPressureSample& sample) const noexcept
+        {
+            try
+            {
+                auto decoded=reconstruct(budget,sample);
+                if (!decoded || !adoptBacking(*decoded.image,budget,decoded.reservation)) return {};
+                return decoded.image;
+            }
+            catch (...) { return {}; }
+        }
+        osg::ref_ptr<osg::Image> cloneOwned(const osg::Image& original,SpeculativeBudget* budget,
+            const OpenGlPressureSample& sample) const noexcept
+        {
+            try
+            {
+                if (!budget || !matches(original)) return {};
+                const auto bytes=mRevision.layout.bytes;
+                auto reservation=budget->reserve(sample,bytes,SpeculativePriority::Background,true);
+                if (reservation.future()!=bytes) return {};
+                // osg::Image's stock copy uses its legacy compressed-size
+                // accessor. Use our checked exact span; a single-level BC1
+                // image in this installed OSG can report 4x its block payload.
+                auto payload=std::make_unique<unsigned char[]>(static_cast<std::size_t>(bytes));
+                std::memcpy(payload.get(),original.data(),static_cast<std::size_t>(bytes));
+                osg::ref_ptr<osg::Image> image=new osg::Image;
+                image->setImage(original.s(),original.t(),original.r(),original.getInternalTextureFormat(),
+                    original.getPixelFormat(),original.getDataType(),payload.get(),osg::Image::USE_NEW_DELETE,
+                    original.getPacking(),original.getRowLength());
+                payload.release();
+                image->setMipmapLevels(original.getMipmapLevels());image->setOrigin(original.getOrigin());
+                image->setPixelAspectRatio(original.getPixelAspectRatio());image->setFileName(original.getFileName());
+                image->setDataVariance(original.getDataVariance()); // Copy a proved source, never relabel an arbitrary decoder.
+                if (!matches(*image) || !adoptBacking(*image,budget,reservation)) return {};
+                return image;
             }
             catch (...) { return {}; }
         }

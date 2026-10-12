@@ -48,8 +48,11 @@ namespace
             : mRecipe(std::move(recipe)),mCharge(std::move(charge)),mOwner(image),
                 mData(image->data()),mModified(image->getModifiedCount()) {}
         SourcePublication(const SourcePublication& other,const osg::CopyOp& copy)
-            : osg::Object(other,copy),mRecipe(other.mRecipe),mCharge(other.mCharge),mOwner(other.mOwner),
-                mData(other.mData),mModified(other.mModified) {}
+            : osg::Object(other,copy),mRecipe(other.mRecipe) {}
+        // Metadata copies retain immutable source values only. Holding the old
+        // allocation charge after its original Image dies could alias a later
+        // allocation which reuses the same address. A distinct clone needs its
+        // own explicit output admission/charge; it never inherits this one.
         META_Object(Resource,SourcePublication)
         const std::shared_ptr<const Resource::ImageSource::Recipe> mRecipe;
         const Resource::SpeculativeBudget::ChargePtr mCharge;

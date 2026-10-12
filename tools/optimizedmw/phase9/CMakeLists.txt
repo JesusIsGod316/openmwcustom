@@ -387,7 +387,23 @@ endif()
 target_compile_definitions(p9-image-source-publication PRIVATE _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING)
 add_test(NAME p9-image-source-publication COMMAND p9-image-source-publication)
 set_tests_properties(p9-image-source-publication PROPERTIES TIMEOUT 60)
+add_executable(p9-texture-source-contract texture-source-contract-tests.cpp
+  ${ROOT}/components/resource/coldimage.cpp ${ROOT}/components/resource/imagemanager.cpp
+  ${ROOT}/components/resource/cachestats.cpp ${ROOT}/components/vfs/manager.cpp
+  ${ROOT}/components/files/conversion.cpp ${ROOT}/components/sceneutil/workqueue.cpp
+  ${ROOT}/components/sceneutil/glextensions.cpp ${ROOT}/components/debug/debuglog.cpp
+  ${ROOT}/components/misc/hostmemory.cpp)
+target_link_libraries(p9-texture-source-contract PRIVATE
+  ${OPENSCENEGRAPH_LIBRARIES} ${P9_CLOUD_OSGDB_LIBRARY} OpenGL::GL Threads::Threads LZ4::LZ4)
+target_compile_definitions(p9-texture-source-contract PRIVATE _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING)
+if(WIN32)
+  target_link_libraries(p9-texture-source-contract PRIVATE psapi)
+endif()
+add_test(NAME p9-texture-source-contract COMMAND p9-texture-source-contract)
+set_tests_properties(p9-texture-source-contract PROPERTIES TIMEOUT 60)
 if(MSVC)
+  target_compile_options(p9-texture-source-contract PRIVATE /Zi)
+  target_link_options(p9-texture-source-contract PRIVATE /DEBUG)
   target_compile_options(p9-image-source-publication PRIVATE /Zi)
   target_link_options(p9-image-source-publication PRIVATE /DEBUG)
   target_compile_options(p9-immutable-image-source PRIVATE /WX /Zi)

@@ -74,6 +74,13 @@ namespace
         }
         original->dirty();
         require(!ImageManager::imageSourceRecipe(*original),"Dirty CPU publication cannot keep its original immutable backing receipt");
+        osg::ref_ptr<osg::Object> metadataClone=original->clone(osg::CopyOp::DEEP_COPY_ALL);
+        manager.clearCache();original=nullptr;
+        require(!budget.stats().knownOwnerBytes && !budget.stats().experimentRetainedBytes,
+            "Copied metadata cannot pin an original allocation charge after its backing dies or alias a reused address");
+        auto fresh=manager.getImage(path);
+        require(budget.stats().knownOwnerBytes==imagePayloadExtent(*fresh).bytes,
+            "New actual publication owns its allocation charge while an unrelated metadata clone survives");
     }
     void paddedTga()
     {
