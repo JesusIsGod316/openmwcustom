@@ -89,6 +89,13 @@ int main() try
         auto image=descriptor(4,2,1,GL_RGBA,type,4);const auto extent=imagePayloadExtent(*image);
         require(extent && extent.bytes==4*2*ImagePayloadDetail::pixelBits(GL_RGBA,type)/8,"Supported scalar and packed raw types have checked extent");
     }
+    for(const auto format:{ImagePayloadDetail::RedInteger,ImagePayloadDetail::RgbInteger,ImagePayloadDetail::RgbaInteger,
+            ImagePayloadDetail::BgrInteger,ImagePayloadDetail::BgraInteger})
+    {
+        auto image=descriptor(4,2,1,format,GL_UNSIGNED_INT,4);
+        require(imagePayloadExtent(*image).bytes==4*2*ImagePayloadDetail::channels(format)*4,
+            "Core and Windows EXT integer-format aliases share the exact metadata extent");
+    }
     auto partial=descriptor(4,4,1,GL_RGBA,GL_UNSIGNED_BYTE,4);
     partial->setMipmapLevels({64});require(imagePayloadExtent(*partial).bytes==80,"Exact partial mip chain is supported");
     partial->setMipmapLevels({64,80});require(imagePayloadExtent(*partial).bytes==84,"Exact complete raw mip chain is supported");

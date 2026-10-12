@@ -22,6 +22,11 @@ namespace Resource
     };
     namespace ImagePayloadDetail
     {
+        // Core/EXT aliases have identical values. Windows' system GL1.1
+        // header omits the core names; do not depend on include order or
+        // redefine its macros. Verified against the installed Khronos headers.
+        constexpr GLenum RedInteger=0x8D94, RgbInteger=0x8D98, RgbaInteger=0x8D99,
+            BgrInteger=0x8D9A, BgraInteger=0x8D9B;
         // Fixed-rate block families whose actual DDS layout is qualified.
         // PVRTC, generic driver compression, ASTC and unknown plugin layouts
         // deliberately have no guessed byte claim.
@@ -45,10 +50,10 @@ namespace Resource
             switch(format)
             {
                 case GL_ALPHA: case GL_LUMINANCE: case GL_INTENSITY: case GL_RED:
-                case GL_RED_INTEGER: case GL_DEPTH_COMPONENT: return 1;
+                case RedInteger: case GL_DEPTH_COMPONENT: return 1;
                 case GL_LUMINANCE_ALPHA: case GL_RG: case GL_RG_INTEGER: return 2;
-                case GL_RGB: case GL_BGR: case GL_RGB_INTEGER: case GL_BGR_INTEGER: return 3;
-                case GL_RGBA: case GL_BGRA: case GL_RGBA_INTEGER: case GL_BGRA_INTEGER: return 4;
+                case GL_RGB: case GL_BGR: case RgbInteger: case BgrInteger: return 3;
+                case GL_RGBA: case GL_BGRA: case RgbaInteger: case BgraInteger: return 4;
                 default: return 0;
             }
         }
