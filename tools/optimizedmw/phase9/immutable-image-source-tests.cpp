@@ -50,7 +50,7 @@ namespace
         File file;
         VFS::Path::Normalized path;
         explicit Archive(std::string name) : path(name) {}
-        void listResources(VFS::FileMap& out) override { out.emplace(path,&file); }
+        void listResources(VFS::FileMap& out) override { out.insert_or_assign(path,&file); }
         bool contains(VFS::Path::NormalizedView p) const override { return p.value()==path.value(); }
         std::string getDescription() const override { return "deliberately-identical-archive-description"; }
     };
@@ -209,12 +209,31 @@ int main() try
         f.vfs->addArchive(std::move(winning));f.vfs->buildIndex();
         require(!current->reconstruct(&budget,sample(budget)),"Same-description winning archive override cannot inherit stale recipe");
         auto replacement=f.read();
+        require(replacement && replacement->s()==9 && replacement->t()==3,
+            "Actual VFS lookup selects the last archive provider before testing its source revision");
         auto changed=ImageSource::Recipe::capture(f.authority,f.path,*replacement,&budget,sample(budget),config);
         require(changed && changed->revision().sourceSha256!=current->revision().sourceSha256,
             "Winning source hash changes with actual replacement bytes, independently of archive description");
         f.authority->close();
         require(!changed->reconstruct(&budget,sample(budget)),"Closed provider cannot reopen source through a surviving recipe");
         require(budget.stats().futureBytes==0,"Close/missing/changed-source refusals leave no reservation debt");
+    }
+    {
+        Fixture f("textures/contracts.dds",dds(8,4,1,8));auto image=f.read();
+        const auto opens=f.file->opens.load();
+        require(!ImageSource::Recipe::capture(f.authority,f.path,*image,nullptr,sample(budget),config),
+            "Missing admission ledger cannot create a source recipe");
+        require(f.file->opens==opens,"No-ledger refusal happens before provider open");
+        auto overflow=config;overflow.maximumOpenPeakBytes=std::numeric_limits<std::uint64_t>::max();
+        overflow.maximumDecodedBytes=std::numeric_limits<std::uint64_t>::max();
+        f.file->peak=std::numeric_limits<std::uint64_t>::max();
+        require(!ImageSource::Recipe::capture(f.authority,f.path,*image,&budget,sample(budget),overflow),
+            "Future-byte envelope addition cannot wrap on hostile metadata/configuration");
+        require(f.file->opens==opens,"Overflow refuses before stream allocation");
+        Fixture unsupported("textures/unsupported.png",f.file->bytes);
+        require(!ImageSource::Recipe::capture(unsupported.authority,unsupported.path,*image,&budget,sample(budget),config),
+            "Unqualified plugins cannot acquire CPU-backing reconstruction authority");
+        require(unsupported.file->opens==0,"Unsupported plugin retains ordinary image ownership without a speculative open");
     }
     require(budget.stats().experimentFutureBytes==0,"All child reservations are retired at the final boundary");
     std::cout<<"PASS immutable image source: "<<checks<<" assertions; actual winning VFS DDS/TGA SHA256, source changes, bounded admission and concurrent reconstruction\n";
