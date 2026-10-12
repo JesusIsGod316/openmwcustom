@@ -17,6 +17,16 @@ namespace Resource
 
         size_t getNumSharedStateSets() const { return _sharedStateSetList.size(); }
 
+        void prune()
+        {
+            // The ordinary unbudgeted path can remove nodes referenced by a
+            // previous bounded cursor. SceneManager holds its writer/share
+            // mutex across both paths; reset before the next bounded visit.
+            osgDB::SharedStateManager::prune();
+            mTextureNext = _sharedTextureList.end();
+            mStateNext = _sharedStateSetList.end();
+        }
+
         std::pair<TextureSet, StateSetSet> detachAll()
         {
             TextureSet textures;

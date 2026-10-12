@@ -1580,6 +1580,30 @@ namespace Resource
         }
     }
 
+    SceneManager::VisualHandoffResult SceneManager::retireUnusedVisualHandoff()
+    {
+        VisualHandoffResult result;
+        {
+            CacheMaintenanceBudget budget(128, 4, std::chrono::microseconds(1000));
+            CacheMaintenanceScope scope(budget);
+            // TemplateRef pins from live clones, prepared instances and ICO
+            // owners remain ordinary strong references. A recent hit gets
+            // the existing second chance; destruction occurs outside cache locks.
+            result.templates = ResourceManager::trimCache(4);
+            result.scanned += budget.scanned;
+        }
+        std::vector<osg::ref_ptr<osg::Object>> release;
+        {
+            CacheMaintenanceBudget budget(128, 8, std::chrono::microseconds(1000));
+            std::lock_guard lock(mSharedStateMutex);
+            mSharedStateManager->pruneBudgeted(release, budget);
+            result.states = release.size(); result.scanned += budget.scanned;
+        }
+        // Neither shared-state mutex is held during final state/texture release.
+        release.clear();
+        return result;
+    }
+
     std::size_t SceneManager::trimCache(std::size_t maximum)
     {
         std::vector<osg::ref_ptr<osg::Node>> release;

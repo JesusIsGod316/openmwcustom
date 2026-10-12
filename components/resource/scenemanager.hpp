@@ -234,6 +234,12 @@ namespace Resource
         /// contexts, otherwise should be disabled to reduce memory usage.
         void setUnRefImageDataAfterApply(bool unref);
 
+        // Existing idle-worker handoff only. Unlike pressure trim, this never
+        // discards prepared instances or waits for pending compile producers.
+        struct VisualHandoffResult
+        { std::size_t templates = 0, states = 0, scanned = 0; };
+        VisualHandoffResult retireUnusedVisualHandoff();
+
         /// @see ResourceManager::updateCache
         void updateCache(double referenceTime) override;
 

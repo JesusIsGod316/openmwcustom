@@ -42,6 +42,8 @@ namespace Settings
             mIndex, "Cells", "prepare material images" };
         SettingValue<bool> mLoadingNifMaintenance{
             mIndex, "Cells", "loading nif maintenance" };
+        SettingValue<bool> mVisualCacheHandoff{
+            mIndex, "Cells", "visual cache handoff" };
         SettingValue<float> mUnusedImageCacheSeconds{
             mIndex, "Cells", "unused image cache seconds", makeClampSanitizerFloat(0, 3600) };
         SettingValue<float> mUnusedSceneCacheSeconds{

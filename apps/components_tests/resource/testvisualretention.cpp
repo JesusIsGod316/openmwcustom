@@ -18,6 +18,8 @@
 #include <chrono>
 #include <functional>
 #include <limits>
+#include <thread>
+#include <components/sceneutil/workqueue.hpp>
 #include <stdexcept>
 #include <vector>
 #include <sstream>
@@ -303,8 +305,36 @@ namespace
         candidate.getSceneManager()->updateCache(100);
         EXPECT_TRUE(pinned.valid());
         EXPECT_EQ(clone->getName(), "ResidenceSource");
+        for (unsigned i=0;i<16;++i)
+        {
+            const auto result=candidate.getSceneManager()->retireUnusedVisualHandoff();
+            EXPECT_LE(result.templates,4);
+            EXPECT_LE(result.states,8);
+            EXPECT_LE(result.scanned,256);
+            ASSERT_TRUE(pinned.valid());
+            ASSERT_EQ(clone->getName(),"ResidenceSource");
+        }
         clone=nullptr;
         candidate.getSceneManager()->updateCache(131);
         EXPECT_FALSE(pinned.valid());
+
+        // Actual ResourceSystem -> existing queue -> SceneManager dispatch,
+        // before a new ordinary expiry sweep. This does not synthesize RAM.
+        auto unused=candidate.getSceneManager()->getTemplate(path,false);
+        osg::observer_ptr<const osg::Node> handoffRetired(unused);
+        unused=nullptr;
+        candidate.configureVisualCacheHandoff(true);
+        osg::ref_ptr<SceneUtil::WorkQueue> queue=new SceneUtil::WorkQueue(1);
+        candidate.attachLoadingNifMaintenanceQueue(queue);
+        candidate.setLoadingNifMaintenanceActive(true);
+        candidate.setLoadingNifMaintenanceActive(false);
+        for (unsigned i=0;i<64 && handoffRetired.valid();++i)
+        {
+            candidate.requestVisualCacheHandoff();
+            std::this_thread::sleep_for(std::chrono::milliseconds(17));
+        }
+        candidate.detachLoadingNifMaintenanceQueue(queue);
+        EXPECT_FALSE(handoffRetired.valid());
+        EXPECT_TRUE(originalOwner.valid()); // Ordinary control still retains it.
     }
 }

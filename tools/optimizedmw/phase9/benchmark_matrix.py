@@ -172,6 +172,24 @@ def loading_nif_lifetime_work(text):
 def engagement(profile, requested, asset_mask=0, architecture_mask=0, work=None, lua_work=None):
     text = (profile/'openmw.log').read_text(encoding='utf-8-sig')
     positive = {}
+    if requested.get('visual cache handoff') == 'true':
+        lines = re.findall(r'OptimizedMW unused visual handoff:([^\n]*)', text)
+        if len(lines) != 1:
+            raise ValueError('Visual cache handoff requires one terminal owner receipt')
+        fields = {key:int(value) for key,value in re.findall(r'\b(\w+)=(\d+)(?=\s|$)', lines[0])}
+        keys = ('enabled','queued','completed','skipped','errors','enqueue_errors','templates','shared_states','images','scanned')
+        if any(key not in fields or fields[key] > (1 << 64)-1 for key in keys):
+            raise ValueError('Visual cache handoff receipt has missing or invalid counts')
+        attempts = fields['completed'] + fields['errors']
+        if (fields['queued'] != attempts + fields['skipped'] or fields['scanned'] > attempts*384
+                or fields['templates'] > attempts*4 or fields['shared_states'] > attempts*8
+                or fields['images'] > attempts*4):
+            raise ValueError('Visual cache handoff receipt has incoherent bounded work')
+        # Lifetime retirement is a memory candidate prerequisite. It is not
+        # measured-route work reduction, recovered RAM or an FPS result.
+        positive['visual_handoff_cache_retirement'] = bool(fields['enabled'] and fields['completed']
+            and (fields['templates'] or fields['shared_states'] or fields['images'])
+            and not fields['errors'] and not fields['enqueue_errors'])
     image_lifetime = None
     nif_lifetime = None
     if requested.get('loading nif maintenance') == 'true':

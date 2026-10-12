@@ -1937,6 +1937,7 @@ void OMW::Engine::prepareEngine()
             Settings::cells().mLoadingNifMaintenance);
     mResourceSystem->configureVisualCacheRetention(
         Settings::cells().mUnusedImageCacheSeconds, Settings::cells().mUnusedSceneCacheSeconds);
+    mResourceSystem->configureVisualCacheHandoff(Settings::cells().mVisualCacheHandoff);
     mResourceSystem->getImageManager()->configureCanonicalPublication(Settings::cells().mCanonicalImagePublication);
     Log(Debug::Info) << "OptimizedMW canonical image publication: enabled="
         << static_cast<bool>(Settings::cells().mCanonicalImagePublication)

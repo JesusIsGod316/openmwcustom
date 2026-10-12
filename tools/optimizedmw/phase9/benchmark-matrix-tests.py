@@ -21,6 +21,23 @@ def runtime_fixture(game):
 
 
 class Benchmarks(unittest.TestCase):
+    def test_visual_handoff_requires_exact_terminal_bounded_retirement(self):
+        line=('OptimizedMW unused visual handoff: enabled=1 queued=3 completed=2 skipped=1 errors=0 '
+              'enqueue_errors=0 templates=1 shared_states=2 images=1 scanned=64 '
+              'scope=cache_only_owner_counts_not_process_RAM_savings\n')
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            (root/'openmw.log').write_text(line)
+            self.assertTrue(matrix.engagement(root,{'visual cache handoff':'true'})['all_requested_positive'])
+            for bad in ('',line+line,line.replace('scanned=64','scanned=769'),line.replace('templates=1','templates=9'),
+                        line.replace('queued=3','queued=4'),line.replace('shared_states=2','shared_states=unknown')):
+                (root/'openmw.log').write_text(bad)
+                with self.assertRaises(ValueError):matrix.engagement(root,{'visual cache handoff':'true'})
+            for old,new in (('enabled=1','enabled=0'),('enqueue_errors=0','enqueue_errors=1')):
+                (root/'openmw.log').write_text(line.replace(old,new))
+                self.assertFalse(matrix.engagement(root,{'visual cache handoff':'true'})['all_requested_positive'])
+            (root/'openmw.log').write_text(line.replace('templates=1 shared_states=2 images=1','templates=0 shared_states=0 images=0'))
+            self.assertFalse(matrix.engagement(root,{'visual cache handoff':'true'})['all_requested_positive'])
     def test_loading_nif_gate_requires_real_retirement_and_clean_owned_completion(self):
         line = ('OptimizedMW loading NIF maintenance: enabled=1 requests=10 queued=3 completed=2 skipped=1 '
                 'errors=0 scanned=8 removed=1 released_charge_bytes=64 '

@@ -9,6 +9,7 @@
 #include <typeinfo>
 #include "cachemaintenance.hpp"
 #include "loadingnifmaintenance.hpp"
+#include "visualcachehandoff.hpp"
 
 #include <components/debug/debuglog.hpp>
 #include <components/debug/v3diagnostics.hpp>
@@ -25,6 +26,15 @@
 
 namespace Resource
 {
+    struct VisualCacheHandoffState
+    {
+        explicit VisualCacheHandoffState(bool enabled) : policy(enabled), owner(policy) {}
+        VisualCacheHandoffPolicy policy;
+        VisualCacheHandoffQueueOwner owner;
+        std::atomic<std::uint64_t> queued{0}, completed{0}, skipped{0}, errors{0};
+        std::atomic<std::uint64_t> enqueueErrors{0};
+        std::atomic<std::uint64_t> templates{0}, states{0}, images{0}, scanned{0};
+    };
     struct LoadingNifMaintenanceState
     {
         explicit LoadingNifMaintenanceState(bool enabled) : policy(enabled), owner(policy) {}
@@ -42,6 +52,39 @@ namespace Resource
 
     namespace
     {
+        class VisualCacheHandoffItem final : public SceneUtil::WorkItem
+        {
+        public:
+            VisualCacheHandoffItem(ResourceSystem& resources, VisualCacheHandoffState& state,
+                VisualCacheHandoffPolicy::Admission token) : mResources(resources), mState(state), mToken(token) {}
+            void doWork() override
+            {
+                const auto outcome = mState.policy.runOwned(mToken, OpenGlPressureMonitor::milliseconds, [&]{
+                    Misc::setCurrentThreadIdlePriority();
+                    Debug::HitchTrace::Scope work("resource.unused_visual_handoff");
+                    const auto result = mResources.getSceneManager()->retireUnusedVisualHandoff();
+                    mState.templates.fetch_add(result.templates); mState.states.fetch_add(result.states);
+                    mState.scanned.fetch_add(result.scanned);
+                    CacheMaintenanceBudget budget(128, 4, std::chrono::microseconds(500));
+                    {
+                        CacheMaintenanceScope scope(budget);
+                        mState.images.fetch_add(mResources.getImageManager()->trimCache(4));
+                    }
+                    mState.scanned.fetch_add(budget.scanned);
+                    if (Debug::RuntimeDiagnostics::enabled())
+                        Debug::RuntimeDiagnostics::recordEvent("visual_cache_handoff", "cache_only", "counts_not_RAM_savings", {
+                            {"generation",mToken.generation}, {"templates",result.templates}, {"shared_states",result.states},
+                            {"images",budget.released}, {"scanned",result.scanned+budget.scanned} });
+                });
+                if (outcome==VisualCacheHandoffPolicy::Outcome::Completed) ++mState.completed;
+                else if (outcome==VisualCacheHandoffPolicy::Outcome::Skipped) ++mState.skipped;
+                else ++mState.errors;
+            }
+        private:
+            ResourceSystem& mResources;
+            VisualCacheHandoffState& mState;
+            VisualCacheHandoffPolicy::Admission mToken;
+        };
         void reportLoadingNifObservation(LoadingNifMaintenanceState& s, std::string_view reason) noexcept
         {
             if (!Debug::RuntimeDiagnostics::enabled()) return;
@@ -160,6 +203,18 @@ namespace Resource
 
     ResourceSystem::~ResourceSystem()
     {
+        if (mVisualCacheHandoff)
+        {
+            auto& s=*mVisualCacheHandoff;
+            s.owner.detach(); // Join before any manager/ledger lifetime ends.
+            if (s.policy.enabled())
+                Log(Debug::Info) << "OptimizedMW unused visual handoff: enabled=1 queued=" << s.queued.load()
+                    << " completed=" << s.completed.load() << " skipped=" << s.skipped.load() << " errors=" << s.errors.load()
+                    << " enqueue_errors=" << s.enqueueErrors.load()
+                    << " templates=" << s.templates.load() << " shared_states=" << s.states.load()
+                    << " images=" << s.images.load() << " scanned=" << s.scanned.load()
+                    << " scope=cache_only_owner_counts_not_process_RAM_savings";
+        }
         // this has to be defined in the .cpp file as we can't delete incomplete types
 
         // Drain only this owner's task before any borrowed manager/ledger dies.
@@ -195,6 +250,7 @@ namespace Resource
 
     void ResourceSystem::attachLoadingNifMaintenanceQueue(SceneUtil::WorkQueue* queue)
     {
+        if (visualCacheHandoffEnabled() && queue) mVisualCacheHandoff->owner.attach(queue);
         if (mLoadingNifMaintenance && mLoadingNifMaintenance->policy.enabled() && mSpeculativeBudget && queue)
         {
             mLoadingNifMaintenance->owner.attach(queue);
@@ -204,6 +260,7 @@ namespace Resource
 
     void ResourceSystem::detachLoadingNifMaintenanceQueue(SceneUtil::WorkQueue* queue)
     {
+        if (mVisualCacheHandoff) mVisualCacheHandoff->owner.detach(queue);
         if (!mLoadingNifMaintenance) return;
         auto& state = *mLoadingNifMaintenance;
         if (state.owner.detach(queue))
@@ -216,11 +273,34 @@ namespace Resource
 
     void ResourceSystem::setLoadingNifMaintenanceActive(bool active) noexcept
     {
+        if (visualCacheHandoffEnabled())
+            mVisualCacheHandoff->policy.setLoading(active, OpenGlPressureMonitor::milliseconds());
         if (!mLoadingNifMaintenance) return;
         auto& state = *mLoadingNifMaintenance;
         state.policy.setLoading(active);
         const bool previous = state.loadingRequested.exchange(active);
         if (previous != active) reportLoadingNifObservation(state, active ? "loading_on" : "loading_off");
+    }
+
+    void ResourceSystem::configureVisualCacheHandoff(bool enabled)
+    {
+        if (mVisualCacheHandoff) throw std::logic_error("Visual cache handoff configured twice");
+        mVisualCacheHandoff=std::make_unique<VisualCacheHandoffState>(enabled);
+        Log(Debug::Info) << "OptimizedMW unused visual handoff policy: enabled=" << enabled
+            << " existing_idle_worker=1 max_passes=" << VisualCacheHandoffPolicy::MaximumPasses
+            << " window_ms=" << VisualCacheHandoffPolicy::WindowMilliseconds
+            << " live_clones_protected=1 prepared_instances_preserved=1";
+    }
+    bool ResourceSystem::visualCacheHandoffEnabled() const noexcept
+    { return mVisualCacheHandoff && mVisualCacheHandoff->policy.enabled(); }
+    void ResourceSystem::requestVisualCacheHandoff() noexcept
+    {
+        if (!visualCacheHandoffEnabled()) return;
+        auto& s=*mVisualCacheHandoff;
+        const auto token=s.policy.tryBegin(OpenGlPressureMonitor::milliseconds(),s.owner.available() && !s.owner.busy());
+        if (!token) return;
+        try { s.owner.publish(new VisualCacheHandoffItem(*this,s,token)); ++s.queued; }
+        catch (...) { s.policy.finish(token); ++s.enqueueErrors; }
     }
 
     void ResourceSystem::reportLoadingRequiredOwners(double referenceTime) noexcept

@@ -42,6 +42,7 @@ namespace Resource
     class BaseResourceManager;
     class AnimBlendRulesManager;
     struct LoadingNifMaintenanceState;
+    struct VisualCacheHandoffState;
 
     /// @brief Wrapper class that constructs and provides access to the most commonly used resource subsystems.
     /// @par Resource subsystems can be used with multiple OpenGL contexts, just like the OSG equivalents, but
@@ -88,6 +89,9 @@ namespace Resource
         // the bounded release sweep reaches required images/templates. Requests
         // existing try-lock censuses; it neither evicts nor certifies coverage.
         void reportLoadingRequiredOwners(double referenceTime) noexcept;
+        void configureVisualCacheHandoff(bool enabled);
+        bool visualCacheHandoffEnabled() const noexcept;
+        void requestVisualCacheHandoff() noexcept;
 
         /// Indicates to each resource manager to clear the cache, i.e. to drop cached objects that are no longer
         /// referenced.
@@ -140,6 +144,7 @@ namespace Resource
         std::unique_ptr<AnimBlendRulesManager> mAnimBlendRulesManager;
         // Destroyed/joined before managers and their borrowed charge ledger.
         std::unique_ptr<LoadingNifMaintenanceState> mLoadingNifMaintenance;
+        std::unique_ptr<VisualCacheHandoffState> mVisualCacheHandoff;
 
         // Store the base classes separately to get convenient access to the common interface
         // Here users can register their own resourcemanager as well

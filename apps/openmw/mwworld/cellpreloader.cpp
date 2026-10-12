@@ -1221,7 +1221,8 @@ namespace MWWorld
     {
         setColdRetention(mResourceSystem->speculativeBudget() && Resource::ramRetentionEnabled(1),
             mResourceSystem->speculativeBudget() && Resource::ramRetentionEnabled(4));
-        if (static_cast<bool>(Settings::cells().mV316IdleResourceSweep) || mResourceSystem->speculativeBudget())
+        if (static_cast<bool>(Settings::cells().mV316IdleResourceSweep) || mResourceSystem->speculativeBudget()
+            || mResourceSystem->visualCacheHandoffEnabled())
             mV316ResourceSweepQueue = new SceneUtil::WorkQueue(1);
         mResourceSystem->attachLoadingNifMaintenanceQueue(mV316ResourceSweepQueue.get());
     }
@@ -1477,6 +1478,7 @@ namespace MWWorld
 
     void CellPreloader::updateCache(double timestamp)
     {
+        mResourceSystem->requestVisualCacheHandoff();
         const bool lifetime = Resource::animationDependencyLifetimeEnabled() && mResourceSystem->speculativeBudget();
         const auto sample = lifetime ? Resource::ResourceSystem::speculativeSample(mResourceSystem)
                                      : Resource::OpenGlPressureSample{};
