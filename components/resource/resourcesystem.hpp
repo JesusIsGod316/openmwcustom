@@ -105,7 +105,8 @@ namespace Resource
         void setExpiryDelay(double expiryDelay);
 
         // Startup-only, before any loader/maintenance worker. Zero inherits the
-        // ordinary common expiry. Overrides affect unused cache residence only;
+        // ordinary common expiry. Positive values cap that expiry without
+        // extending a shorter cleanup request. Only unused residence changes;
         // existing external-owner protection and bounded maintenance still apply.
         void configureVisualCacheRetention(double imageSeconds, double sceneSeconds);
 

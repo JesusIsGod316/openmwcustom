@@ -81,6 +81,22 @@ namespace
         EXPECT_EQ(resources.getSceneManager()->getExpiryDelay(), 90);
     }
 
+    TEST(ResourceVisualRetention, residenceLimitsNeverExtendShorterForcedCleanup)
+    {
+        VFS::Manager vfs;
+        const ToUTF8::Utf8Encoder encoder(ToUTF8::WINDOWS_1252);
+        Resource::ResourceSystem resources(&vfs, 5, &encoder.getStatelessEncoder());
+        resources.configureVisualCacheRetention(15, 30);
+        EXPECT_EQ(resources.getImageManager()->getExpiryDelay(), 5);
+        EXPECT_EQ(resources.getSceneManager()->getExpiryDelay(), 5);
+        resources.setExpiryDelay(1);
+        EXPECT_EQ(resources.getImageManager()->getExpiryDelay(), 1);
+        EXPECT_EQ(resources.getSceneManager()->getExpiryDelay(), 1);
+        resources.setExpiryDelay(240);
+        EXPECT_EQ(resources.getImageManager()->getExpiryDelay(), 15);
+        EXPECT_EQ(resources.getSceneManager()->getExpiryDelay(), 30);
+    }
+
     TEST(ResourceVisualRetention, invalidOrRepeatedConfigurationCannotPartiallyChangePolicy)
     {
         VFS::Manager vfs;

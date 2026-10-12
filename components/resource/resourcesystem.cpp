@@ -295,8 +295,10 @@ namespace Resource
         mUnusedImageExpiry = imageSeconds;
         mUnusedSceneExpiry = sceneSeconds;
         mVisualCacheRetentionConfigured = true;
-        if (mUnusedImageExpiry > 0) mImageManager->setExpiryDelay(mUnusedImageExpiry);
-        if (mUnusedSceneExpiry > 0) mSceneManager->setExpiryDelay(mUnusedSceneExpiry);
+        if (mUnusedImageExpiry > 0)
+            mImageManager->setExpiryDelay(std::min(mImageManager->getExpiryDelay(), mUnusedImageExpiry));
+        if (mUnusedSceneExpiry > 0)
+            mSceneManager->setExpiryDelay(std::min(mSceneManager->getExpiryDelay(), mUnusedSceneExpiry));
         Log(Debug::Info) << "OptimizedMW unused visual cache residence: image_seconds="
             << mImageManager->getExpiryDelay() << " scene_seconds=" << mSceneManager->getExpiryDelay()
             << " image_override=" << (mUnusedImageExpiry > 0)
@@ -314,9 +316,10 @@ namespace Resource
         // collision paths can reuse already-parsed source data during long sessions.
         mNifFileManager->setExpiryDelay(mRetainNifFiles ? expiryDelay : 0.0);
         // A later common-cache setting change must not silently erase either
-        // explicitly configured visual residence policy.
-        if (mUnusedImageExpiry > 0) mImageManager->setExpiryDelay(mUnusedImageExpiry);
-        if (mUnusedSceneExpiry > 0) mSceneManager->setExpiryDelay(mUnusedSceneExpiry);
+        // explicitly configured visual residence policy. Preserve shorter
+        // common cleanup requests, including the developer mass-cell test.
+        if (mUnusedImageExpiry > 0) mImageManager->setExpiryDelay(std::min(expiryDelay, mUnusedImageExpiry));
+        if (mUnusedSceneExpiry > 0) mSceneManager->setExpiryDelay(std::min(expiryDelay, mUnusedSceneExpiry));
     }
 
     void ResourceSystem::updateCache(double referenceTime)
