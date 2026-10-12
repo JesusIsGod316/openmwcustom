@@ -39,6 +39,15 @@ if(P9_OSG_PREFIX)
         d3d11 dxgi opengl32 user32 gdi32)
     set_property(TARGET p9-dlss-production-format PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    # Import-only typed diagnostic proof: neither SDK evaluation nor game linkage.
+    add_executable(p9-dlss-diagnostic-gl-import diagnostic-gl-import-tests.cpp)
+    target_compile_features(p9-dlss-diagnostic-gl-import PRIVATE cxx_std_20)
+    target_compile_definitions(p9-dlss-diagnostic-gl-import PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_include_directories(p9-dlss-diagnostic-gl-import SYSTEM PRIVATE ${OPENSCENEGRAPH_INCLUDE_DIRS})
+    target_link_libraries(p9-dlss-diagnostic-gl-import PRIVATE ${OPENSCENEGRAPH_LIBRARIES}
+        opengl32 user32 gdi32)
+    set_property(TARGET p9-dlss-diagnostic-gl-import PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 
 # The signed runtime is supplied beside this separate executable by its audited
