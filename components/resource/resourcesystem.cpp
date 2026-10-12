@@ -34,24 +34,39 @@ namespace Resource
         std::array<std::atomic<std::uint64_t>,
             static_cast<unsigned>(LoadingNifMaintenancePolicy::Refusal::PhaseExhausted) + 1> refusals{};
         std::atomic<bool> loadingRequested{ false }, queueAttached{ false }, pressureCensusClaimed{ false };
+        std::atomic<std::uint64_t> observationSerial{ 0 };
         std::uint64_t queueDiagnosticFailures = 0;
     };
 
     namespace
     {
-        void reportLoadingNifObservation(const LoadingNifMaintenanceState& s, std::string_view reason) noexcept
+        void reportLoadingNifObservation(LoadingNifMaintenanceState& s, std::string_view reason) noexcept
         {
             if (!Debug::RuntimeDiagnostics::enabled()) return;
+            auto serial = s.observationSerial.load();
+            do
+            {
+                if (serial == std::numeric_limits<std::uint64_t>::max()) return;
+            } while (!s.observationSerial.compare_exchange_weak(serial, serial + 1));
+            const auto observedAt = Debug::RuntimeDiagnostics::nowUs();
             using Refusal = LoadingNifMaintenancePolicy::Refusal;
             const auto refused = [&](Refusal reason) { return s.refusals[static_cast<unsigned>(reason)].load(); };
             // Independently read atomics: a live observation, not a coherent
             // permission grant or a normal-shutdown/completeness footer.
             Debug::RuntimeDiagnostics::recordEvent("loading_nif_lifecycle", "parsed_nif", reason, {
+                {"observation", serial + 1}, {"instance", reinterpret_cast<std::uintptr_t>(&s)},
+                {"observed_us", observedAt},
                 {"enabled", s.policy.enabled()}, {"loading_requested_observed", s.loadingRequested.load()},
                 {"queue_attached_observed", s.queueAttached.load()}, {"pending_observed", s.policy.pending()},
                 {"requests", s.requests.load()}, {"queued", s.queued.load()}, {"completed", s.completed.load()},
                 {"skipped", s.skipped.load()}, {"errors", s.errors.load()}, {"scanned", s.scanned.load()},
-                {"removed", s.removed.load()}, {"released_charge_bytes", s.releasedCharges.load()},
+                {"removed", s.removed.load()}, {"released_charge_bytes", s.releasedCharges.load()} });
+            // Recorder records hold at most16 numeric fields. Keep refusal
+            // coverage separate and join by this exact owner/observation pair;
+            // loss of either half is incomplete, never an implicit zero.
+            Debug::RuntimeDiagnostics::recordEvent("loading_nif_refusals", "parsed_nif", reason, {
+                {"observation", serial + 1}, {"instance", reinterpret_cast<std::uintptr_t>(&s)},
+                {"observed_us", observedAt},
                 {"refused_inactive", refused(Refusal::Inactive)}, {"refused_missing_queue", refused(Refusal::MissingQueue)},
                 {"refused_sample", refused(Refusal::Sample)}, {"refused_healthy", refused(Refusal::Healthy)},
                 {"refused_busy", refused(Refusal::Busy)}, {"refused_cadence", refused(Refusal::Cadence)},
