@@ -187,7 +187,7 @@ $quickSession=$null
 $hitchSelection=$null
 $numericSelection=$null
 if(-not $FocusedPreset -and -not $ModeChoice -and $HitchMask -lt 0 -and $AttackMask -lt 0 -and -not $TraceLevel -and -not $NoPrompt){
-    $numericSelection=Read-OptimizedMWNumericTest
+    $numericSelection=Read-OptimizedMWNumericTest -GameDirectory $GameDir
     if($null -eq $numericSelection){exit 0}
     $quickSelection=$numericSelection
     $Candidate=$numericSelection.candidate;$SystemTrace=[bool]$numericSelection.system_trace

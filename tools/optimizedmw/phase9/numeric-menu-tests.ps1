@@ -32,7 +32,8 @@ try{
         $candidates=@(Get-OptimizedMWNumericCandidates $category)
         foreach($index in 0..($candidates.Count-1)){
             if($category -eq 8 -and $index -eq 0){continue}
-            if(($category -eq 11 -and $index -eq 1) -or ($category -eq 12 -and $index -eq 9)){continue}
+            if(($category -eq 11 -and $index -eq 1) -or ($category -eq 12 -and $index -eq 9) -or
+                ($category -eq 13 -and $index -eq 1)){continue}
             $hashes=@()
             foreach($depth in @('Normal','Deep')){
                 $replies=@([string]$category,[string]($index+1),$(if($depth -eq 'Normal'){'1'}else{'2'}))

@@ -117,6 +117,10 @@ if(WIN32)
   find_program(P9_MENU_POWERSHELL NAMES powershell.exe REQUIRED)
   add_test(NAME p9-numeric-menu COMMAND ${P9_MENU_POWERSHELL}
     -NoProfile -ExecutionPolicy Bypass -File ${CMAKE_CURRENT_SOURCE_DIR}/numeric-menu-tests.ps1)
+  add_test(NAME p9-settings-editor COMMAND ${P9_MENU_POWERSHELL}
+    -NoProfile -ExecutionPolicy Bypass -File ${CMAKE_CURRENT_SOURCE_DIR}/settings-editor-tests.ps1)
+  add_test(NAME p9-memory-guard COMMAND ${P9_MENU_POWERSHELL}
+    -NoProfile -ExecutionPolicy Bypass -File ${CMAKE_CURRENT_SOURCE_DIR}/memory-guard-tests.ps1)
   # CTest can inherit a PS7-only module path from the build shell. The installed
   # launcher uses PS5.1; isolate this hermetic fixture with its native modules.
   set_tests_properties(p9-numeric-menu PROPERTIES TIMEOUT 30
@@ -173,6 +177,8 @@ add_test(NAME p9-composite-cpu-mips-pool COMMAND p9-composite-cpu-mips --gl ${RO
 set_tests_properties(p9-composite-cpu-mips-pool PROPERTIES TIMEOUT 90 ENVIRONMENT "OPENMW_P9_UPLOAD_POOL=1")
 set_tests_properties(p9-composite-cpu-mips p9-composite-cpu-mips-gl PROPERTIES TIMEOUT 90)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME p9-benchmark-supervisor COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/benchmark-supervisor-tests.py)
 add_test(NAME p9-indirect-interval-work COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/indirect-work-tests.py)
 add_test(NAME p9-runtime-dependencies COMMAND ${Python3_EXECUTABLE}

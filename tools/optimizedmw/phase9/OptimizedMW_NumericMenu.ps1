@@ -1,6 +1,7 @@
 # Interactive numbers are navigation IDs, never engine bit masks. Existing CLI
 # masks and preset names remain unchanged. All functions are side-effect-free
-# except console input/output; no settings, game process or recorder is touched.
+# except console input/output and the explicit Custom-profile editor entry.
+# Selecting an editor saves only after Apply; it never launches a game or recorder.
 function Read-OptimizedMWNumber {
     param([string]$Prompt,[string[]]$Choices,[string]$Default='')
     while($true){
@@ -93,7 +94,8 @@ function Get-OptimizedMWNumericCandidates {
             (New-OptimizedMWNumericSelection '11.7' 'Conservative GPU visibility + indirect pipeline' -Architecture 52),
             (New-OptimizedMWNumericSelection '11.8' 'Frozen parallel actor deformation' -Architecture 64),
             (New-OptimizedMWNumericSelection '11.9' 'Renderer candidates combined (shader experiment excluded)' -Architecture 126 -Mips $true))}
-        13 {return @((New-OptimizedMWNumericSelection '13.1' 'Run editable Configuration/Optimizations.cfg' -Mask 0 -Attack 0 -ConfigurationMode Custom))}
+        13 {return @((New-OptimizedMWNumericSelection '13.1' 'Run saved individual Custom settings' -Mask 0 -Attack 0 -ConfigurationMode Custom),
+            (New-OptimizedMWNumericSelection '13.2' 'Edit individual startup settings (save on Apply)' -Mask 0 -Attack 0 -ConfigurationMode Custom))}
         12 {return @((New-OptimizedMWNumericSelection '12.1' 'Asset pipeline control'),
             (New-OptimizedMWNumericSelection '12.2' 'Generated static visual LOD (active grid + distant)' -Assets 1),
             (New-OptimizedMWNumericSelection '12.3' 'Selective HLOD atlas/proxy (runtime unqualified)' -Assets 2),
@@ -268,7 +270,10 @@ function Write-OptimizedMWNumericSummary {
     param([object]$Selection)
     Write-Host ('Selected: '+$Selection.label+' ['+$Selection.selection_id+']') -ForegroundColor Green
     Write-Host ('Memory profile: '+$Selection.memory_profile+' (shared by control and candidate)')
-    if($Selection.configuration_mode -eq 'Custom'){Write-Host 'Individual config values will be used. Edit Configuration/Optimizations.cfg to customize them.';return}
+    if($Selection.configuration_mode -eq 'Custom'){
+        Write-Host 'Saved individual values will be requested for this Custom run. Use category 13, option 2 to edit them.'
+        Write-Host 'Benchmark selections use their frozen foundation; they do not inherit these Custom preferences.';return
+    }
     if($Selection.legacy_mode){Write-Host ('Earlier experiment mode: '+$Selection.legacy_mode);return}
     $enabled=[Collections.Generic.List[string]]::new()
     $labels=Get-OptimizedMWCombinedToggles
@@ -279,6 +284,7 @@ function Write-OptimizedMWNumericSummary {
 }
 
 function Read-OptimizedMWNumericTest {
+    param([string]$GameDirectory=$PSScriptRoot)
     $categories=Get-OptimizedMWNumericCategories
     while($true){
         Write-Host ''
@@ -296,6 +302,12 @@ function Read-OptimizedMWNumericTest {
             $choice=Read-OptimizedMWNumber 'Optimization (0 = back; Enter = 1)' $choices '1'
             if($choice -eq '0'){break}
             $selection=$candidates[[int]$choice-1]
+            if($selection.selection_id -eq '13.2'){
+                . (Join-Path $PSScriptRoot 'OptimizedMW_EditSettings.ps1')
+                $edited=Invoke-OptimizedMWSettingsEditor -GameDirectory $GameDirectory
+                Write-Host ('Settings editor: '+$edited.status+'; active game state was not changed.')
+                continue
+            }
             if($selection.selection_id -eq '11.2'){Write-Host 'Unavailable until the prior driver crash is resolved. Choose another candidate.' -ForegroundColor Yellow;continue}
             if($category -eq '8' -and $choice -eq '1'){$selection=Read-OptimizedMWCombinedSelection;if($null -eq $selection){continue}}
             if($selection.selection_id -eq '12.10'){Read-OptimizedMWAssetCombination $selection}
