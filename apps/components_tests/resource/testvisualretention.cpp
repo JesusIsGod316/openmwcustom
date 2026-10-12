@@ -100,8 +100,8 @@ namespace
     TEST(ResourceVisualRetention, actualBoundedImageExpiryRetiresCandidateAndKeepsControl)
     {
         VFS::Manager vfs;
-        CachedImages control(&vfs, 120), candidate(&vfs, 15);
         Resource::SpeculativeBudget bytes;
+        CachedImages control(&vfs, 120), candidate(&vfs, 15);
         candidate.setSpeculativeBudget(&bytes);
         auto source = image();
         osg::observer_ptr<osg::Image> candidateOwner(source);
