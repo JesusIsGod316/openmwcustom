@@ -96,8 +96,12 @@ namespace
             require(native == p9SdlCreatedNative() && dc == p9SdlCreatedDc()
                 && context == p9SdlCreatedContext() && p9SdlCreateThread() == mainThread,
                 "Production SDL creation witness binds actual WGL identity, not an opaque handle reinterpretation");
-            authority = DiagnosticNamespace::issue(observation());
-            require(authority.has_value(), "Actual native creation owner issues a unique diagnostic epoch");
+            // The issued token has immutable identity and no move assignment.
+            // Construct owned storage from the issuance result; do not relax
+            // the production token merely to support this fixture's setup.
+            auto issued = DiagnosticNamespace::issue(observation());
+            require(issued.has_value(), "Actual native creation owner issues a unique diagnostic epoch");
+            authority = std::make_unique<DiagnosticNamespace>(std::move(*issued));
         }
         ~ActualWindow() noexcept
         {
@@ -125,7 +129,7 @@ namespace
         }
         SDL_Window* window = nullptr;
         osg::ref_ptr<SDLUtil::GraphicsWindowSDL2> graphics;
-        std::optional<DiagnosticNamespace> authority;
+        std::unique_ptr<DiagnosticNamespace> authority;
         HGLRC native = nullptr;
         HDC dc = nullptr;
         SDL_GLContext context = nullptr;
