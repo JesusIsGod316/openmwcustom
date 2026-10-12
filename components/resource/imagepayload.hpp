@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_RESOURCE_IMAGEPAYLOAD_H
 
 #include <osg/Image>
+#include <osg/Texture> // OSG compatibility enumerants missing from Windows GL1.1.
 
 #include <algorithm>
 #include <cstdint>
