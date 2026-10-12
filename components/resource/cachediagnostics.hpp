@@ -2,6 +2,7 @@
 #define OPENMW_RESOURCE_CACHEDIAGNOSTICS_H
 #include <components/debug/runtimediagnostics.hpp>
 #include <osg/Image>
+#include "imagepayload.hpp"
 #include <array>
 #include <string_view>
 #include <unordered_map>
@@ -23,7 +24,9 @@ namespace Resource
             bool external = object && object->referenceCount() > 1;
             Debug::RuntimeDiagnostics::PayloadInfo payload;
             if (const auto* image = dynamic_cast<const osg::Image*>(object))
-                payload = { image->data(), image->getTotalSizeInBytesIncludingMipmaps(), 1 };
+            {
+                if (const auto extent=imagePayloadExtent(*image)) payload = { image->data(), extent.bytes, 1 };
+            }
             else if (const auto* source = dynamic_cast<const Debug::RuntimeDiagnostics::PayloadSource*>(object))
                 payload = source->diagnosticPayload();
             external = external || payload.externallyReferenced;

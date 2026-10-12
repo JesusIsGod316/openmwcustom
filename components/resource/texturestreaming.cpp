@@ -1,4 +1,5 @@
 #include "texturestreaming.hpp"
+#include "imagepayload.hpp"
 #include "assetpolicy.hpp"
 #include "assetgpubudget.hpp"
 #include "uploadpool.hpp"
@@ -48,7 +49,7 @@ namespace Resource::TextureStreaming
             internal=value->getInternalTextureFormat();pixel=value->getPixelFormat();type=value->getDataType();
             mipmaps=value->getMipmapLevels();origin=value->getOrigin();
             packing=value->getPacking();rowLength=value->getRowLength();data=value->data();
-            imageBytes=value->getTotalSizeInBytesIncludingMipmaps();
+            imageBytes=imagePayloadExtent(*value).bytes;
         }
         std::atomic_bool alive{true};
         std::atomic_bool fallbackRecorded{false};
@@ -392,7 +393,7 @@ namespace Resource::TextureStreaming
                     && image->getDataType()==descriptor.type && image->getOrigin()==descriptor.origin
                     && image->getMipmapLevels()==descriptor.mipmaps && image->getPacking()==descriptor.packing
                     && image->getRowLength()==descriptor.rowLength && image->data()==descriptor.data
-                    && image->getTotalSizeInBytesIncludingMipmaps()==descriptor.imageBytes && !texture.getUpdateCallback() && !texture.getEventCallback()
+                    && descriptor.imageBytes && imagePayloadExtent(*image).bytes==descriptor.imageBytes && !texture.getUpdateCallback() && !texture.getEventCallback()
                     && texture.getDataVariance()!=osg::Object::DYNAMIC
                     && !texture.getSubloadCallback()
                     && !texture.getReadPBuffer() && texture.getBorderWidth()==0;

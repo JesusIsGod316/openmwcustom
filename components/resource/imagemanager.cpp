@@ -87,43 +87,7 @@ namespace
     // generic size accessor is not a compressed-block capacity certificate.
     // Decline unknown layouts instead of assigning a forecast byte saving.
     std::uint64_t canonicalPayloadBytes(const osg::Image& image)
-    {
-        if (!image.isDataContiguous() || image.s() <= 0 || image.t() <= 0 || image.r() <= 0
-            || (image.getRowLength() && image.getRowLength() != image.s())
-            || (image.getPacking() != 1 && image.getPacking() != 2 && image.getPacking() != 4 && image.getPacking() != 8)
-            || image.getNumMipmapLevels() > 32)
-            return 0;
-        const bool compressed = image.isCompressed();
-        if (compressed && !isS3TC(&image)) return 0;
-        const auto blockBytes = compressed
-            ? osg::Image::computeBlockSize(image.getPixelFormat(), image.getPacking()) : 0;
-        if (compressed && !blockBytes) return 0;
-        int width = image.s(), height = image.t(), depth = image.r();
-        std::uint64_t total = 0, previousEnd = 0;
-        for (unsigned level = 0; level < image.getNumMipmapLevels(); ++level)
-        {
-            std::uint64_t bytes;
-            if (compressed)
-            {
-                const auto blocksX = (static_cast<std::uint64_t>(width) + 3) / 4;
-                const auto blocksY = (static_cast<std::uint64_t>(height) + 3) / 4;
-                if (blocksX > UINT64_MAX / blocksY || blocksX * blocksY > UINT64_MAX / depth
-                    || blocksX * blocksY * depth > UINT64_MAX / blockBytes)
-                    return 0;
-                bytes = blocksX * blocksY * depth * blockBytes;
-            }
-            else
-                bytes = osg::Image::computeImageSizeInBytes(width, height, depth,
-                    image.getPixelFormat(), image.getDataType(), image.getPacking());
-            const std::uint64_t offset = image.getMipmapOffset(level);
-            if (!bytes || offset < previousEnd || bytes > UINT64_MAX - offset || bytes > UINT64_MAX - total)
-                return 0;
-            previousEnd = offset + bytes;
-            total += bytes;
-            width = std::max(1, width / 2); height = std::max(1, height / 2); depth = std::max(1, depth / 2);
-        }
-        return total;
-    }
+    { return Resource::imagePayloadExtent(image).bytes; }
 
     bool canonicalDescriptorMatches(const osg::Image& a, const osg::Image& b)
     {
@@ -662,7 +626,9 @@ namespace Resource
             const osg::Image* image = dynamic_cast<const osg::Image*>(object);
             if (!image)
                 return;
-            const unsigned int bytes = image->getTotalSizeInBytesIncludingMipmaps();
+            // Known supported payload only; the runtime census separately
+            // counts unknown layouts. Never use this as process/VRAM bytes.
+            const auto bytes = static_cast<unsigned int>(imagePayloadExtent(*image).bytes);
             totalBytes += bytes;
             entries.push_back({ key, bytes, image->s(), image->t(), image->getNumMipmapLevels(),
                 image->isCompressed(), image->referenceCount(), lastUsage });

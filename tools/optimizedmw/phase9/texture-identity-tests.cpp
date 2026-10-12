@@ -2,6 +2,7 @@
 // Proves persistent material identity, clones and actual VFS/OSG reconstruction;
 // does not authorize a blanket CPU-image unref switch or game promotion.
 #include <components/resource/sharedstatecache.hpp>
+#include <components/resource/imagepayload.hpp>
 #include <components/vfs/archive.hpp>
 #include <components/vfs/manager.hpp>
 
@@ -52,14 +53,11 @@ namespace
     }
     std::size_t payloadBytes(const osg::Image& image)
     {
-        if (image.s()!=32 || image.t()!=32 || image.r()!=1 || !image.isDataContiguous() || image.isMipmap())
+        if (image.s()!=32 || image.t()!=32 || image.r()!=1 || image.isMipmap())
             throw std::runtime_error("Outside this native fixture's checked payload layouts");
-        // OSG3.6.5's no-mip getTotalSize path multiplies compressed row bytes
-        // by pixel rows instead of block rows. Never hash beyond the DDS
-        // reader's allocation. Its checked single-level size calculation is
-        // the same calculation that reader uses for these native fixtures.
-        return osg::Image::computeImageSizeInBytes(image.s(),image.t(),image.r(),
-            image.getPixelFormat(),image.getDataType(),image.getPacking());
+        const auto extent=Resource::imagePayloadExtent(image);
+        if (!extent) throw std::runtime_error("Production payload layout declined");
+        return static_cast<std::size_t>(extent.bytes);
     }
     std::uint64_t fingerprint(const osg::Image& image)
     {

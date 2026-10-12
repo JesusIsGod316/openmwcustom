@@ -210,8 +210,9 @@ namespace Resource
             {
                 const auto* image = dynamic_cast<const osg::Image*>(object);
                 const auto* identity = image && image->data() ? static_cast<const void*>(image->data()) : object;
+                const auto extent=image ? imagePayloadExtent(*image) : ImagePayloadExtent{};
                 incoming.mCharge = SpeculativeScope::track(mBudget, {identity, image ? 1u : 2u},
-                    image ? image->getTotalSizeInBytesIncludingMipmaps() : 0, image != nullptr);
+                    extent.bytes, bool(extent));
             }
             Item displaced;
             osg::ref_ptr<osg::Object> result;
@@ -365,8 +366,9 @@ namespace Resource
             {
                 const auto* image = dynamic_cast<const osg::Image*>(object);
                 const auto* identity = image && image->data() ? static_cast<const void*>(image->data()) : object;
+                const auto extent=image ? imagePayloadExtent(*image) : ImagePayloadExtent{};
                 incoming.mCharge = SpeculativeScope::track(mBudget, {identity, image ? 1u : 2u},
-                    image ? image->getTotalSizeInBytesIncludingMipmaps() : 0, image != nullptr);
+                    extent.bytes, bool(extent));
             }
             // Incoming and displaced values outlive the lock, including when
             // insertion throws. Never invoke a reentrant destructor under it.
@@ -404,8 +406,9 @@ namespace Resource
             {
                 const auto* image = dynamic_cast<const osg::Image*>(object);
                 const auto* identity = image && image->data() ? static_cast<const void*>(image->data()) : object;
+                const auto extent=image ? imagePayloadExtent(*image) : ImagePayloadExtent{};
                 incoming.mCharge = SpeculativeScope::track(mBudget, {identity, image ? 1u : 2u},
-                    image ? image->getTotalSizeInBytesIncludingMipmaps() : 0, image != nullptr);
+                    extent.bytes, bool(extent));
             }
             osg::ref_ptr<osg::Object> result;
             bool inserted = false;

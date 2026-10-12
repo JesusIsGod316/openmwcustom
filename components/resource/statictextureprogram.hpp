@@ -103,7 +103,8 @@ namespace Resource
         if (!ico || ico->getContextSet().size() != 1 || !texture || !program || !texture->getImage()
             || texture->getImage()->getDataVariance() == osg::Object::DYNAMIC || texture->getImage()->requiresUpdateCall())
             return {};
-        const auto bytes = texture->getImage()->getTotalSizeInBytesIncludingMipmaps();
+        const auto extent=imagePayloadExtent(*texture->getImage());
+        const auto bytes=extent.bytes;
         if (!bytes || bytes > 32u * 1024u * 1024u || !imageLease || !imageLease.mCharge
             || !imageLease.mSourceRevision || imageLease.mValue.get() != texture->getImage()
             || imageLease.bytes() != bytes) return {};
