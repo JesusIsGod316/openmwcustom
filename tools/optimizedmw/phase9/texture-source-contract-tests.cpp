@@ -270,6 +270,12 @@ int main() try
         pool->newFrame(nullptr);
         osg::ref_ptr<PersistentTexture> competitor=new PersistentTexture(manager->getImage(VFS::Path::Normalized("textures/red.tga")),budget,true);
         manager->clearCache();competitor->apply(*state);pixels(*competitor,*state,red);competitors.push_back(competitor);
+        const auto* current=competitor->getTextureObject(state->getContextID());
+        std::cout<<"POOL native step="<<i<<" frame="<<pool->getFrameNumber()<<" max="<<pool->getMaxTexturePoolSize()
+            <<" live="<<pool->getCurrTexturePoolSize()<<" original_set="<<pinnedObject->_set<<" next_set="<<current->_set
+            <<" original_format="<<pinnedObject->_profile._internalFormat<<" next_format="<<current->_profile._internalFormat
+            <<" original_levels="<<pinnedObject->_profile._numMipmapLevels<<" next_levels="<<current->_profile._numMipmapLevels
+            <<" original_last_frame="<<pinnedObject->_frameLastUsed<<" original_slot="<<poolSource->getTextureObject(state->getContextID())<<'\n';
         stolen=!poolSource->getTextureObject(state->getContextID()) && pinnedObject->getTexture()!=poolSource.get();
         if(stolen)require(competitor->getTextureObject(state->getContextID())==pinnedObject && pinnedObject->id()==pinnedName,
             "Actual pool reuses the same pinned TextureObject and GL name for a different colored source");
