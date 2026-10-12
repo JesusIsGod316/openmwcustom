@@ -5,6 +5,7 @@
 #include <osg/DisplaySettings>
 #include <osg/GraphicsContext>
 #include <osg/Image>
+#include <osg/State>
 #include <osg/Texture2D>
 #include <osgViewer/Viewer>
 
@@ -73,7 +74,8 @@ namespace
         {
             if (!getImage() && !getTextureObject(state.getContextID()))
             {
-                auto source = mRecipe ? mRecipe->reopen() : nullptr;
+                osg::ref_ptr<osg::Image> source;
+                if (mRecipe) source = mRecipe->reopen();
                 // This prototype deliberately refuses; a game factory must
                 // supply its established ordinary fallback before this seam.
                 if (!source || source->s() != 32 || source->t() != 32
