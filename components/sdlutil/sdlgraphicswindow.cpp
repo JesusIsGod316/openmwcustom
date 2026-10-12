@@ -2,7 +2,11 @@
 
 #include <SDL3/SDL.h>
 #if defined(_WIN32)
+#pragma push_macro("NOGDI")
+#undef NOGDI
 #include <windows.h>
+#include <wingdi.h>
+#pragma pop_macro("NOGDI")
 #endif
 
 #ifdef OPENMW_GL4ES_MANUAL_INIT
