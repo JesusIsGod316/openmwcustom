@@ -31,11 +31,32 @@ namespace Resource
         LoadingNifMaintenanceQueueOwner owner;
         std::atomic<std::uint64_t> requests{ 0 }, queued{ 0 }, completed{ 0 }, skipped{ 0 }, errors{ 0 };
         std::atomic<std::uint64_t> scanned{ 0 }, removed{ 0 }, releasedCharges{ 0 };
+        std::array<std::atomic<std::uint64_t>,
+            static_cast<unsigned>(LoadingNifMaintenancePolicy::Refusal::PhaseExhausted) + 1> refusals{};
+        std::atomic<bool> loadingRequested{ false }, queueAttached{ false }, pressureCensusClaimed{ false };
         std::uint64_t queueDiagnosticFailures = 0;
     };
 
     namespace
     {
+        void reportLoadingNifObservation(const LoadingNifMaintenanceState& s, std::string_view reason) noexcept
+        {
+            if (!Debug::RuntimeDiagnostics::enabled()) return;
+            using Refusal = LoadingNifMaintenancePolicy::Refusal;
+            const auto refused = [&](Refusal reason) { return s.refusals[static_cast<unsigned>(reason)].load(); };
+            // Independently read atomics: a live observation, not a coherent
+            // permission grant or a normal-shutdown/completeness footer.
+            Debug::RuntimeDiagnostics::recordEvent("loading_nif_lifecycle", "parsed_nif", reason, {
+                {"enabled", s.policy.enabled()}, {"loading_requested_observed", s.loadingRequested.load()},
+                {"queue_attached_observed", s.queueAttached.load()}, {"pending_observed", s.policy.pending()},
+                {"requests", s.requests.load()}, {"queued", s.queued.load()}, {"completed", s.completed.load()},
+                {"skipped", s.skipped.load()}, {"errors", s.errors.load()}, {"scanned", s.scanned.load()},
+                {"removed", s.removed.load()}, {"released_charge_bytes", s.releasedCharges.load()},
+                {"refused_inactive", refused(Refusal::Inactive)}, {"refused_missing_queue", refused(Refusal::MissingQueue)},
+                {"refused_sample", refused(Refusal::Sample)}, {"refused_healthy", refused(Refusal::Healthy)},
+                {"refused_busy", refused(Refusal::Busy)}, {"refused_cadence", refused(Refusal::Cadence)},
+                {"refused_phase_exhausted", refused(Refusal::PhaseExhausted)} });
+        }
         class LoadingNifMaintenanceItem final : public SceneUtil::WorkItem
         {
         public:
@@ -80,6 +101,7 @@ namespace Resource
                 });
                 if (outcome == LoadingNifMaintenancePolicy::Outcome::Skipped) ++mState.skipped;
                 if (outcome == LoadingNifMaintenancePolicy::Outcome::Error) ++mState.errors;
+                reportLoadingNifObservation(mState, "worker_terminal");
             }
         private:
             ResourceSystem& mResources;
@@ -159,6 +181,7 @@ namespace Resource
         if (mLoadingNifMaintenance && mLoadingNifMaintenance->policy.enabled() && mSpeculativeBudget && queue)
         {
             mLoadingNifMaintenance->owner.attach(queue);
+            mLoadingNifMaintenance->queueAttached.store(true);
         }
     }
 
@@ -167,12 +190,20 @@ namespace Resource
         if (!mLoadingNifMaintenance) return;
         auto& state = *mLoadingNifMaintenance;
         if (state.owner.detach(queue))
+        {
+            state.queueAttached.store(false);
+            state.loadingRequested.store(false);
             state.queueDiagnosticFailures = SceneUtil::workQueuePublicationDiagnosticFailures();
+        }
     }
 
     void ResourceSystem::setLoadingNifMaintenanceActive(bool active) noexcept
     {
-        if (mLoadingNifMaintenance) mLoadingNifMaintenance->policy.setLoading(active);
+        if (!mLoadingNifMaintenance) return;
+        auto& state = *mLoadingNifMaintenance;
+        state.policy.setLoading(active);
+        const bool previous = state.loadingRequested.exchange(active);
+        if (previous != active) reportLoadingNifObservation(state, active ? "loading_on" : "loading_off");
     }
 
     void ResourceSystem::requestLoadingNifMaintenance(double referenceTime) noexcept
@@ -180,13 +211,21 @@ namespace Resource
         if (!mLoadingNifMaintenance || !mLoadingNifMaintenance->policy.enabled()) return;
         auto& state = *mLoadingNifMaintenance;
         ++state.requests;
-        if (state.owner.busy()) return;
+        if (state.owner.busy())
+        {
+            ++state.refusals[static_cast<unsigned>(LoadingNifMaintenancePolicy::Refusal::Busy)];
+            return;
+        }
         LoadingNifMaintenancePolicy::Admission admission;
         try
         {
             admission = state.policy.tryBegin(speculativeSample(this), OpenGlPressureMonitor::milliseconds(),
                 state.owner.available());
-            if (!admission) return;
+            if (!admission)
+            {
+                ++state.refusals[static_cast<unsigned>(admission.refusal)];
+                return;
+            }
             state.owner.publish(new LoadingNifMaintenanceItem(*this, state, admission.phase, referenceTime));
             ++state.queued;
         }
@@ -396,6 +435,30 @@ namespace Resource
         // sampled/bounded and reports its own cost/coverage separately.
         for (std::size_t i = 0; i < observed; ++i)
             observedManagers[i]->reportRuntimeDiagnostics(referenceTime);
+        if (Debug::RuntimeDiagnostics::enabled() && mLoadingNifMaintenance)
+        {
+            const auto sample = speculativeSample(this);
+            if (LoadingNifMaintenancePolicy::fresh(sample, OpenGlPressureMonitor::milliseconds())
+                && LoadingNifMaintenancePolicy::observedPressure(sample)
+                && !mLoadingNifMaintenance->pressureCensusClaimed.exchange(true))
+            {
+                // The ordinary release sweep can exhaust its budget before
+                // visiting these required owners. Request each existing bounded
+                // try-lock census independently; never evict or increase the
+                // release allowance to obtain diagnostic coverage.
+                const auto start = Debug::RuntimeDiagnostics::nowUs();
+                reportLoadingNifObservation(*mLoadingNifMaintenance, "first_observed_pressure");
+                for (BaseResourceManager* manager : { static_cast<BaseResourceManager*>(mSceneManager.get()),
+                         static_cast<BaseResourceManager*>(mImageManager.get()) })
+                    if (std::find(observedManagers.begin(), observedManagers.begin() + observed, manager)
+                        == observedManagers.begin() + observed)
+                        manager->reportRuntimeDiagnostics(referenceTime);
+                Debug::RuntimeDiagnostics::recordEvent("probe_cost", "pressure_required_owners",
+                    "One-shot sampled census requests; busy/limited/lost output remains incomplete", {
+                        {"elapsed_us", Debug::RuntimeDiagnostics::nowUs() - start},
+                        {"sample_generation", sample.generation} });
+            }
+        }
         maintenance.setMetric(0, "scanned", budget.scanned);
         maintenance.setMetric(1, "released", budget.released);
         maintenance.setMetric(2, "estimated_bytes", budget.releasedBytes);
