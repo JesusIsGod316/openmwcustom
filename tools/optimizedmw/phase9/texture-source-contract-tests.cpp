@@ -5,6 +5,7 @@
 #include <components/resource/sharedstatecache.hpp>
 #include <components/vfs/archive.hpp>
 #include <osg/DisplaySettings>
+#include <osg/ContextData>
 #include <osg/GraphicsContext>
 #include <osg/Group>
 #include <osg/State>
@@ -84,11 +85,12 @@ namespace
             osg::ref_ptr<osg::Image> image;
             std::shared_ptr<const Recipe> recipe;
             std::shared_ptr<SpeculativeBudget> budget;
+            bool pooledRetirement=false;
         };
     public:
         PersistentTexture()=default;
-        PersistentTexture(osg::Image* image,std::shared_ptr<SpeculativeBudget> budget)
-            : osg::Texture2D(image),mRecipe(image?ImageManager::imageSourceRecipe(*image):nullptr),mBudget(std::move(budget))
+        PersistentTexture(osg::Image* image,std::shared_ptr<SpeculativeBudget> budget,bool pooledRetirement=false)
+            : osg::Texture2D(image),mRecipe(image?ImageManager::imageSourceRecipe(*image):nullptr),mBudget(std::move(budget)),mPooledRetirement(pooledRetirement)
         {
             if (!mRecipe || !mBudget || !mRecipe->matches(*image)) throw std::runtime_error("No actual immutable source publication");
             setDataVariance(osg::Object::STATIC);setResizeNonPowerOfTwoHint(false);
@@ -108,6 +110,7 @@ namespace
                 if (mRecipe->revision()<rhs.mRecipe->revision()) return -1;
                 if (rhs.mRecipe->revision()<mRecipe->revision()) return 1;
             }
+            if (mPooledRetirement!=rhs.mPooledRetirement) return mPooledRetirement?1:-1;
             if (const auto value=compareTexture(rhs)) return value;
             COMPARE_StateAttribute_Parameter(_borderWidth)
             COMPARE_StateAttribute_Parameter(_borderColor)
@@ -130,7 +133,16 @@ namespace
                 if (!image) return false; // Caller rebuilds an ordinary, newly keyed material; no live re-key.
                 const_cast<PersistentTexture*>(this)->setImage(image);
             }
-            osg::Texture2D::apply(state);return getTextureObject(state.getContextID())!=nullptr;
+            osg::Texture2D::apply(state);
+            const auto* object=getTextureObject(state.getContextID());
+            // Independently selected native experiment. A pool can steal an
+            // active TextureObject and zero this texture's slot. Our next
+            // owner apply reconstructs the original SHA256 source before any
+            // new upload. This never changes the production OSG safety rule.
+            if (mPooledRetirement && state.getMaxTexturePoolSize()!=0 && getImage()
+                && areAllTextureObjectsLoaded() && object && object->getTexture()==this && object->isAllocated())
+                const_cast<PersistentTexture*>(this)->_image=nullptr;
+            return object!=nullptr;
         }
         void apply(osg::State& state) const override
         { if (!tryApply(state)) throw std::runtime_error("Native immutable material requires ordinary replacement"); }
@@ -141,12 +153,12 @@ namespace
         const std::shared_ptr<const Recipe>& recipe() const { return mRecipe; }
     private:
         explicit PersistentTexture(Snapshot value)
-            : osg::Texture2D(*value.sampler,osg::CopyOp::SHALLOW_COPY),mRecipe(std::move(value.recipe)),mBudget(std::move(value.budget))
+            : osg::Texture2D(*value.sampler,osg::CopyOp::SHALLOW_COPY),mRecipe(std::move(value.recipe)),mBudget(std::move(value.budget)),mPooledRetirement(value.pooledRetirement)
         { setImage(value.image); }
         Snapshot snapshot(const osg::CopyOp& copy) const
         {
             std::lock_guard lock(mMutex);
-            Snapshot result{new osg::Texture2D(*this,osg::CopyOp::SHALLOW_COPY),{},mRecipe,mBudget};
+            Snapshot result{new osg::Texture2D(*this,osg::CopyOp::SHALLOW_COPY),{},mRecipe,mBudget,mPooledRetirement};
             if (getImage())
             {
                 if (copy.getCopyFlags()&osg::CopyOp::DEEP_COPY_IMAGES)
@@ -160,6 +172,7 @@ namespace
         }
         const std::shared_ptr<const Recipe> mRecipe;
         const std::shared_ptr<SpeculativeBudget> mBudget;
+        const bool mPooledRetirement=false;
         mutable std::mutex mMutex;
     };
     osg::ref_ptr<osg::GraphicsContext> context()
@@ -242,6 +255,31 @@ int main() try
     auto cpu=a->cpuLease();require(cpu && cpu->getColor(0,0)==osg::Vec4(0,1,0,1) && ImageSource::ownedBackingBytes(*cpu)==4096,"Actual CPU getColor consumer gets a charged reconstructed lease");
     a->releaseGLObjects(state);a->apply(*state);require(cpu->data()[1]==255 && budget->stats().knownOwnerBytes==4096,"CPU reader survives another native upload and retirement");
     cpu=nullptr;
+    // The real nonzero pool steals an active object irrespective of an extra
+    // ref_ptr pin. Its GL name, pointer, extent and format can all stay the
+    // same while the color/source changes: also a DLSS storage-identity gate.
+    auto* pool=osg::get<osg::TextureObjectManager>(state->getContextID());
+    pool->flushAllDeletedGLObjects();state->setMaxTexturePoolSize(8192);pool->newFrame(nullptr);
+    osg::ref_ptr<PersistentTexture> poolSource=new PersistentTexture(manager->getImage(VFS::Path::Normalized("textures/green.tga")),budget,true);
+    manager->clearCache();poolSource->apply(*state);pixels(*poolSource,*state,green);
+    require(!poolSource->getImage() && !budget->stats().knownOwnerBytes,"Independent immutable-source candidate retires its CPU backing with an actual nonzero pool");
+    osg::ref_ptr<osg::Texture::TextureObject> pinnedObject=poolSource->getTextureObject(state->getContextID());
+    const auto pinnedName=pinnedObject->id();std::vector<osg::ref_ptr<PersistentTexture>> competitors;bool stolen=false;
+    for(unsigned i=0;i<12 && !stolen;++i)
+    {
+        pool->newFrame(nullptr);
+        osg::ref_ptr<PersistentTexture> competitor=new PersistentTexture(manager->getImage(VFS::Path::Normalized("textures/red.tga")),budget,true);
+        manager->clearCache();competitor->apply(*state);pixels(*competitor,*state,red);competitors.push_back(competitor);
+        stolen=!poolSource->getTextureObject(state->getContextID()) && pinnedObject->getTexture()!=poolSource.get();
+        if(stolen)require(competitor->getTextureObject(state->getContextID())==pinnedObject && pinnedObject->id()==pinnedName,
+            "Actual pool reuses the same pinned TextureObject and GL name for a different colored source");
+    }
+    require(stolen,"Finite real-pool workload actually evicts the active immutable-source allocation");
+    const auto opensBefore=greenFile->opens.load();pool->newFrame(nullptr);poolSource->apply(*state);pixels(*poolSource,*state,green);
+    require(greenFile->opens==opensBefore+1 && !poolSource->getImage() && !budget->stats().knownOwnerBytes,
+        "Actual stolen pooled allocation reconstructs exact original pixels once and retires its complete temporary charge");
+    for(auto& competitor:competitors)competitor->releaseGLObjects(state);
+    poolSource->releaseGLObjects(state);competitors.clear();poolSource=nullptr;pinnedObject=nullptr;state->setMaxTexturePoolSize(0);
     osg::DisplaySettings::instance()->setMaxNumberOfGraphicsContexts(2);auto second=context();auto* state2=second->getState();
     require(state->getContextID()!=state2->getContextID(),"Two real contexts have separate native storage");
     osg::ref_ptr<PersistentTexture> multi=new PersistentTexture(manager->getImage(VFS::Path::Normalized("textures/red.tga")),budget);
@@ -296,7 +334,7 @@ int main() try
     require(!budget->stats().knownOwnerBytes && !budget->stats().experimentRetainedBytes && !budget->stats().futureBytes,"Final real CPU/texture/shared-state teardown retires every tracked output allocation and grant");
     first->releaseContext();first->close(true);
     std::cout<<"PASS actual texture source contract: "<<checks.load()<<" assertions; ImageManager SHA256, distinct colors, shared state, charged CPU/clones, two contexts, nonzero pools, concurrent native work and ordinary source fallback\n"
-        <<"LIMITATIONS: native texture prototype, controlled32x32 required DDS/TGA; no engine factory/retirement, arbitrary CPU consumer/plugin audit, asynchronous preparation, whole-game RAM/FPS or visual acceptance. Pools retain backing. Ordinary replacement is explicit and never a live shared-state re-key.\n";
+        <<"LIMITATIONS: native texture prototype, controlled32x32 required DDS/TGA; no engine factory/retirement, arbitrary CPU consumer/plugin audit, asynchronous preparation, whole-game RAM/FPS or visual acceptance. Ordinary pool rule retains backing; separate native candidate reconstructs after actual pool stealing. Ordinary replacement is explicit and never a live shared-state re-key. GL names/pointers alone are not storage authority.\n";
     return 0;
 }
 catch(const std::exception& e){std::cerr<<"FAIL actual texture source contract after "<<checks.load()<<" assertions: "<<e.what()<<'\n';return 1;}
