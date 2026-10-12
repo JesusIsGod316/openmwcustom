@@ -318,6 +318,13 @@ target_compile_definitions(p9-compact-static-collision PRIVATE BT_USE_DOUBLE_PRE
 target_link_libraries(p9-compact-static-collision PRIVATE ${BULLET_LIBRARIES} Threads::Threads)
 add_test(NAME p9-compact-static-collision COMMAND p9-compact-static-collision)
 set_tests_properties(p9-compact-static-collision PROPERTIES TIMEOUT 60)
+add_executable(p9-compact-collision-adapter compact-static-collision-adapter-tests.cpp
+  ${ROOT}/components/resource/bulletshape.cpp)
+target_include_directories(p9-compact-collision-adapter SYSTEM PRIVATE ${BULLET_INCLUDE_DIRS})
+target_compile_definitions(p9-compact-collision-adapter PRIVATE BT_USE_DOUBLE_PRECISION)
+target_link_libraries(p9-compact-collision-adapter PRIVATE ${BULLET_LIBRARIES} Threads::Threads)
+add_test(NAME p9-compact-collision-adapter COMMAND p9-compact-collision-adapter)
+set_tests_properties(p9-compact-collision-adapter PROPERTIES TIMEOUT 60)
 # Native Windows fixture only. Keep the game SDL owner unchanged and require
 # an explicit pinned SDK location rather than choosing an ambient SDL library.
 set(P9_SDL3_ROOT "" CACHE PATH "Pinned SDL3 SDK for the standalone namespace fixture")
@@ -337,6 +344,8 @@ endif()
 if(MSVC)
   target_compile_options(p9-compact-static-collision PRIVATE /Zi /WX)
   target_link_options(p9-compact-static-collision PRIVATE /DEBUG)
+  target_compile_options(p9-compact-collision-adapter PRIVATE /Zi /WX)
+  target_link_options(p9-compact-collision-adapter PRIVATE /DEBUG)
   if(TARGET p9-diagnostic-sdl-namespace)
     target_compile_options(p9-diagnostic-sdl-namespace PRIVATE /Zi /WX)
     target_link_options(p9-diagnostic-sdl-namespace PRIVATE /DEBUG)
