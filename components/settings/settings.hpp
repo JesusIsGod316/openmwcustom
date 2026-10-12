@@ -45,6 +45,9 @@ namespace Settings
         static void clear();
         ///< clears all settings and default settings
 
+        static void validateDefaults(const CategorySettingValueMap& declared);
+        ///< rejects defaults that the typed settings registry did not initialize
+
         static std::filesystem::path load(const Files::ConfigurationManager& cfgMgr, bool loadEditorSettings = false);
         ///< load settings from all active config dirs. Returns the path of the last loaded file.
 

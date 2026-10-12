@@ -172,11 +172,16 @@ namespace Settings
         if (!loadEditorSettings)
             Settings::StaticValues::init();
 
-        for (const auto& [key, value] : originalDefaultSettings)
-            if (!sInitialized.contains(key))
-                throw std::runtime_error("Default setting [" + key.first + "] " + key.second + " is not initialized");
+        validateDefaults(originalDefaultSettings);
 
         return settingspath;
+    }
+
+    void Manager::validateDefaults(const CategorySettingValueMap& declared)
+    {
+        for (const auto& [key, value] : declared)
+            if (!sInitialized.contains(key))
+                throw std::runtime_error("Default setting [" + key.first + "] " + key.second + " is not initialized");
     }
 
     void Manager::saveUser(const std::filesystem::path& file)

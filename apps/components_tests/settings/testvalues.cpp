@@ -56,9 +56,9 @@ namespace Settings
             StaticValues::initDefaults();
             Manager::mUserSettings[{ "Cells", "loading nif maintenance" }] = "true";
             StaticValues::init();
-            for (const auto& [key, value] : declared)
-                EXPECT_TRUE(Manager::sInitialized.contains(key))
-                    << "Unregistered startup default [" << key.first << "] " << key.second;
+            EXPECT_NO_THROW(Manager::validateDefaults(declared));
+            const CategorySettingValueMap unknown{ { { "Cells", "unregistered test default" }, "false" } };
+            EXPECT_THROW(Manager::validateDefaults(unknown), std::runtime_error);
             EXPECT_TRUE(cells().mLoadingNifMaintenance);
             EXPECT_FALSE(lua().mLazyInstructionStatistics);
             std::cout << "Settings registry checked " << declared.size() << " defaults from "
