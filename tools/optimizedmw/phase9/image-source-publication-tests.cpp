@@ -7,6 +7,7 @@
 #include <iostream>
 #include <sstream>
 #include <atomic>
+#include <string_view>
 
 namespace
 {
@@ -55,9 +56,60 @@ namespace
         s.decision.state=OpenGlPressure::Normal;s.decision.admissionsPerSample=4;
         s.decision.limits=OpenGlPressurePolicy{}.limits(s.memory.physicalTotal);return s;
     }
+    void cloneReceipt()
+    {
+        VFS::Manager vfs;auto archive=std::make_unique<Archive>("textures/clone.dds");
+        archive->file.bytes=encoded("dds");const auto path=archive->path;
+        vfs.addArchive(std::move(archive));vfs.buildIndex();
+        SpeculativeBudget budget({512*SpeculativeBudget::MiB,4,1,256*SpeculativeBudget::MiB,64*SpeculativeBudget::MiB,1});
+        ImageManager manager(&vfs,120);manager.setSpeculativeBudget(&budget);manager.configureImageSources(true,sample,&budget);
+        auto original=manager.getImage(path);
+        require(bool(ImageManager::imageSourceRecipe(*original)),"Actual original publication has a source/backing receipt");
+        for (const auto flags : {osg::CopyOp::SHALLOW_COPY,osg::CopyOp::DEEP_COPY_ALL})
+        {
+            osg::ref_ptr<osg::Object> object=original->clone(osg::CopyOp(flags));
+            const auto* clone=dynamic_cast<const osg::Image*>(object.get());
+            require(clone && clone!=original && !ImageManager::imageSourceRecipe(*clone),
+                "Copied metadata cannot grant original allocation authority to a distinct shallow/deep cloned image");
+        }
+        original->dirty();
+        require(!ImageManager::imageSourceRecipe(*original),"Dirty CPU publication cannot keep its original immutable backing receipt");
+    }
+    void paddedTga()
+    {
+        // Real Morrowind 16-bit/one-alpha-bit normalization allocates RGB rows
+        // at packing4. Seven RGB pixels leave three unused bytes per row.
+        VFS::Manager vfs;auto archive=std::make_unique<Archive>("textures/padded.tga");
+        archive->file.bytes=Bytes(18+7*5*2,0);auto& bytes=archive->file.bytes;
+        bytes[2]=2;bytes[12]=7;bytes[14]=5;bytes[16]=16;bytes[17]=1;
+        for (unsigned i=0;i<7*5;++i) {bytes[18+i*2]=0xe0;bytes[19+i*2]=0x83;}
+        const auto path=archive->path;vfs.addArchive(std::move(archive));vfs.buildIndex();
+        SpeculativeBudget budget({512*SpeculativeBudget::MiB,4,1,256*SpeculativeBudget::MiB,64*SpeculativeBudget::MiB,1});
+        ImageManager manager(&vfs,120);manager.setSpeculativeBudget(&budget);manager.configureImageSources(true,sample,&budget);
+        auto image=manager.getImage(path);const auto recipe=ImageManager::imageSourceRecipe(*image);
+        require(image && recipe && image->getPixelFormat()==GL_RGB && image->getPacking()==4
+            && imagePayloadExtent(*image).bytes==120 && recipe->revision().killAlpha,
+            "Actual TGA decoder and Morrowind alpha normalization create the padded source fixture");
+        for (unsigned y=0;y<5;++y)std::fill(image->data()+y*24+21,image->data()+y*24+24,0x5a);
+        require(recipe->matches(*image),"Unused row padding cannot change immutable decoded-pixel identity");
+        auto reconstructed=recipe->reconstruct(&budget,sample(&budget));
+        require(reconstructed && recipe->matches(*reconstructed.image)
+            && reconstructed.image->getPixelFormat()==GL_RGB && reconstructed.image->getOrigin()==image->getOrigin(),
+            "Actual padded TGA reconstructs exact normalized pixels independently of allocator padding");
+        image->data()[0]^=1;
+        require(!recipe->matches(*image),"Changed visible texel is rejected even without a dirty notification");
+    }
 }
-int main() try
+int main(int argc,char** argv) try
 {
+    if (argc==2)
+    {
+        const std::string_view mode=argv[1];
+        if (mode=="--clone-receipt") cloneReceipt();
+        else if (mode=="--padded-tga") paddedTga();
+        else throw std::runtime_error("Unknown isolated source regression");
+        std::cout<<"PASS actual image source publication: "<<checks<<" assertions; isolated publication regression\n";return 0;
+    }
     for (const std::string extension : {"dds","tga","png"})for (bool canonical : {false,true})
         for (bool sources : {false,true})for (bool disableFlip : {false,true})
     {
@@ -118,6 +170,7 @@ int main() try
         require(!budget.stats().futureBytes && !budget.stats().knownOwnerBytes && !budget.stats().experimentRetainedBytes,
             "Final actual image backing retirement repays all surviving unique charges");
     }
+    cloneReceipt();paddedTga();
     // Unknown materialization remains one ordinary required open. A candidate
     // refusal must never turn a valid source into the warning image.
     {
