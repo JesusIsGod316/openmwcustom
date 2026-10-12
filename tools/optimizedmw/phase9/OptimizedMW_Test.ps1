@@ -707,7 +707,12 @@ try{
 
     # Focused nonblocking diagnostics. Avoid deep trace/profilers in performance runs.
     $env:OPENMW_P9_CAPTURE_TRANSPORT='1'
-    if($automatedSession){$env:OPENMW_P9_AUTOMATED_BENCHMARK='1'}
+    if($automatedSession){
+        $env:OPENMW_P9_AUTOMATED_BENCHMARK='1'
+        # Automated games have no interactive owner to dismiss a fatal dialog.
+        # The engine logs the exact exception and exits through its normal handler.
+        $env:OPENMW_SUPPRESS_FATAL_DIALOG='1'
+    }
     $env:OPENMW_P9_RESOURCE_CAPACITY='131072'
     $env:OPENMW_V3_PAGING_FILE=Join-Path $ProfileDir 'v3-paging.csv'
     $env:OPENMW_V3_RENDER_FILE=Join-Path $ProfileDir 'v3-render.csv'
