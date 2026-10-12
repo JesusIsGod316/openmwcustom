@@ -20,6 +20,7 @@ import indirect_work
 import lua_protected_work
 import lua_vm_states
 import runtime_dependencies
+import image_publication_work
 
 
 def read_json(path):
@@ -146,6 +147,10 @@ def analyze(profile):
 def engagement(profile, requested, asset_mask=0, architecture_mask=0, work=None, lua_work=None):
     text = (profile/'openmw.log').read_text(encoding='utf-8-sig')
     positive = {}
+    image_lifetime = None
+    if requested.get('canonical image publication') == 'true':
+        image_lifetime = image_publication_work.lifetime_work(profile)
+        positive['canonical_image_publication'] = image_publication_work.positive_engagement(image_lifetime, requested=True)
     if asset_mask & 1:
         # A successful cook/cache lookup is not proof that visible LOD draws
         # consumed the reduced product in the real active-grid renderer.
@@ -225,6 +230,7 @@ def engagement(profile, requested, asset_mask=0, architecture_mask=0, work=None,
         positive['lua_protected_call_reuse'] = bool(lua_work and lua_work['enabled']
             and indirect_work.positive_counts(lua_work, 'reused_total'))
     return {'positive_work': positive, 'all_requested_positive': all(positive.values()),
+            'image_publication_lifetime_work': image_lifetime,
             'limit': 'Preparation/dispatch engagement; visible resource adoption and performance require separate evidence'}
 
 
@@ -410,6 +416,7 @@ def run_matrix(plan_path, output):
     pins = [identity(game/'openmw.exe'),identity(plan['symbols']),identity(game/'BUILD-IDENTITY.json'),
             identity(plan_path),identity(plan['route_catalog']),identity(__file__),identity(benchmark_desktop.__file__)]
     pins.append(identity(indirect_work.__file__))
+    pins.append(identity(image_publication_work.__file__))
     pins += [identity(lua_protected_work.__file__), identity(lua_vm_states.__file__)]
     dependencies = runtime_dependencies.runtime_closure(game)
     pins.append(identity(runtime_dependencies.__file__))

@@ -43,6 +43,25 @@ class Benchmarks(unittest.TestCase):
             lua['enabled'] = False
             self.assertFalse(matrix.engagement(root, requested, work=vao, lua_work=lua)['all_requested_positive'])
 
+    def test_image_publication_requires_actual_decoded_loser_release(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            policy = 'OptimizedMW canonical image publication policy: enabled=1 scope=completed_immutable_exact_source_publication_only\n'
+            supplemental = 'OptimizedMW canonical image publication: enabled=1; concurrent decoded owners only, not a whole-process RAM ceiling\n'
+            final = ('OptimizedMW canonical image publication: ordinary_enabled=1 publications=7 winners={images} '
+                     'discarded_images={images} discarded_payload_bytes_cumulative={payload} revision_declines=0 '
+                     'epoch_declines=0 ineligible=0 lookup_revision_misses=0 '
+                     'scope=completed_decoder_losers_not_resident_RAM_savings\n')
+            (root/'openmw.log').write_text(policy+supplemental+final.format(images=0,payload=0))
+            self.assertFalse(matrix.engagement(root, {'canonical image publication':'true'})['all_requested_positive'])
+            (root/'openmw.log').write_text(policy+supplemental+final.format(images=3,payload=64))
+            result=matrix.engagement(root, {'canonical image publication':'true'})
+            self.assertTrue(result['all_requested_positive'])
+            self.assertEqual(result['image_publication_lifetime_work']['scope'],'game_lifetime_completed_decoder_losers')
+            (root/'openmw.log').write_text(policy+supplemental)
+            with self.assertRaises(ValueError):
+                matrix.engagement(root, {'canonical image publication':'true'})
+
     def test_temporal_input_modes_do_not_silently_fall_back_to_control(self):
         self.assertEqual(matrix.temporal_arguments({}), [])
         self.assertEqual(matrix.temporal_arguments({'temporal_mode':'Off'}), [])
