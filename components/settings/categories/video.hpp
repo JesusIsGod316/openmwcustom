@@ -34,6 +34,7 @@ namespace Settings
         SettingValue<std::string> mRendererBackend{
             mIndex, "Video", "renderer backend", makeEnumSanitizerString({ "auto", "opengl", "vulkan" }) };
         SettingValue<bool> mRendererFallback{ mIndex, "Video", "renderer fallback" };
+        SettingValue<bool> mDiagnosticContextLifetime{ mIndex, "Video", "diagnostic context lifetime" };
         SettingValue<float> mRenderScale{ mIndex, "Video", "render scale", makeClampSanitizerFloat(0.5f, 1.0f) };
         SettingValue<std::string> mUpscaler{ mIndex, "Video", "upscaler", makeEnumSanitizerString({ "bilinear", "nis" }) };
         SettingValue<float> mUpscalerSharpness{ mIndex, "Video", "upscaler sharpness", makeClampSanitizerFloat(0.0f, 1.0f) };

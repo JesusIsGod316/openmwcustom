@@ -53,6 +53,7 @@ namespace SDLUtil
         DiagnosticCloseState diagnosticCloseState() const noexcept { return mDiagnosticCloseState.load(); }
         bool diagnosticExternalWindowReleaseAllowed() const noexcept
         { return !mDiagnosticRequested || diagnosticCloseState() == DiagnosticCloseState::Destroyed; }
+        bool diagnosticNamespaceRequested() const noexcept { return mDiagnosticRequested; }
 
         bool isSameKindAs(const Object* object) const override
         {

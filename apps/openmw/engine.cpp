@@ -50,6 +50,7 @@
 
 #include <components/sdlutil/imagetosurface.hpp>
 #include <components/sdlutil/sdlgraphicswindow.hpp>
+#include <components/sdlutil/externalwindowclose.hpp>
 
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/niffilemanager.hpp>
@@ -1460,15 +1461,17 @@ OMW::Engine::~Engine()
     // threads before retiring them, then close the held contexts only after
     // scene/worker teardown. Graph release alone does not repay pooled debt.
     std::vector<osg::ref_ptr<osg::GraphicsContext>> assetContexts;
-    if(Resource::AssetPolicy::mask() && mViewer && !mUseVulkanRenderer)
+    if (mDiagnosticWindowClose)
+        mDiagnosticWindowClose->stopAdmissionsAndJoin([&] { if (mViewer) mViewer->stopThreading(); });
+    if((Resource::AssetPolicy::mask() || mDiagnosticWindowClose) && mViewer && !mUseVulkanRenderer)
     {
-        mViewer->stopThreading();
+        if (!mDiagnosticWindowClose) mViewer->stopThreading();
         osgViewer::ViewerBase::Contexts contexts;
         mViewer->getContexts(contexts);
         for(auto* context:contexts)
         {
             assetContexts.emplace_back(context);
-            if(context->makeCurrent())
+            if(Resource::AssetPolicy::mask() && context->getState() && context->makeCurrent())
             {
                 Resource::TextureStreaming::releaseContext(*context->getState());
                 context->releaseContext();
@@ -1526,8 +1529,19 @@ OMW::Engine::~Engine()
     SceneUtil::GpuIndirectPackets::sampleOwner=nullptr;
     SceneUtil::GpuIndirectPackets::ledger=nullptr;
     mResourceSystem.reset();
-    for(auto& context:assetContexts) context->close(true);
-    if(!assetContexts.empty()) Resource::AssetGpuBudget::discardAfterContextsClosed();
+    for(auto& context:assetContexts)
+        if (!mDiagnosticWindowClose || !mDiagnosticWindowClose->ownsContext(context)) context->close(true);
+    if (mDiagnosticWindowClose)
+    {
+        mDiagnosticWindowClose->closeJoined();
+        // One finite retry on the retained native creation, independent of
+        // any OSG State discarded by close(). Live importer/fence debt keeps
+        // release denied; no synthetic zeroing or unbounded retry loop.
+        mDiagnosticWindowClose->retryCloseJoined();
+    }
+    const bool nativeWindowClosed=!mDiagnosticWindowClose || (mDiagnosticWindowClose->subsystemReleaseAllowed()
+        && mDiagnosticWindowClose->windowReleaseAllowed(mWindow));
+    if(!assetContexts.empty() && nativeWindowClosed) Resource::AssetGpuBudget::discardAfterContextsClosed();
     // All resource, Lua and viewer workers are now joined.
     Debug::ResourceLifecycle::emitStatus();
     Debug::DiagnosticObserver::declareProducerThreadsJoined();
@@ -1536,15 +1550,21 @@ OMW::Engine::~Engine()
 
     mEncoder = nullptr;
 
-    if (mWindow)
+    if (mDiagnosticWindowClose)
+    {
+        if (!mDiagnosticWindowClose->destroyExternalWindow(mWindow))
+            Log(Debug::Error) << "Diagnostic native close refused: retaining external SDL window and context authority through process exit.";
+    }
+    else if (mWindow)
     {
         SDL_DestroyWindow(mWindow);
         mWindow = nullptr;
     }
 
-    SDL_Quit();
+    if (nativeWindowClosed) SDL_Quit();
+    else Log(Debug::Error) << "Diagnostic native close refused: SDL subsystem shutdown withheld; no native-death/free credit.";
 
-    Log(Debug::Info) << "Quitting peacefully.";
+    Log(Debug::Info) << (nativeWindowClosed ? "Quitting peacefully." : "Quitting with retained diagnostic native close debt.");
 }
 
 // Set data dir
@@ -1646,6 +1666,8 @@ void OMW::Engine::createWindow()
     }
 
     osg::ref_ptr<SDLUtil::GraphicsWindowSDL2> graphicsWindow;
+    if (Settings::video().mDiagnosticContextLifetime)
+        mDiagnosticWindowClose=std::make_unique<SDLUtil::ExternalWindowCloseAuthority>();
     while (!graphicsWindow || !graphicsWindow->valid())
     {
         while (!mWindow)
@@ -1711,7 +1733,8 @@ void OMW::Engine::createWindow()
         traits->vsync = 0;
         traits->inheritedWindowData = new SDLUtil::GraphicsWindowSDL2::WindowData(mWindow);
 
-        graphicsWindow = new SDLUtil::GraphicsWindowSDL2(traits, vsync);
+        graphicsWindow = new SDLUtil::GraphicsWindowSDL2(traits, vsync,bool(mDiagnosticWindowClose));
+        if (mDiagnosticWindowClose) mDiagnosticWindowClose->attach(mWindow,graphicsWindow);
         if (!graphicsWindow->valid())
             throw std::runtime_error("Failed to create GraphicsContext");
 
@@ -1719,9 +1742,20 @@ void OMW::Engine::createWindow()
         {
             Log(Debug::Warning) << "Warning: Framebuffer MSAA level is only " << traits->samples << "x instead of "
                                 << antialiasing << "x. Trying " << antialiasing / 2 << "x instead.";
-            graphicsWindow->closeImplementation();
-            SDL_DestroyWindow(mWindow);
-            mWindow = nullptr;
+            if (mDiagnosticWindowClose)
+            {
+                // No viewer/importer has acquired this startup creation yet.
+                mDiagnosticWindowClose->stopAdmissionsAndJoin([] {});
+                mDiagnosticWindowClose->closeJoined();
+                if (!mDiagnosticWindowClose->destroyExternalWindow(mWindow))
+                    throw std::runtime_error("Diagnostic native close denied MSAA window replacement");
+            }
+            else
+            {
+                graphicsWindow->closeImplementation();
+                SDL_DestroyWindow(mWindow);
+                mWindow = nullptr;
+            }
             antialiasing /= 2;
             Settings::video().mAntialiasing.set(antialiasing);
             checkSDLError(SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, antialiasing));

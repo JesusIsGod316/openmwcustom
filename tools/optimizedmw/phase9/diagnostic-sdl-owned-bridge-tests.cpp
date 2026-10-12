@@ -10,6 +10,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include "../../../components/sdlutil/sdlgraphicswindow.hpp"
+#include "../../../components/sdlutil/externalwindowclose.hpp"
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -147,8 +148,58 @@ int main()
         const auto finalCalls=p9SdlDestroyCalls();
         require(graphics->retryDiagnosticNativeClose() && p9SdlDestroyCalls()==finalCalls,"Duplicate close never invokes native destruction twice");
         graphics=nullptr;SDL_DestroyWindow(window);window=nullptr;
+
+        // Exercise the same external-owner service called by Engine, including
+        // OSG State discard, an actual native texture debt and SDK false retry.
+        SDLUtil::ExternalWindowCloseAuthority external;
+        window=SDL_CreateWindow("Private engine external close authority",64,64,SDL_WINDOW_OPENGL|SDL_WINDOW_HIDDEN);
+        require(window!=nullptr,"Create actual second external SDL window");
+        const auto windowId=SDL_GetWindowID(window);
+        traits->inheritedWindowData=new SDLUtil::GraphicsWindowSDL2::WindowData(window);
+        graphics=new SDLUtil::GraphicsWindowSDL2(traits,SDLUtil::VSyncMode::Disabled,true);
+        external.attach(window,graphics);
+        require(external.ownsContext(graphics) && graphics->realize() && graphics->makeCurrent(),
+            "Engine external owner pins the actual opt-in SDL creation");
+        require(!external.destroyExternalWindow(window) && window && !external.subsystemReleaseAllowed(),
+            "External window/subsystem release is denied before actual owner join");
+        std::atomic_bool wrongCalled{false};bool wrongStatus=true;
+        std::thread wrong([&] {wrongStatus=external.stopAdmissionsAndJoin([&]{wrongCalled=true;});});wrong.join();
+        require(!wrongStatus && !wrongCalled,"Wrong-thread caller cannot manufacture an owner join receipt");
+        GLuint pendingTexture=0;glGenTextures(1,&pendingTexture);glBindTexture(GL_TEXTURE_2D,pendingTexture);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,green.data());
+        const auto ownedObserver=graphics->diagnosticNamespaceObserver();
+        require(pendingTexture && glIsTexture(pendingTexture) && ownedObserver
+            && ownedObserver->withExecution(graphics->diagnosticCurrentObservation(),
+                [](const auto& scope){scope.setKnownResources(4,0);})==DiagnosticNamespaceStatus::Executed,
+            "Actual importer-like texture allocation is declared before close");
+        bool joinFailed=false;
+        try {external.stopAdmissionsAndJoin([]{throw std::runtime_error("native join injection");});}
+        catch(const std::runtime_error&) {joinFailed=true;}
+        require(joinFailed && !external.closeJoined() && !external.destroyExternalWindow(window),
+            "Failed actual join callback grants no native/window shutdown permission");
+        unsigned joins=0;
+        require(external.stopAdmissionsAndJoin([&]{++joins;}) && joins==1,
+            "External owner invokes and completes its actual join callback before close");
+        const auto pendingDestroyBefore=p9SdlDestroyCalls();
+        require(!external.closeJoined() && p9SdlDestroyCalls()==pendingDestroyBefore
+            && !graphics->getState() && window && SDL_GetWindowFromID(windowId)==window,
+            "Actual resource debt survives OSG discard and prevents native/external window destruction");
+        require(graphics->makeDiagnosticCurrentForRetirement()
+            && graphics->retireDiagnosticResources([&](const auto& scope)
+            {glDeleteTextures(1,&pendingTexture);require(!glIsTexture(pendingTexture),"Actual pending texture deleted before credit");scope.setKnownResources(0,0);})
+                ==DiagnosticNamespaceStatus::Executed,
+            "Retained original native owner retires resources independently of discarded OSG State");
+        p9SdlInjectNextDestroyFailure();
+        require(!external.retryCloseJoined() && !external.destroyExternalWindow(window)
+            && !external.subsystemReleaseAllowed() && window && SDL_GetWindowFromID(windowId)==window,
+            "SDK false retains the real external window and subsystem authority");
+        require(external.retryCloseJoined() && external.subsystemReleaseAllowed(),
+            "Explicit finite actual native retry qualifies SDL subsystem release");
+        require(external.destroyExternalWindow(window) && !window && !SDL_GetWindowFromID(windowId),
+            "Only confirmed native death allows actual Engine external window destruction");
+        graphics=nullptr;
         std::cout<<"PASS production SDL-owned lifetime bridge: "<<checks.load()<<" assertions; real namespace/current/closed-owner cleanup only\n";
-        std::cout<<"LIMITATIONS: synthetic false destroy is fault injection; caller must stop/join ordinary rendering and honor external-window permission. No game import/NGX/jitter/dense motion/performance.\n";
+        std::cout<<"LIMITATIONS: synthetic false destroy/join throw are fault injection. Actual Engine service and native owners exercised; no game import/NGX/jitter/dense motion/performance proof.\n";
         SDL_Quit();return 0;
     }
     catch(const std::exception& error)
