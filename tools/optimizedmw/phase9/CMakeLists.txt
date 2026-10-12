@@ -312,6 +312,36 @@ if(NOT MSVC)
 endif()
 add_test(NAME p9-loading-nif-maintenance COMMAND p9-loading-nif-maintenance)
 set_tests_properties(p9-loading-nif-maintenance PROPERTIES TIMEOUT 60)
+add_executable(p9-compact-static-collision compact-static-collision-tests.cpp)
+target_include_directories(p9-compact-static-collision SYSTEM PRIVATE ${BULLET_INCLUDE_DIRS})
+target_compile_definitions(p9-compact-static-collision PRIVATE BT_USE_DOUBLE_PRECISION)
+target_link_libraries(p9-compact-static-collision PRIVATE ${BULLET_LIBRARIES} Threads::Threads)
+add_test(NAME p9-compact-static-collision COMMAND p9-compact-static-collision)
+set_tests_properties(p9-compact-static-collision PROPERTIES TIMEOUT 60)
+# Native Windows fixture only. Keep the game SDL owner unchanged and require
+# an explicit pinned SDK location rather than choosing an ambient SDL library.
+set(P9_SDL3_ROOT "" CACHE PATH "Pinned SDL3 SDK for the standalone namespace fixture")
+if(WIN32 AND P9_SDL3_ROOT)
+  if(NOT EXISTS "${P9_SDL3_ROOT}/include/SDL3/SDL.h" OR
+     NOT EXISTS "${P9_SDL3_ROOT}/lib/x64/SDL3.lib")
+    message(FATAL_ERROR "The native SDL namespace fixture requires the pinned x64 SDL3 SDK")
+  endif()
+  add_executable(p9-diagnostic-sdl-namespace diagnostic-sdl-namespace-tests.cpp diagnostic-sdl-window-owner.cpp)
+  target_include_directories(p9-diagnostic-sdl-namespace SYSTEM PRIVATE "${P9_SDL3_ROOT}/include")
+  target_compile_definitions(p9-diagnostic-sdl-namespace PRIVATE SDL_DISABLE_OLD_NAMES)
+  target_link_libraries(p9-diagnostic-sdl-namespace PRIVATE "${P9_SDL3_ROOT}/lib/x64/SDL3.lib"
+    ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads user32 gdi32)
+  add_test(NAME p9-diagnostic-sdl-namespace COMMAND p9-diagnostic-sdl-namespace)
+  set_tests_properties(p9-diagnostic-sdl-namespace PROPERTIES TIMEOUT 60)
+endif()
+if(MSVC)
+  target_compile_options(p9-compact-static-collision PRIVATE /Zi /WX)
+  target_link_options(p9-compact-static-collision PRIVATE /DEBUG)
+  if(TARGET p9-diagnostic-sdl-namespace)
+    target_compile_options(p9-diagnostic-sdl-namespace PRIVATE /Zi /WX)
+    target_link_options(p9-diagnostic-sdl-namespace PRIVATE /DEBUG)
+  endif()
+endif()
 add_executable(p9-image-publication image-publication-tests.cpp
   ${ROOT}/components/resource/coldimage.cpp ${ROOT}/components/resource/imagemanager.cpp
   ${ROOT}/components/resource/cachestats.cpp ${ROOT}/components/vfs/manager.cpp
