@@ -70,7 +70,7 @@ namespace
         {
             return {image.s(), image.t(), image.r(), image.getInternalTextureFormat(),
                 static_cast<int>(image.getPixelFormat()), static_cast<int>(image.getDataType()),
-                image.getPacking(), image.getRowLength(), static_cast<int>(image.getOrigin()),
+                static_cast<int>(image.getPacking()), image.getRowLength(), static_cast<int>(image.getOrigin()),
                 image.getTotalSizeInBytesIncludingMipmaps(), image.getMipmapLevels()};
         }
     };
