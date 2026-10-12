@@ -388,6 +388,8 @@ target_compile_definitions(p9-image-source-publication PRIVATE _SILENCE_CXX20_U8
 add_test(NAME p9-image-source-publication COMMAND p9-image-source-publication)
 set_tests_properties(p9-image-source-publication PROPERTIES TIMEOUT 60)
 if(MSVC)
+  target_compile_options(p9-image-source-publication PRIVATE /Zi)
+  target_link_options(p9-image-source-publication PRIVATE /DEBUG)
   target_compile_options(p9-immutable-image-source PRIVATE /WX /Zi)
   # Existing DerivedAssets uses this supported C++20 MSVC compatibility API.
   # Keep new source-contract warnings as errors without masking other warnings.

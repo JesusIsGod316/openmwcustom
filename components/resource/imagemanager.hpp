@@ -9,6 +9,7 @@
 
 #include "resourcemanager.hpp"
 #include "coldimage.hpp"
+#include "immutableimagesource.hpp"
 
 #include <atomic>
 #include <memory>
@@ -55,6 +56,13 @@ namespace Resource
         };
         PublicationStats publicationStats() const noexcept;
 
+        // Startup-only optional receipts from the actual required decoder.
+        // They preserve winning source/normalization identity and charge
+        // lifetime; they do not authorize CPU image retirement or re-keying.
+        void configureImageSources(bool enabled, SpeculativeScope::Sample sample, void* owner,
+            ImageSource::Config config = {});
+        static std::shared_ptr<const ImageSource::Recipe> imageSourceRecipe(const osg::Image& image);
+
         osg::Image* getWarningImage();
         // Startup-only. No codec, cold index, sampler, or allocation when off.
         void configureColdCache(ColdImageCache::Config config, SpeculativeScope::Sample sample, void* owner);
@@ -82,6 +90,11 @@ namespace Resource
         std::atomic<std::uint64_t> mPublications{0}, mPublicationWinners{0}, mDiscardedImages{0}, mDiscardedBytes{0};
         std::atomic<std::uint64_t> mPublicationRevisionDeclines{0}, mPublicationEpochDeclines{0};
         std::atomic<std::uint64_t> mPublicationIneligible{0}, mLookupRevisionMisses{0};
+        std::shared_ptr<ImageSource::Authority> mImageSourceAuthority;
+        ImageSource::Config mImageSourceConfig;
+        SpeculativeScope::Sample mImageSourceSample = nullptr;
+        void* mImageSourceOwner = nullptr;
+        std::atomic<std::uint64_t> mImageSourcePublished{0}, mImageSourceDeclined{0};
 
         ImageManager(const ImageManager&);
         void operator=(const ImageManager&);

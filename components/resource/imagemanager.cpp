@@ -9,6 +9,7 @@
 #include <sstream>
 #include <vector>
 #include <osgDB/Registry>
+#include <osg/UserDataContainer>
 
 #include <components/debug/debuglog.hpp>
 #include <components/debug/v3diagnostics.hpp>
@@ -33,6 +34,23 @@ USE_SERIALIZER_WRAPPER_LIBRARY(osg)
 
 namespace
 {
+    // Object's user-data container dies after Image's backing destructor.
+    // Thus external CPU pins also keep the shared allocation charge, even
+    // after ImageManager/cache destruction. Metadata clones share only this
+    // source receipt; it is not proof of a clone's distinct allocation.
+    class SourcePublication final : public osg::Object
+    {
+    public:
+        SourcePublication() = default;
+        SourcePublication(std::shared_ptr<const Resource::ImageSource::Recipe> recipe,
+            Resource::SpeculativeBudget::ChargePtr charge)
+            : mRecipe(std::move(recipe)),mCharge(std::move(charge)) {}
+        SourcePublication(const SourcePublication& other,const osg::CopyOp& copy)
+            : osg::Object(other,copy),mRecipe(other.mRecipe),mCharge(other.mCharge) {}
+        META_Object(Resource,SourcePublication)
+        const std::shared_ptr<const Resource::ImageSource::Recipe> mRecipe;
+        const Resource::SpeculativeBudget::ChargePtr mCharge;
+    };
 
     osg::ref_ptr<osg::Image> createWarningImage()
     {
@@ -117,6 +135,13 @@ namespace Resource
 
     ImageManager::~ImageManager()
     {
+        if (mImageSourceAuthority)
+        {
+            mImageSourceAuthority->close(); // No retained recipe can revive the borrowed engine VFS.
+            Log(Debug::Info) << "OptimizedMW image source receipts: published=" << mImageSourcePublished.load()
+                << " declined=" << mImageSourceDeclined.load()
+                << " scope=actual_decoder_identity_not_CPU_retirement_or_RAM_savings";
+        }
         if (mCanonicalPublication)
         {
             const auto s = publicationStats();
@@ -137,6 +162,23 @@ namespace Resource
                 << " compressed_bytes=" << v.compressedBytes << " retained_bytes=" << v.retainedBytes
                 << " peak_transient_bytes=" << v.peakReservedBytes;
         }
+    }
+
+    void ImageManager::configureImageSources(bool enabled,SpeculativeScope::Sample sample,void* owner,
+        ImageSource::Config config)
+    {
+        if (mImageSourceAuthority) mImageSourceAuthority->close();
+        mImageSourceAuthority=enabled && sample && owner ? std::make_shared<ImageSource::Authority>(mVFS) : nullptr;
+        mImageSourceSample=sample;mImageSourceOwner=owner;mImageSourceConfig=config;
+    }
+
+    std::shared_ptr<const ImageSource::Recipe> ImageManager::imageSourceRecipe(const osg::Image& image)
+    {
+        const auto* data=image.getUserDataContainer();
+        if (!data) return {};
+        for (unsigned index=0;index<data->getNumUserObjects();++index)
+            if (const auto* source=dynamic_cast<const SourcePublication*>(data->getUserObject(index))) return source->mRecipe;
+        return {};
     }
 
     void ImageManager::configureCanonicalPublication(bool enabled)
@@ -296,10 +338,33 @@ namespace Resource
                 ? std::to_string(mVFS->getIndexGeneration()) + "|image|" + std::string(path.value())
                     + (disableFlip ? "|no-flip" : "|flip") : std::string{});
             Debug::RuntimeDiagnostics::Operation diagnostic("image_cache_miss", path.value());
+            std::string ext(Misc::getFileExtension(path.value()));
+            // Non-standard, but Morrowind supports this.
+            if (ext == "targa") ext = "tga";
+            std::optional<ImageSource::Authority::Snapshot> source;
+            std::optional<SpeculativeBudget::Stage> decodedAdmission;
             Files::IStreamPtr stream;
             try
             {
-                stream = mVFS->get(path);
+                if (mImageSourceAuthority && !mColdCache && mCache->speculativeBudget()
+                    && (ext=="dds" || ext=="tga"))
+                {
+                    // One winning source read, then the ordinary installed
+                    // decoder consumes that exact bounded stream. Refusal is
+                    // optional and cannot become a cached warning image.
+                    try
+                    {
+                        const auto sampled=mImageSourceSample(mImageSourceOwner);
+                        if (auto captured=mImageSourceAuthority->snapshot(path,mCache->speculativeBudget(),sampled,mImageSourceConfig))
+                            source.emplace(std::move(*captured));
+                        if (source)
+                            decodedAdmission.emplace(ImageSource::Recipe::admitDecode(mCache->speculativeBudget(),sampled,
+                                ImageSource::Recipe::decodedBound(*source,ext,mImageSourceConfig),mImageSourceConfig));
+                    }
+                    catch (...) { ++mImageSourceDeclined; }
+                }
+                if (source) stream=std::make_unique<ImageSource::SourceStream>(source->bytes);
+                else stream=mVFS->get(path);
             }
             catch (std::exception& e)
             {
@@ -307,12 +372,6 @@ namespace Resource
                 cacheWarning();
                 return mWarningImage;
             }
-
-            std::string ext(Misc::getFileExtension(path.value()));
-
-            // Non-standard, but Morrowind supports this
-            if (ext == "targa")
-                ext = "tga";
 
             osgDB::ReaderWriter* reader;
             { Debug::HitchTrace::Scope discovery("resource.image_reader_discovery", {}, ext);
@@ -423,6 +482,28 @@ namespace Resource
 
                     image->flipVertical();
                     image->setOrigin(osg::Image::TOP_LEFT);
+                }
+
+                if (source && decodedAdmission && decodedAdmission->future() && !image->getUserDataContainer())
+                {
+                    try
+                    {
+                        auto recipe=ImageSource::Recipe::adoptPublication(mImageSourceAuthority,path,*source,*image,*reader,
+                            mImageSourceConfig,mOptions->getOptionString(),disableFlip,killAlpha);
+                        if (recipe)
+                        {
+                            // Image cache keys kind1 by the actual backing;
+                            // its later claim shares this charge, never adds it.
+                            // Losing publications retain their own receipt until
+                            // destruction; never overwrite the winner's source.
+                            auto charge=mCache->speculativeBudget()->track({image->data(),1u},recipe->revision().layout.bytes,
+                                true,&*decodedAdmission,true);
+                            image->getOrCreateUserDataContainer()->addUserObject(new SourcePublication(std::move(recipe),std::move(charge)));
+                            ++mImageSourcePublished;
+                        }
+                        else ++mImageSourceDeclined;
+                    }
+                    catch (...) { ++mImageSourceDeclined; } // Required image still publishes ordinarily.
                 }
 
                 if (mColdCache)

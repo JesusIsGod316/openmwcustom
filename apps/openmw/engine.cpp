@@ -2009,6 +2009,9 @@ void OMW::Engine::prepareEngine()
     }
     else
         Log(Debug::Info) << "OpimizedMW GL-P1A pressure protection: off (P0/Vulkan control)";
+    mResourceSystem->getImageManager()->configureImageSources(
+        Settings::cells().mImageSourceRecipes && !mUseVulkanRenderer && mResourceSystem->speculativeBudget(),
+        &Resource::ResourceSystem::speculativeSample,mResourceSystem.get());
     if ((Resource::UploadPool::requested() || Resource::AssetPolicy::mask()) && !mUseVulkanRenderer)
     {
         Resource::UploadPool::sample=&Resource::ResourceSystem::speculativeSample;

@@ -66,6 +66,7 @@ namespace Resource::ImageSource
     struct Layout
     {
         int width, height, depth, internal, format, type, packing, rowLength, origin;
+        float pixelAspectRatio;
         std::uint64_t bytes;
         osg::Image::MipmapDataType mipmaps;
         friend auto operator<=>(const Layout&, const Layout&) = default;
@@ -77,7 +78,7 @@ namespace Resource::ImageSource
             return Layout{image.s(),image.t(),image.r(),image.getInternalTextureFormat(),
                 static_cast<int>(image.getPixelFormat()),static_cast<int>(image.getDataType()),
                 static_cast<int>(image.getPacking()),image.getRowLength(),static_cast<int>(image.getOrigin()),
-                extent.bytes,image.getMipmapLevels()};
+                image.getPixelAspectRatio(),extent.bytes,image.getMipmapLevels()};
         }
     };
     struct Revision
@@ -85,12 +86,28 @@ namespace Resource::ImageSource
         std::uint64_t provider, indexGeneration;
         std::string path, sourceSha256, decodedSha256, extension, readerClass, options;
         Layout layout;
+        // Raw-reader fixtures and actual ImageManager publications have
+        // different origin/alpha contracts. These are immutable source values,
+        // never inferred from whatever GL allocation currently survives.
+        bool imageManagerPostprocess = false, disableFlip = false, killAlpha = false;
         friend auto operator<=>(const Revision&, const Revision&) = default;
     };
     class Authority final
     {
     public:
-        explicit Authority(std::shared_ptr<const VFS::Manager> vfs) : mVfs(std::move(vfs))
+        explicit Authority(std::shared_ptr<const VFS::Manager> vfs) : mOwnedVfs(std::move(vfs)),mVfs(mOwnedVfs.get())
+        { issue(); }
+        // ImageManager borrows the engine VFS just like its ordinary reader.
+        // It must close this authority before its owner can destroy/rebuild
+        // that VFS. Recipes retain the closed authority, not a fake shared_ptr
+        // that pretends to extend the provider's lifetime.
+        explicit Authority(const VFS::Manager* vfs) : mVfs(vfs) { issue(); }
+        void close() { std::lock_guard lock(mMutex);mVfs=nullptr;mOwnedVfs.reset(); }
+        std::uint64_t identity() const noexcept { return mIdentity; }
+        bool current(std::uint64_t generation) const
+        { std::lock_guard lock(mMutex); return mVfs && mVfs->getIndexGeneration()==generation; }
+    private:
+        void issue()
         {
             if (!mVfs) throw std::invalid_argument("Missing immutable source provider");
             static std::atomic_uint64_t issued{0};
@@ -100,10 +117,7 @@ namespace Resource::ImageSource
             while (!issued.compare_exchange_weak(value,value+1));
             mIdentity=value+1;
         }
-        void close() { std::lock_guard lock(mMutex); mVfs.reset(); }
-        std::uint64_t identity() const noexcept { return mIdentity; }
-        bool current(std::uint64_t generation) const
-        { std::lock_guard lock(mMutex); return mVfs && mVfs->getIndexGeneration()==generation; }
+    public:
         struct Snapshot
         {
             SpeculativeBudget::Stage reservation; // Buffer dies before admission.
@@ -143,7 +157,8 @@ namespace Resource::ImageSource
         }
     private:
         mutable std::mutex mMutex;
-        std::shared_ptr<const VFS::Manager> mVfs;
+        std::shared_ptr<const VFS::Manager> mOwnedVfs;
+        const VFS::Manager* mVfs = nullptr;
         std::uint64_t mIdentity=0;
     };
     inline std::string payloadDigest(const osg::Image& image,const Layout& layout)
@@ -191,6 +206,34 @@ namespace Resource::ImageSource
             catch (...) { return {}; } // Optional refusal leaves ordinary owner/source intact.
         }
         const Revision& revision() const noexcept { return mRevision; }
+        // The actual required decoder already owns this winning source
+        // snapshot and postprocessed image. Seal them without another VFS open
+        // or decode. No CPU-backing retirement permission is issued here.
+        static std::shared_ptr<const Recipe> adoptPublication(std::shared_ptr<Authority> authority,
+            VFS::Path::NormalizedView path,const Authority::Snapshot& source,const osg::Image& image,
+            osgDB::ReaderWriter& reader,Config config,std::string options,bool disableFlip,bool killAlpha) noexcept
+        {
+            try
+            {
+                if (!authority || path.value().size()>1024 || options.size()>1024
+                    || !source.reservation.future() || !authority->current(source.generation)) return {};
+                const auto layout=Layout::of(image);
+                const auto extension=osgDB::getLowerCaseFileExtension(std::string(path.value()));
+                const auto normalized=extension=="targa"?std::string("tga"):extension;
+                const auto bound=preflight(source.bytes,normalized,config);
+                if (!layout || !bound || layout->bytes>bound || layout->bytes>config.maximumDecodedBytes) return {};
+                Revision revision{authority->identity(),source.generation,std::string(path.value()),
+                    DerivedAssets::digest(source.bytes),payloadDigest(image,*layout),normalized,reader.className(),
+                    std::move(options),*layout,true,disableFlip,killAlpha};
+                return std::shared_ptr<Recipe>(new Recipe(std::move(authority),std::move(revision),config));
+            }
+            catch (...) { return {}; }
+        }
+        static std::uint64_t decodedBound(const Authority::Snapshot& source,std::string_view extension,const Config& config)
+        { return preflight(source.bytes,extension=="targa"?std::string_view("tga"):extension,config); }
+        static SpeculativeBudget::Stage admitDecode(SpeculativeBudget* budget,const OpenGlPressureSample& sample,
+            std::uint64_t bound,const Config& config)
+        { return bound?reserveDecode(budget,sample,bound,config):SpeculativeBudget::Stage{}; }
         bool matches(const osg::Image& image) const
         {
             const auto layout=Layout::of(image);
@@ -285,7 +328,28 @@ namespace Resource::ImageSource
             auto result=reader.readImage(stream,options);
             if (!result.success()) return {};
             osg::ref_ptr<osg::Image> image=result.takeImage();
-            if (image && !image->requiresUpdateCall()) image->setDataVariance(osg::Object::STATIC);
+            if (!image) return {};
+            if (mRevision.imageManagerPostprocess)
+            {
+                // Match the actual successful ImageManager publication. A
+                // software-decompressed source is deliberately not admitted
+                // by adoptPublication's original checked block bound.
+                if (mRevision.killAlpha)
+                {
+                    osg::ref_ptr<osg::Image> rgb=new osg::Image;
+                    rgb->setOrigin(image->getOrigin());
+                    rgb->allocateImage(image->s(),image->t(),image->r(),GL_RGB,GL_UNSIGNED_BYTE);
+                    for (int x=0;x<image->s();++x)for (int y=0;y<image->t();++y)for (int z=0;z<image->r();++z)
+                        rgb->setColor(image->getColor(x,y,z),x,y,z);
+                    image=std::move(rgb);
+                }
+                if (mRevision.extension=="dds") image->setOrigin(osg::Image::TOP_LEFT);
+                if (image->getOrigin()==osg::Image::BOTTOM_LEFT && !mRevision.disableFlip)
+                { image->flipVertical();image->setOrigin(osg::Image::TOP_LEFT); }
+                image->setFileName(mRevision.path);
+                // Actual decoder variance is part of this engagement gate. Do
+                // not blanket-label arbitrary file images STATIC to pass it.
+            }
             return image;
         }
         const std::shared_ptr<Authority> mAuthority;
