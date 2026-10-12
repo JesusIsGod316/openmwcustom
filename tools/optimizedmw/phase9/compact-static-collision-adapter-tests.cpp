@@ -69,7 +69,8 @@ namespace
     struct AllocationSlot
     {
         const void* pointer = nullptr; bool live = false; unsigned frees = 0;
-        bool ownerObservationActiveAtFree = false, streamsAliveAtFree = false;
+        bool ownerObservationActiveAtFree = false;
+        std::uint8_t liveBackingMaskAtFree = 0;
         unsigned ownerCleanupCountAtFree = 0;
     };
     void recordFreeContext(AllocationSlot& slot) noexcept;
@@ -103,12 +104,14 @@ namespace
         if (!found) unobservedFree = true;
         _aligned_free(pointer);
     }
-    bool wasFreedBeforeOwner(const void* pointer, unsigned previousOwners) noexcept
+    unsigned observedBackingBit(const Compact::Streams* streams) noexcept;
+    bool wasFreedBeforeOwner(const void* pointer, const Compact::Streams* streams, unsigned previousOwners) noexcept
     {
         for (unsigned i = 0; i < allocationCount; ++i)
             if (allocations[i].pointer == pointer)
                 return !allocations[i].live && allocations[i].frees == 1
-                    && allocations[i].ownerObservationActiveAtFree && allocations[i].streamsAliveAtFree
+                    && allocations[i].ownerObservationActiveAtFree
+                    && (allocations[i].liveBackingMaskAtFree & observedBackingBit(streams))
                     && allocations[i].ownerCleanupCountAtFree == previousOwners;
         return false;
     }
@@ -133,10 +136,25 @@ namespace
     } observation;
     std::weak_ptr<const Compact::Streams> observedStreams;
     std::shared_ptr<Adapter::StreamBudget> observedBudget;
+    struct BackingWatch
+    {
+        const Compact::Streams* identity = nullptr;
+        std::weak_ptr<const Compact::Streams> lifetime;
+    };
+    std::array<BackingWatch,2> watchedBackings{};
+    unsigned watchedBackingCount = 0;
+    unsigned observedBackingBit(const Compact::Streams* streams) noexcept
+    {
+        for (unsigned i=0;i<watchedBackingCount;++i)
+            if (watchedBackings[i].identity==streams) return 1u<<i;
+        return 0;
+    }
     void recordFreeContext(AllocationSlot& slot) noexcept
     {
         slot.ownerObservationActiveAtFree=Adapter::TestHooks::beforeInterfaceDelete!=nullptr;
-        slot.streamsAliveAtFree=!observedStreams.expired();
+        slot.liveBackingMaskAtFree=0;
+        for(unsigned i=0;i<watchedBackingCount;++i)
+            if(!watchedBackings[i].lifetime.expired()) slot.liveBackingMaskAtFree|=static_cast<std::uint8_t>(1u<<i);
         slot.ownerCleanupCountAtFree=observation.ownerBegins;
     }
     void beforeInterfaceDelete(const btOptimizedBvh* bvh, const Compact::MeshInterface* interface,
@@ -145,7 +163,7 @@ namespace
         if (bvh)
         {
             ++observation.completedBvhs;
-            if (wasFreedBeforeOwner(bvh,observation.ownerBegins)) ++observation.exactBvhFrees;
+            if (wasFreedBeforeOwner(bvh,streams,observation.ownerBegins)) ++observation.exactBvhFrees;
         }
         ++observation.ownerBegins;
         if (interface && streams) ++observation.interfacesAlive;
@@ -163,9 +181,14 @@ namespace
         observation.finalWeakExpired = observedStreams.expired();
         if (observedBudget) observation.finalBudgetTotal = observedBudget->stats().total();
     }
-    void startObservation(const Adapter::Snapshot& snapshot, std::shared_ptr<Adapter::StreamBudget> budget)
+    void startObservation(const Adapter::Snapshot& snapshot, std::shared_ptr<Adapter::StreamBudget> budget,
+        const Adapter::Snapshot* secondSnapshot=nullptr)
     {
         observation = {}; observedStreams = snapshot.weakData(); observedBudget = std::move(budget);
+        watchedBackingCount=1; watchedBackings[0]={snapshot.data(),snapshot.weakData()};
+        watchedBackings[1]={};
+        if(secondSnapshot)
+        { watchedBackingCount=2; watchedBackings[1]={secondSnapshot->data(),secondSnapshot->weakData()}; }
         Adapter::TestHooks::beforeInterfaceDelete = &beforeInterfaceDelete;
         Adapter::TestHooks::afterInterfaceDelete = &afterInterfaceDelete;
         Adapter::TestHooks::afterBackingRelease = &afterBackingRelease;
@@ -176,6 +199,7 @@ namespace
         Adapter::TestHooks::afterInterfaceDelete = nullptr;
         Adapter::TestHooks::afterBackingRelease = nullptr;
         observedStreams.reset(); observedBudget.reset();
+        watchedBackingCount=0; watchedBackings={};
     }
     void checkObservedDestruction(unsigned expected, bool lastBacking)
     {
@@ -249,7 +273,8 @@ namespace
     }
     Resource::CollisionShapePtr scaled(Resource::CollisionShapePtr child, const btVector3& scale)
     {
-        auto* mesh = dynamic_cast<btBvhTriangleMeshShape*>(child.get());
+        auto* mesh = child && child->getShapeType()==TRIANGLE_MESH_SHAPE_PROXYTYPE
+            ? static_cast<btBvhTriangleMeshShape*>(child.get()) : nullptr;
         require(mesh != nullptr, "test child is not actual BVH");
         auto wrapper = std::make_unique<Resource::ScaledTriangleMeshShape>(mesh,scale);
         child.release();
@@ -275,7 +300,11 @@ namespace
         auto snapshot = prepared(input,budget);
         auto result = snapshot.instantiate(certificate());
         require(result.refusal == Adapter::Refusal::None && result.shape, "adapter real polymorphic BVH construction failed");
-        auto* shape = dynamic_cast<Adapter::Shape*>(result.shape.get());
+        // This factory result was created as Adapter::Shape in this TU. SDK
+        // Bullet objects do not carry usable RTTI in the pinned configuration;
+        // use the same proxy-type guards/static conversion as production.
+        auto* shape = result.shape->getShapeType()==TRIANGLE_MESH_SHAPE_PROXYTYPE
+            ? static_cast<Adapter::Shape*>(result.shape.get()) : nullptr;
         require(shape && shape->getShapeType() == TRIANGLE_MESH_SHAPE_PROXYTYPE && shape->getOwnsBvh()
             && shape->getOptimizedBvh() && isTrackedLive(shape->getOptimizedBvh()),
             "adapter does not preserve actual BVH shape interface and ownership");
@@ -341,14 +370,22 @@ namespace
         require(budget->stats().current==2*charge && budget->stats().total()==2*charge,
             "actual instance wrappers duplicate or release unique backing charges");
         require(!body.retire() && !avoid.retire(),"live source compound/avoid consumers can retire");
-        auto* instanceCompound=dynamic_cast<btCompoundShape*>(instance->mCollisionShape.get());
-        auto* clonedWrapper=instanceCompound ? dynamic_cast<btScaledBvhTriangleMeshShape*>(instanceCompound->getChildShape(0)) : nullptr;
-        auto* sourceCompound=dynamic_cast<btCompoundShape*>(source->mCollisionShape.get());
-        auto* owningWrapper=sourceCompound ? dynamic_cast<Resource::ScaledTriangleMeshShape*>(sourceCompound->getChildShape(0)) : nullptr;
+        auto* instanceCompound=instance->mCollisionShape->isCompound()
+            ? static_cast<btCompoundShape*>(instance->mCollisionShape.get()) : nullptr;
+        auto* clonedChild=instanceCompound ? instanceCompound->getChildShape(0) : nullptr;
+        auto* clonedWrapper=clonedChild && clonedChild->getShapeType()==SCALED_TRIANGLE_MESH_SHAPE_PROXYTYPE
+            ? static_cast<btScaledBvhTriangleMeshShape*>(clonedChild) : nullptr;
+        auto* sourceCompound=source->mCollisionShape->isCompound()
+            ? static_cast<btCompoundShape*>(source->mCollisionShape.get()) : nullptr;
+        auto* sourceChild=sourceCompound ? sourceCompound->getChildShape(0) : nullptr;
+        // sourceChild was created by the owning scaled() helper; assert proxy
+        // type and exact child identity, then prove ownership by real deletion.
+        auto* owningWrapper=sourceChild && sourceChild->getShapeType()==SCALED_TRIANGLE_MESH_SHAPE_PROXYTYPE
+            ? static_cast<Resource::ScaledTriangleMeshShape*>(sourceChild) : nullptr;
         require(clonedWrapper && owningWrapper && clonedWrapper->getChildShape()==owningWrapper->getChildShape(),
             "actual instance duplication does not borrow the exact source BVH");
         auto bodyWeak=body.weakData(),avoidWeak=avoid.weakData();
-        startObservation(body,budget); body={}; avoid={}; source=nullptr;
+        startObservation(body,budget,&avoid); body={}; avoid={}; source=nullptr;
         require(!bodyWeak.expired() && !avoidWeak.expired() && observation.ownerBegins==0,
             "dropping cache/source alias retired streams still owned by real instances");
         const btVector3 scaling(0.8,1.1,1.25);
@@ -373,7 +410,8 @@ namespace
             auto budget=std::make_shared<Adapter::StreamBudget>(charge);
             auto snapshot=prepared(input,budget);
             auto child=snapshot.instantiate(certificate());
-            auto* root=dynamic_cast<Adapter::Shape*>(child.shape.get());
+            auto* root=child.shape && child.shape->getShapeType()==TRIANGLE_MESH_SHAPE_PROXYTYPE
+                ? static_cast<Adapter::Shape*>(child.shape.get()) : nullptr;
             require(root && root->getOwnsBvh() && isTrackedLive(root->getOptimizedBvh()),
                 "direct instance source does not own the tracked native BVH");
             osg::ref_ptr<Resource::BulletShape> source=new Resource::BulletShape;
@@ -382,9 +420,9 @@ namespace
             reference->mCollisionShape=ordinary(input);
             auto instance=Resource::makeInstance(source),second=Resource::makeInstance(source);
             auto referenceInstance=Resource::makeInstance(reference);
-            auto* cloned=dynamic_cast<btScaledBvhTriangleMeshShape*>(instance->mCollisionShape.get());
-            require(cloned && cloned->getChildShape()==root
-                && dynamic_cast<Resource::ScaledTriangleMeshShape*>(cloned)==nullptr,
+            auto* cloned=instance->mCollisionShape->getShapeType()==SCALED_TRIANGLE_MESH_SHAPE_PROXYTYPE
+                ? static_cast<btScaledBvhTriangleMeshShape*>(instance->mCollisionShape.get()) : nullptr;
+            require(cloned && cloned->getChildShape()==root,
                 "direct source clone is not the ordinary nonowning scaled wrapper");
             auto weak=snapshot.weakData();
             startObservation(snapshot,budget); snapshot={};

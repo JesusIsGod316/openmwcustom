@@ -94,7 +94,13 @@ namespace Resource::CompactStaticCollisionAdapter
     protected:
         explicit ImmutableOwner(std::shared_ptr<const Backing> backing)
             : mBacking(std::move(backing)), mConsumer(mBacking->charge),
-              mInterface(std::make_unique<Compact::MeshInterface>(mBacking->streams)) {}
+              mInterface(std::make_unique<Compact::MeshInterface>(mBacking->streams)),
+              mConstructionInterface(mInterface.get())
+        {
+#ifdef OPENMW_COMPACT_COLLISION_ADAPTER_TEST_HOOKS
+            if (TestHooks::beforeBvh) TestHooks::beforeBvh();
+#endif
+        }
         ~ImmutableOwner()
         {
             // The Bullet base is fully destroyed BEFORE this first base.
@@ -114,13 +120,6 @@ namespace Resource::CompactStaticCollisionAdapter
             if (TestHooks::afterBackingRelease) TestHooks::afterBackingRelease();
 #endif
         }
-        Compact::MeshInterface* constructionInterface()
-        {
-#ifdef OPENMW_COMPACT_COLLISION_ADAPTER_TEST_HOOKS
-            if (TestHooks::beforeBvh) TestHooks::beforeBvh();
-#endif
-            return mInterface.get();
-        }
         void publish(const btOptimizedBvh* bvh)
         {
             mBvhIdentity = bvh;
@@ -137,6 +136,11 @@ namespace Resource::CompactStaticCollisionAdapter
         ConsumerLease mConsumer;
         std::unique_ptr<Compact::MeshInterface> mInterface;
         const btOptimizedBvh* mBvhIdentity = nullptr;
+    protected:
+        // A plain member read during the next base initializer is permitted;
+        // calling a Shape/inherited member function before all Shape bases
+        // finish would not be. This pointer never owns or outlives mInterface.
+        Compact::MeshInterface* const mConstructionInterface;
     };
 
     // This is a real btBvhTriangleMeshShape usable by the existing polymorphic
@@ -148,7 +152,7 @@ namespace Resource::CompactStaticCollisionAdapter
     public:
         explicit Shape(std::shared_ptr<const Backing> backing)
             : ImmutableOwner(std::move(backing)),
-              btBvhTriangleMeshShape(constructionInterface(), true)
+              btBvhTriangleMeshShape(mConstructionInterface, true)
         { publish(getOptimizedBvh()); }
         ~Shape() override
         {
