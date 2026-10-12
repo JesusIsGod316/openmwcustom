@@ -220,6 +220,15 @@ int main() try
     }
     {
         Fixture f("textures/contracts.dds",dds(8,4,1,8));auto image=f.read();
+        auto defaults=ImageSource::Recipe::capture(f.authority,f.path,*image,&budget,sample(budget));
+        require(bool(defaults),"Small assets engage under default decode settings and the actual finite child cap");
+        {
+            auto result=defaults->reconstruct(&budget,sample(budget));
+            require(bool(result),"Default recipe reconstructs under the same finite ledger");
+            require(budget.stats().experimentFutureBytes<9*SpeculativeBudget::MiB,
+                "Small decoded work reserves its checked extent instead of a maximum-size image");
+        }
+        require(budget.stats().futureBytes==0,"Default source and decoder stages retire without double charging");
         const auto opens=f.file->opens.load();
         require(!ImageSource::Recipe::capture(f.authority,f.path,*image,nullptr,sample(budget),config),
             "Missing admission ledger cannot create a source recipe");

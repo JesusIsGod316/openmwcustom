@@ -127,8 +127,10 @@ namespace Resource::ImageSource
                 if (bytes>std::numeric_limits<std::uint64_t>::max()-peak) return false;
                 peak+=bytes; return true;
             };
-            if (!add(estimate->sourceBytes) || !add(config.maximumDecodedBytes)
-                || !add(config.maximumDecodedBytes) || !add(config.decoderScratchAllowance)) return {};
+            // Admit the bounded source first. Reserve decode work separately
+            // from its checked header extent, not a maximum-size image for
+            // every small asset (which would make the default child cap inert).
+            if (!add(estimate->sourceBytes)) return {};
             auto reservation=budget->reserve(sample,peak,SpeculativePriority::Background,true);
             if (reservation.future()!=peak) return {};
             auto input=mVfs->get(path);
@@ -171,7 +173,11 @@ namespace Resource::ImageSource
                 const auto extension=osgDB::getLowerCaseFileExtension(std::string(path.value()));
                 if (extension!="dds" && extension!="tga") return {}; // Unknown plugin stays ordinary.
                 auto source=authority->snapshot(path,budget,sample,config);
-                if (!source || !preflight(source->bytes,extension,config)) return {};
+                if (!source) return {};
+                const auto bound=preflight(source->bytes,extension,config);
+                if (!bound || layout->bytes>bound) return {};
+                auto decodedReservation=reserveDecode(budget,sample,bound,config);
+                if (!decodedReservation.future()) return {};
                 auto* reader=osgDB::Registry::instance()->getReaderWriterForExtension(extension);
                 if (!reader) return {};
                 Revision revision{authority->identity(),source->generation,std::string(path.value()),
@@ -196,13 +202,18 @@ namespace Resource::ImageSource
             {
                 auto source=mAuthority->snapshot(VFS::Path::Normalized(mRevision.path),budget,sample,mConfig,
                     mRevision.indexGeneration);
-                if (!source || DerivedAssets::digest(source->bytes)!=mRevision.sourceSha256
-                    || !preflight(source->bytes,mRevision.extension,mConfig)) return {};
+                if (!source || DerivedAssets::digest(source->bytes)!=mRevision.sourceSha256) return {};
+                const auto bound=preflight(source->bytes,mRevision.extension,mConfig);
+                if (!bound || mRevision.layout.bytes>bound) return {};
+                auto decodedReservation=reserveDecode(budget,sample,bound,mConfig);
+                if (!decodedReservation.future()) return {};
                 auto* reader=osgDB::Registry::instance()->getReaderWriterForExtension(mRevision.extension);
                 if (!reader || std::string_view(reader->className())!=mRevision.readerClass) return {};
                 auto image=decode(source->bytes,*reader);
                 if (!image || !matches(*image) || !mAuthority->current(mRevision.indexGeneration)) return {};
-                return {std::move(source->reservation),std::move(image)};
+                // Source bytes and their separate reservation die locally.
+                // Only the output/decode grant survives with the image lease.
+                return {std::move(decodedReservation),std::move(image)};
             }
             catch (...) { return {}; }
         }
@@ -215,47 +226,64 @@ namespace Resource::ImageSource
             for (unsigned i=0;i<4;++i) result|=std::uint32_t(bytes[offset+i])<<(8*i);
             return result;
         }
-        static bool preflight(const DerivedAssets::Bytes& bytes,std::string_view extension,const Config& config)
+        static SpeculativeBudget::Stage reserveDecode(SpeculativeBudget* budget,const OpenGlPressureSample& sample,
+            std::uint64_t bound,const Config& config)
+        {
+            if (!budget || bound>(std::numeric_limits<std::uint64_t>::max()-config.decoderScratchAllowance)/2) return {};
+            return budget->reserve(sample,bound*2+config.decoderScratchAllowance,SpeculativePriority::Background,true);
+        }
+        static std::uint64_t preflight(const DerivedAssets::Bytes& bytes,std::string_view extension,const Config& config)
         {
             // Conservative predecoder dimension envelope. Volume/array/cubemap,
             // DX10, custom plugins and unsupported layouts keep original backing.
             // This constrains source/decoded extents, not all opaque plugin scratch.
-            std::uint64_t width=0,height=0,factor=0;
+            std::uint64_t width=0,height=0,blockBytes=0;
+            unsigned levels=1;
             if (extension=="dds")
             {
                 if (bytes.size()<128 || std::memcmp(bytes.data(),"DDS ",4) || le32(bytes,4)!=124
                     || le32(bytes,76)!=32 || le32(bytes,24)>1 || le32(bytes,28)>32 || le32(bytes,112)!=0
-                    || le32(bytes,84)==0x30315844) return false; // DX10.
+                    || le32(bytes,84)==0x30315844) return 0; // DX10.
                 height=le32(bytes,12); width=le32(bytes,16);
                 unsigned maximumLevels=1;
                 for (auto extent=std::max(width,height);extent>1;extent>>=1) ++maximumLevels;
-                if (le32(bytes,28)>maximumLevels) return false;
+                if (le32(bytes,28)>maximumLevels) return 0;
+                levels=std::max(1u,le32(bytes,28));
                 if (le32(bytes,80)&4) // Known installed DDS FOURCC layouts only.
                 {
                     const auto format=le32(bytes,84);
                     if (format!=0x31545844 && format!=0x33545844 && format!=0x35545844
-                        && format!=0x31495441 && format!=0x32495441) return false;
+                        && format!=0x31495441 && format!=0x32495441) return 0;
+                    blockBytes=format==0x31545844 || format==0x31495441?8:16;
                 }
                 else if (const auto bits=le32(bytes,88);bits!=8 && bits!=16 && bits!=24 && bits!=32)
-                    return false;
-                factor=32; // All mip levels plus conservative supported raw conversion.
+                    return 0;
             }
             else if (extension=="tga")
             {
                 if (bytes.size()<18 || bytes[1]!=0 || (bytes[2]!=2 && bytes[2]!=3 && bytes[2]!=10 && bytes[2]!=11)
-                    || (bytes[16]!=8 && bytes[16]!=16 && bytes[16]!=24 && bytes[16]!=32)) return false;
+                    || (bytes[16]!=8 && bytes[16]!=16 && bytes[16]!=24 && bytes[16]!=32)) return 0;
                 width=std::uint32_t(bytes[12])|(std::uint32_t(bytes[13])<<8);
                 height=std::uint32_t(bytes[14])|(std::uint32_t(bytes[15])<<8);
-                factor=4;
             }
-            return width && height && width<=8192 && height<=8192
-                && width<=config.maximumDecodedBytes/factor/height;
+            if (!width || !height || width>8192 || height>8192) return 0;
+            std::uint64_t bound=0;
+            for (unsigned level=0;level<levels;++level)
+            {
+                // Installed block DDS stays compressed in the CPU image.
+                // Raw DDS/TGA allows conservative RGBA conversion/padded rows.
+                const auto bytesAtLevel=blockBytes?((width+3)/4)*((height+3)/4)*blockBytes:width*height*4;
+                if (bytesAtLevel>config.maximumDecodedBytes || bound>config.maximumDecodedBytes-bytesAtLevel) return 0;
+                bound+=bytesAtLevel; width=std::max(std::uint64_t{1},width/2);height=std::max(std::uint64_t{1},height/2);
+            }
+            return bound;
         }
         osg::ref_ptr<osg::Image> decode(const DerivedAssets::Bytes& bytes,osgDB::ReaderWriter& reader) const
         {
             SourceStream stream(bytes);
             osg::ref_ptr<osgDB::Options> options=new osgDB::Options(mRevision.options);
             auto result=reader.readImage(stream,options);
+            if (!result.success()) return {};
             osg::ref_ptr<osg::Image> image=result.takeImage();
             if (image && !image->requiresUpdateCall()) image->setDataVariance(osg::Object::STATIC);
             return image;
