@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <cmath>
 
 namespace Resource::ImageSource
 {
@@ -74,7 +75,8 @@ namespace Resource::ImageSource
         {
             const auto extent = imagePayloadExtent(image);
             if (!extent || image.getAllocationMode() == osg::Image::NO_DELETE
-                || image.requiresUpdateCall() || image.getDataVariance() != osg::Object::STATIC) return {};
+                || image.requiresUpdateCall() || image.getDataVariance() != osg::Object::STATIC
+                || !std::isfinite(image.getPixelAspectRatio()) || image.getPixelAspectRatio()<=0) return {};
             return Layout{image.s(),image.t(),image.r(),image.getInternalTextureFormat(),
                 static_cast<int>(image.getPixelFormat()),static_cast<int>(image.getDataType()),
                 static_cast<int>(image.getPacking()),image.getRowLength(),static_cast<int>(image.getOrigin()),
@@ -163,7 +165,24 @@ namespace Resource::ImageSource
     };
     inline std::string payloadDigest(const osg::Image& image,const Layout& layout)
     {
-        return DerivedAssets::digest(std::span(image.data(),static_cast<std::size_t>(layout.bytes)));
+        // Charge the full supported row stride, but compare only initialized
+        // pixel/block bytes consumed by upload. Allocator padding must not
+        // change immutable identity or make a valid reconstruction random.
+        DerivedAssets::Sha256 digest;
+        const auto block=ImagePayloadDetail::blockBytes(image.getPixelFormat());
+        const auto bits=block?0:ImagePayloadDetail::pixelBits(image.getPixelFormat(),image.getDataType());
+        std::uint64_t width=layout.width,height=layout.height;
+        for (unsigned level=0;level<image.getNumMipmapLevels();++level)
+        {
+            const auto rows=block?(height+3)/4:height;
+            const auto useful=block?((width+3)/4)*block:width*(bits/8);
+            const auto stride=(useful+layout.packing-1)/layout.packing*layout.packing;
+            const auto* first=image.data()+image.getMipmapOffset(level);
+            for (std::uint64_t row=0;row<rows;++row)
+                digest.append(std::span(first+row*stride,static_cast<std::size_t>(useful)));
+            width=std::max(std::uint64_t{1},width/2);height=std::max(std::uint64_t{1},height/2);
+        }
+        return digest.finish();
     }
     class Recipe final
     {

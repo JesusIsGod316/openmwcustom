@@ -10,6 +10,7 @@
 #include <vector>
 #include <osgDB/Registry>
 #include <osg/UserDataContainer>
+#include <osg/observer_ptr>
 
 #include <components/debug/debuglog.hpp>
 #include <components/debug/v3diagnostics.hpp>
@@ -42,14 +43,19 @@ namespace
     {
     public:
         SourcePublication() = default;
-        SourcePublication(std::shared_ptr<const Resource::ImageSource::Recipe> recipe,
+        SourcePublication(osg::Image* image,std::shared_ptr<const Resource::ImageSource::Recipe> recipe,
             Resource::SpeculativeBudget::ChargePtr charge)
-            : mRecipe(std::move(recipe)),mCharge(std::move(charge)) {}
+            : mRecipe(std::move(recipe)),mCharge(std::move(charge)),mOwner(image),
+                mData(image->data()),mModified(image->getModifiedCount()) {}
         SourcePublication(const SourcePublication& other,const osg::CopyOp& copy)
-            : osg::Object(other,copy),mRecipe(other.mRecipe),mCharge(other.mCharge) {}
+            : osg::Object(other,copy),mRecipe(other.mRecipe),mCharge(other.mCharge),mOwner(other.mOwner),
+                mData(other.mData),mModified(other.mModified) {}
         META_Object(Resource,SourcePublication)
         const std::shared_ptr<const Resource::ImageSource::Recipe> mRecipe;
         const Resource::SpeculativeBudget::ChargePtr mCharge;
+        const osg::observer_ptr<osg::Image> mOwner;
+        const unsigned char* const mData=nullptr;
+        const unsigned mModified=0;
     };
 
     osg::ref_ptr<osg::Image> createWarningImage()
@@ -177,7 +183,17 @@ namespace Resource
         const auto* data=image.getUserDataContainer();
         if (!data) return {};
         for (unsigned index=0;index<data->getNumUserObjects();++index)
-            if (const auto* source=dynamic_cast<const SourcePublication*>(data->getUserObject(index))) return source->mRecipe;
+            if (const auto* source=dynamic_cast<const SourcePublication*>(data->getUserObject(index)))
+            {
+                // Image clones may copy user-data, but not the original
+                // allocation/CPU-consumer authority. Dirty, replaced or closed
+                // producer backing likewise cannot inherit that publication.
+                if (source->mOwner.get()!=&image || source->mData!=image.data()
+                    || source->mModified!=image.getModifiedCount() || !source->mRecipe
+                    || source->mRecipe->revision().path!=image.getFileName()) return {};
+                const auto layout=ImageSource::Layout::of(image);
+                return layout && *layout==source->mRecipe->revision().layout ? source->mRecipe : nullptr;
+            }
         return {};
     }
 
@@ -498,7 +514,7 @@ namespace Resource
                             // destruction; never overwrite the winner's source.
                             auto charge=mCache->speculativeBudget()->track({image->data(),1u},recipe->revision().layout.bytes,
                                 true,&*decodedAdmission,true);
-                            image->getOrCreateUserDataContainer()->addUserObject(new SourcePublication(std::move(recipe),std::move(charge)));
+                            image->getOrCreateUserDataContainer()->addUserObject(new SourcePublication(image,std::move(recipe),std::move(charge)));
                             ++mImageSourcePublished;
                         }
                         else ++mImageSourceDeclined;
