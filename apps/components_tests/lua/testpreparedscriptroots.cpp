@@ -232,8 +232,8 @@ return { engineHandlers = {
         sol::main_object firstHidden, secondHidden;
         const std::map<std::string, sol::main_object> packages;
         mLua.protectedCall([&](LuaView& view) {
-            firstHidden = view.sol().create_table_with("id", 1);
-            secondHidden = view.sol().create_table_with("id", 2);
+            firstHidden = sol::main_object(view.sol().lua_state(), sol::in_place, view.sol().create_table_with("id", 1));
+            secondHidden = sol::main_object(view.sol().lua_state(), sol::in_place, view.sol().create_table_with("id", 2));
             prototype.emplace(mLua.makePackagePrototype(packages));
         });
         sol::table first = mLua.runInNewSandbox(
