@@ -338,6 +338,10 @@ int main() try
 
     // Exact ordinary VFS stream + installed DDS reader, preserving compression.
     auto provider=std::make_shared<Provider>(); auto dds=provider->read();
+    std::cout << "DDS source: compressed=" << dds->isCompressed() << " bytes="
+              << dds->getTotalSizeInBytesIncludingMipmaps() << " format=" << dds->getPixelFormat()
+              << " internal=" << dds->getInternalTextureFormat() << " levels=" << dds->getNumMipmapLevels()
+              << " dimensions=" << dds->s() << "x" << dds->t() << '\n';
     require(dds->isCompressed() && dds->getTotalSizeInBytesIncludingMipmaps()==512, "Actual DDS reader preserves compressed CPU storage");
     const auto revision=provider->vfs.getIndexGeneration();
     const std::weak_ptr<Provider> weak=provider;
