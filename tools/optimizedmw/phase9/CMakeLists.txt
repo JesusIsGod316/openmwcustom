@@ -373,8 +373,17 @@ add_executable(p9-immutable-image-source immutable-image-source-tests.cpp)
 target_link_libraries(p9-immutable-image-source PRIVATE p9-texture-runtime ${OPENSCENEGRAPH_LIBRARIES} Threads::Threads)
 add_test(NAME p9-immutable-image-source COMMAND p9-immutable-image-source)
 set_tests_properties(p9-immutable-image-source PROPERTIES TIMEOUT 60)
-add_executable(p9-image-source-publication image-source-publication-tests.cpp)
-target_link_libraries(p9-image-source-publication PRIVATE p9-texture-runtime ${OPENSCENEGRAPH_LIBRARIES} Threads::Threads)
+add_executable(p9-image-source-publication image-source-publication-tests.cpp
+  ${ROOT}/components/resource/coldimage.cpp ${ROOT}/components/resource/imagemanager.cpp
+  ${ROOT}/components/resource/cachestats.cpp ${ROOT}/components/vfs/manager.cpp
+  ${ROOT}/components/files/conversion.cpp ${ROOT}/components/sceneutil/workqueue.cpp
+  ${ROOT}/components/sceneutil/glextensions.cpp ${ROOT}/components/debug/debuglog.cpp
+  ${ROOT}/components/misc/hostmemory.cpp)
+target_link_libraries(p9-image-source-publication PRIVATE
+  ${OPENSCENEGRAPH_LIBRARIES} ${P9_CLOUD_OSGDB_LIBRARY} OpenGL::GL Threads::Threads LZ4::LZ4)
+if(WIN32)
+  target_link_libraries(p9-image-source-publication PRIVATE psapi)
+endif()
 target_compile_definitions(p9-image-source-publication PRIVATE _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING)
 add_test(NAME p9-image-source-publication COMMAND p9-image-source-publication)
 set_tests_properties(p9-image-source-publication PROPERTIES TIMEOUT 60)
