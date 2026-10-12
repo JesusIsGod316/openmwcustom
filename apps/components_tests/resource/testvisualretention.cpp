@@ -17,6 +17,7 @@
 #include <functional>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 namespace
 {
@@ -162,14 +163,17 @@ namespace
             ~Image() override { onDestroy(); }
         };
         VFS::Manager vfs;
-        CachedImages candidate(&vfs, 15);
         bool destroyed = false;
+        CachedImages candidate(&vfs, 15);
         osg::ref_ptr<Image> value = new Image;
         value->onDestroy = [&] { destroyed = true; EXPECT_EQ(candidate.size(), 0); };
         candidate.insert("unused", value, 1);
         value = nullptr;
         sweep(candidate, 16.1);
         EXPECT_TRUE(destroyed);
+        // A failed assertion must not defer the reentrant callback until cache
+        // member teardown, when its mutex/manager is no longer safely usable.
+        candidate.clearCache();
     }
 
     TEST(ResourceVisualRetention, requiredImageReloadUsesOrdinaryReaderWithIdenticalPixels)
@@ -206,6 +210,11 @@ namespace
         ASSERT_EQ(first->s(), 2);
         ASSERT_EQ(first->t(), 2);
         const auto color=first->getColor(0,0,0);
+        const auto origin=first->getOrigin();
+        const auto format=first->getPixelFormat();
+        const auto dataType=first->getDataType();
+        const auto size=first->getTotalSizeInBytesIncludingMipmaps();
+        const std::vector<unsigned char> pixels(first->data(), first->data()+size);
         osg::observer_ptr<osg::Image> retired(first);
         first=nullptr;
         sweep(candidate, 1); // Ordinary zero-stamp entry establishes residence.
@@ -214,6 +223,12 @@ namespace
         auto reloaded=candidate.getImage(path);
         EXPECT_EQ(reloaded->getColor(0,0,0), color);
         EXPECT_EQ(reloaded->s(), 2);
+        EXPECT_EQ(reloaded->t(), 2);
+        EXPECT_EQ(reloaded->getOrigin(), origin);
+        EXPECT_EQ(reloaded->getPixelFormat(), format);
+        EXPECT_EQ(reloaded->getDataType(), dataType);
+        ASSERT_EQ(reloaded->getTotalSizeInBytesIncludingMipmaps(), size);
+        EXPECT_TRUE(std::equal(pixels.begin(), pixels.end(), reloaded->data()));
         EXPECT_EQ(file->opens, 2);
     }
 }
