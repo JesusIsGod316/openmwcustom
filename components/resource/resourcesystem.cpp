@@ -274,7 +274,11 @@ namespace Resource
     void ResourceSystem::setLoadingNifMaintenanceActive(bool active) noexcept
     {
         if (visualCacheHandoffEnabled())
-            mVisualCacheHandoff->policy.setLoading(active, OpenGlPressureMonitor::milliseconds());
+            if (mVisualCacheHandoff->policy.setLoading(active, OpenGlPressureMonitor::milliseconds()) && !active)
+                // Publish only on the actual outer loading-off edge. This is
+                // still optional existing-worker work: no main-thread trim,
+                // waiting, new worker, renewed deadline or pressure fiction.
+                requestVisualCacheHandoff();
         if (!mLoadingNifMaintenance) return;
         auto& state = *mLoadingNifMaintenance;
         state.policy.setLoading(active);

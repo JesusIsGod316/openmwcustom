@@ -324,10 +324,17 @@ namespace
         osg::observer_ptr<const osg::Node> handoffRetired(unused);
         unused=nullptr;
         candidate.configureVisualCacheHandoff(true);
-        osg::ref_ptr<SceneUtil::WorkQueue> queue=new SceneUtil::WorkQueue(1);
+        // Hold execution until we observe the real automatic boundary
+        // publication; no manual Scene::update/request can satisfy this gate.
+        osg::ref_ptr<SceneUtil::WorkQueue> queue=new SceneUtil::WorkQueue(0);
         candidate.attachLoadingNifMaintenanceQueue(queue);
         candidate.setLoadingNifMaintenanceActive(true);
+        EXPECT_EQ(queue->getNumItems(),0);
         candidate.setLoadingNifMaintenanceActive(false);
+        EXPECT_EQ(queue->getNumItems(),1);
+        candidate.setLoadingNifMaintenanceActive(false);
+        EXPECT_EQ(queue->getNumItems(),1); // Same edge cannot duplicate work.
+        queue->start(1);
         for (unsigned i=0;i<64 && handoffRetired.valid();++i)
         {
             candidate.requestVisualCacheHandoff();

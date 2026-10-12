@@ -28,18 +28,22 @@ namespace Resource
         explicit VisualCacheHandoffPolicy(bool enabled) : mEnabled(enabled) {}
         bool enabled() const noexcept { return mEnabled; }
         // Main-thread methods; never wait for the worker on a loading frame.
-        void setLoading(bool active, std::uint64_t now) noexcept
+        // Return the actual edge, so the caller can publish the first pass at
+        // loading-off rather than waiting for Scene::update. Save/Lua startup
+        // may otherwise consume this entire finite window before that update.
+        bool setLoading(bool active, std::uint64_t now) noexcept
         {
-            if (!mEnabled || mExhausted || active == mLoading) return;
+            if (!mEnabled || mExhausted || active == mLoading) return false;
             mLoading = active;
             if (mGeneration == std::numeric_limits<std::uint64_t>::max())
-            { mExhausted = true; mCurrent.store(0); return; }
+            { mExhausted = true; mCurrent.store(0); return false; }
             ++mGeneration;
             mRemaining = active ? 0 : MaximumPasses;
             mLast = 0;
             mDeadline = now > std::numeric_limits<std::uint64_t>::max() - WindowMilliseconds
                 ? 0 : now + WindowMilliseconds;
             mCurrent.store(active || !now || !mDeadline ? 0 : mGeneration, std::memory_order_release);
+            return true;
         }
         Admission tryBegin(std::uint64_t now, bool queueAvailable) noexcept
         {

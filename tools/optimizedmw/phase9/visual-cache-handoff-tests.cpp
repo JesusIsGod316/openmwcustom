@@ -38,8 +38,12 @@ int main() try
     P disabled(false); disabled.setLoading(true,1000);disabled.setLoading(false,1001);
     require(!disabled.tryBegin(1050,true),"Ordinary disabled control cannot admit work");
     P p(true); require(!p.tryBegin(1000,true),"No handoff before an actual loading transition");
-    p.setLoading(true,1000);require(!p.tryBegin(1001,true),"Required loading rejects handoff work");
-    p.setLoading(false,1001); require(!p.tryBegin(1050,false),"Missing worker rejects handoff");
+    require(p.setLoading(true,1000),"Outer loading-on reports its actual edge");
+    require(!p.tryBegin(1001,true),"Required loading rejects handoff work");
+    require(!p.setLoading(true,1001),"Repeated loading-on is not a new boundary");
+    require(p.setLoading(false,1001),"Outer loading-off permits immediate publication");
+    require(!p.setLoading(false,1002),"Repeated loading-off cannot renew the finite window");
+    require(!p.tryBegin(1050,false),"Missing worker rejects handoff");
     auto first=p.tryBegin(1050,true); require(bool(first),"Actual handoff admits one bounded pass");
     require(!p.tryBegin(1100,true),"Pending pass cannot be duplicated");
     p.setLoading(true,1100);
