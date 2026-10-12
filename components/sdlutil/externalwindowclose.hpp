@@ -14,6 +14,9 @@ namespace SDLUtil
     class ExternalWindowCloseAuthority final
     {
     public:
+        ExternalWindowCloseAuthority() = default;
+        ExternalWindowCloseAuthority(const ExternalWindowCloseAuthority&) = delete;
+        ExternalWindowCloseAuthority& operator=(const ExternalWindowCloseAuthority&) = delete;
         void attach(SDL_Window* window,GraphicsWindowSDL2* graphics)
         {
             if (!onOwner() || !window || !graphics || !graphics->diagnosticNamespaceRequested() || mPins.size()>=32)
@@ -72,7 +75,7 @@ namespace SDLUtil
         bool ownsContext(const osg::GraphicsContext* context) const noexcept
         {
             if (!onOwner()) return false;
-            for (const auto& pin:mPins) if (pin.graphics==context) return true;
+            for (const auto& pin:mPins) if (pin.graphics.get()==context) return true;
             return false;
         }
         ~ExternalWindowCloseAuthority()
