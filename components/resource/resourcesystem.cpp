@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
@@ -284,6 +285,25 @@ namespace Resource
         return mAnimBlendRulesManager.get();
     }
 
+    void ResourceSystem::configureVisualCacheRetention(double imageSeconds, double sceneSeconds)
+    {
+        if (mVisualCacheRetentionConfigured)
+            throw std::logic_error("Visual cache retention configured twice");
+        if (!std::isfinite(imageSeconds) || !std::isfinite(sceneSeconds)
+            || imageSeconds < 0 || sceneSeconds < 0 || imageSeconds > 3600 || sceneSeconds > 3600)
+            throw std::invalid_argument("Invalid unused visual cache residence time");
+        mUnusedImageExpiry = imageSeconds;
+        mUnusedSceneExpiry = sceneSeconds;
+        mVisualCacheRetentionConfigured = true;
+        if (mUnusedImageExpiry > 0) mImageManager->setExpiryDelay(mUnusedImageExpiry);
+        if (mUnusedSceneExpiry > 0) mSceneManager->setExpiryDelay(mUnusedSceneExpiry);
+        Log(Debug::Info) << "OptimizedMW unused visual cache residence: image_seconds="
+            << mImageManager->getExpiryDelay() << " scene_seconds=" << mSceneManager->getExpiryDelay()
+            << " image_override=" << (mUnusedImageExpiry > 0)
+            << " scene_override=" << (mUnusedSceneExpiry > 0)
+            << " scope=unused_cache_residence_not_live_owner_or_process_memory_cap";
+    }
+
     void ResourceSystem::setExpiryDelay(double expiryDelay)
     {
         for (std::vector<BaseResourceManager*>::iterator it = mResourceManagers.begin(); it != mResourceManagers.end();
@@ -293,6 +313,10 @@ namespace Resource
         // Upstream drops parsed NIFs immediately. Overdrive intentionally retains them so paging and
         // collision paths can reuse already-parsed source data during long sessions.
         mNifFileManager->setExpiryDelay(mRetainNifFiles ? expiryDelay : 0.0);
+        // A later common-cache setting change must not silently erase either
+        // explicitly configured visual residence policy.
+        if (mUnusedImageExpiry > 0) mImageManager->setExpiryDelay(mUnusedImageExpiry);
+        if (mUnusedSceneExpiry > 0) mSceneManager->setExpiryDelay(mUnusedSceneExpiry);
     }
 
     void ResourceSystem::updateCache(double referenceTime)

@@ -104,6 +104,11 @@ namespace Resource
         /// How long to keep objects in cache after no longer being referenced.
         void setExpiryDelay(double expiryDelay);
 
+        // Startup-only, before any loader/maintenance worker. Zero inherits the
+        // ordinary common expiry. Overrides affect unused cache residence only;
+        // existing external-owner protection and bounded maintenance still apply.
+        void configureVisualCacheRetention(double imageSeconds, double sceneSeconds);
+
         /// @note May be called from any thread.
         const VFS::Manager* getVFS() const;
 
@@ -137,6 +142,8 @@ namespace Resource
 
         const VFS::Manager* mVFS;
         bool mRetainNifFiles = false;
+        bool mVisualCacheRetentionConfigured = false;
+        double mUnusedImageExpiry = 0.0, mUnusedSceneExpiry = 0.0;
 
         ResourceSystem(const ResourceSystem&);
         void operator=(const ResourceSystem&);

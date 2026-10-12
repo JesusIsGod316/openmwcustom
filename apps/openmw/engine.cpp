@@ -1935,6 +1935,8 @@ void OMW::Engine::prepareEngine()
         &mEncoder.get()->getStatelessEncoder(), Settings::RamCache::retainNifFiles());
     mResourceSystem->configureLoadingNifMaintenance(
             Settings::cells().mLoadingNifMaintenance);
+    mResourceSystem->configureVisualCacheRetention(
+        Settings::cells().mUnusedImageCacheSeconds, Settings::cells().mUnusedSceneCacheSeconds);
     mResourceSystem->getImageManager()->configureCanonicalPublication(Settings::cells().mCanonicalImagePublication);
     Log(Debug::Info) << "OptimizedMW canonical image publication: enabled="
         << static_cast<bool>(Settings::cells().mCanonicalImagePublication)

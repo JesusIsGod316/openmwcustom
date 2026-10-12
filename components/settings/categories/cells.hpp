@@ -42,6 +42,10 @@ namespace Settings
             mIndex, "Cells", "prepare material images" };
         SettingValue<bool> mLoadingNifMaintenance{
             mIndex, "Cells", "loading nif maintenance" };
+        SettingValue<float> mUnusedImageCacheSeconds{
+            mIndex, "Cells", "unused image cache seconds", makeClampSanitizerFloat(0, 3600) };
+        SettingValue<float> mUnusedSceneCacheSeconds{
+            mIndex, "Cells", "unused scene cache seconds", makeClampSanitizerFloat(0, 3600) };
         SettingValue<int> mOptimizedMWMaterialImageBudget{
             mIndex, "Cells", "material image preparation mib", makeClampSanitizerInt(16, 256) };
         SettingValue<bool> mOptimizedMWLodCacheHitAdmission{
