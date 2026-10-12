@@ -40,6 +40,13 @@ namespace LuaUtil
         }
         static void setEpoch(ScriptsContainer& container, std::uint64_t epoch, bool stampScripts)
         {
+            // Preserve current statistics before artificially rebasing a test
+            // epoch. Re-stamping an unmaterialized lazy script would erase its
+            // idle decay and construct a state production can never produce.
+            if (stampScripts)
+                if (auto* data = std::get_if<ScriptsContainer::LoadedData>(&container.mData))
+                    for (auto& [id, script] : data->mScripts)
+                        container.materializeInstructionStats(script);
             container.mStatsFrame = epoch;
             if (stampScripts)
                 if (auto* data = std::get_if<ScriptsContainer::LoadedData>(&container.mData))
