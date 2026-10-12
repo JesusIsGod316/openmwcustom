@@ -13,6 +13,7 @@
 #include <MyGUI_UString.h>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/runtimediagnostics.hpp>
 #include <components/misc/pathhelpers.hpp>
 #include <components/misc/rng.hpp>
 #include <components/myguiplatform/myguitexture.hpp>
@@ -188,6 +189,9 @@ namespace MWGui
             return;
 
         mResourceSystem->setLoadingNifMaintenanceActive(false);
+        if (Debug::RuntimeDiagnostics::enabled())
+            if (const auto* stamp = mViewer->getFrameStamp())
+                mResourceSystem->reportLoadingRequiredOwners(stamp->getReferenceTime());
 
         if (mLastRenderTime < mLoadingOnTime)
         {

@@ -84,6 +84,10 @@ namespace Resource
         void detachLoadingNifMaintenanceQueue(SceneUtil::WorkQueue* queue = nullptr);
         void setLoadingNifMaintenanceActive(bool active) noexcept;
         void requestLoadingNifMaintenance(double referenceTime) noexcept;
+        // Diagnostic-only loading boundary observation, independent of whether
+        // the bounded release sweep reaches required images/templates. Requests
+        // existing try-lock censuses; it neither evicts nor certifies coverage.
+        void reportLoadingRequiredOwners(double referenceTime) noexcept;
 
         /// Indicates to each resource manager to clear the cache, i.e. to drop cached objects that are no longer
         /// referenced.

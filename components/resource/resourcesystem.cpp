@@ -36,6 +36,7 @@ namespace Resource
             static_cast<unsigned>(LoadingNifMaintenancePolicy::Refusal::PhaseExhausted) + 1> refusals{};
         std::atomic<bool> loadingRequested{ false }, queueAttached{ false }, pressureCensusClaimed{ false };
         std::atomic<std::uint64_t> observationSerial{ 0 };
+        std::atomic<unsigned> loadingOwnerObservations{ 0 };
         std::uint64_t queueDiagnosticFailures = 0;
     };
 
@@ -220,6 +221,32 @@ namespace Resource
         state.policy.setLoading(active);
         const bool previous = state.loadingRequested.exchange(active);
         if (previous != active) reportLoadingNifObservation(state, active ? "loading_on" : "loading_off");
+    }
+
+    void ResourceSystem::reportLoadingRequiredOwners(double referenceTime) noexcept
+    {
+        if (!Debug::RuntimeDiagnostics::enabled() || !mLoadingNifMaintenance) return;
+        if (!std::isfinite(referenceTime) || referenceTime < 0
+            || referenceTime >= static_cast<double>(std::numeric_limits<std::uint64_t>::max()) / 1000000.0) return;
+        auto& count = mLoadingNifMaintenance->loadingOwnerObservations;
+        auto observed = count.load(std::memory_order_relaxed);
+        do
+        {
+            if (observed >= 4) return; // Startup plus early transitions only.
+        } while (!count.compare_exchange_weak(observed, observed + 1, std::memory_order_relaxed));
+        const auto start = Debug::RuntimeDiagnostics::nowUs();
+        Debug::RuntimeDiagnostics::recordEvent("loading_required_owner_census", "images_and_scene",
+            "loading_off_requests_only_not_complete_allocation_attribution", {
+                {"observation", observed + 1}, {"report_requests", 2},
+                {"reference_clock_us", static_cast<std::uint64_t>(referenceTime * 1000000.0)} });
+        // Reporters have atomic cadence admission and bounded cache try-locks.
+        // Busy/limited/suppressed/lost output remains incomplete. Do not spend
+        // the release allowance or mutate a cache to obtain this observation.
+        mSceneManager->reportRuntimeDiagnostics(referenceTime);
+        mImageManager->reportRuntimeDiagnostics(referenceTime);
+        Debug::RuntimeDiagnostics::recordEvent("probe_cost", "loading_required_owners",
+            "Bounded loading boundary census requests; not a normal frame performance comparison", {
+                {"observation", observed + 1}, {"elapsed_us", Debug::RuntimeDiagnostics::nowUs() - start} });
     }
 
     void ResourceSystem::requestLoadingNifMaintenance(double referenceTime) noexcept
