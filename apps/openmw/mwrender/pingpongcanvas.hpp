@@ -13,6 +13,7 @@
 #include <osg/buffered_value>
 
 #include <components/fx/technique.hpp>
+#include <components/rendercore/diagnosticframeidentity.hpp>
 
 #include "luminancecalculator.hpp"
 #include "nisscaler.hpp"
@@ -51,9 +52,17 @@ namespace MWRender
             mOwnershipFallback = std::move(reason);
         }
         void setOwnedFxState(osg::StateSet* value) { mOwnedFxState = value; }
-        static std::shared_ptr<TemporalCanvasOwner> createTemporalOwner();
+        static std::shared_ptr<TemporalCanvasOwner> createTemporalOwner(std::uint64_t publisherIdentity = 0);
         static void finalizeTemporalOwner(const std::shared_ptr<TemporalCanvasOwner>& owner,
             osgUtil::CullVisitor* visitor, osg::StateSet* fxState);
+        static void publishDiagnosticCapture(const std::shared_ptr<TemporalCanvasOwner>& owner,
+            osgUtil::CullVisitor* visitor);
+        void setDiagnosticTargetGroup(std::shared_ptr<RenderCore::Temporal::DiagnosticTargetGroup> group)
+        { mDiagnosticTargets = std::move(group); }
+        // Captured input identity only; no GL inspection/native certificate or
+        // async source lease. Read on the actual draw owner before slot reuse.
+        const RenderCore::Temporal::DiagnosticAcquiredIdentity& diagnosticAcquiredIdentity() const
+        { return mDiagnosticIdentity; }
 
         void drawGeometry(osg::RenderInfo& renderInfo) const;
 
@@ -100,6 +109,8 @@ namespace MWRender
         std::shared_ptr<TemporalCanvasOwner> mTemporalOwner;
         bool mTemporalOwnershipAvailable = false;
         bool mOwnedSubmission = false;
+        std::shared_ptr<RenderCore::Temporal::DiagnosticTargetGroup> mDiagnosticTargets;
+        RenderCore::Temporal::DiagnosticAcquiredIdentity mDiagnosticIdentity;
         std::string mOwnershipFallback = "unverified_owner";
         osg::ref_ptr<osg::StateSet> mOwnedFxState;
         osg::ref_ptr<osg::StateSet> mDrawFxState;

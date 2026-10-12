@@ -397,7 +397,7 @@ namespace MWRender
             if (owned && mTemporalOwnerRenderer.get() != renderer)
             {
                 ++mTemporalResourceEpoch;
-                mTemporalCanvasOwner = PingPongCanvas::createTemporalOwner();
+                mTemporalCanvasOwner = PingPongCanvas::createTemporalOwner(mDiagnosticPublisherIdentity);
                 mTemporalOwnerRenderer = renderer;
                 for (auto& canvas : mCanvases) canvas->setTemporalOwner(mTemporalCanvasOwner);
             }
@@ -484,12 +484,16 @@ namespace MWRender
             freezeBin(freezeBin,*cv->getCurrentRenderStage());
             RenderCore::snapshotRenderStageCamera(*cv->getCurrentRenderStage(),nullptr,true);
         }
-        if (!SceneUtil::temporalDynamicMotionEnabled()) return;
-        auto& dynamic = mTemporalDynamicFrames[cv->getTraversalNumber() % 2];
-        // All HUD snapshot readers retain this per-submission frame, and the
-        // Renderer does not publish drawQueue until the whole cull returns.
-        // Capture exact already-visible/deformed RenderLeaves after traversal.
-        if (dynamic && cv->getCurrentRenderStage()) dynamic->capture(*cv->getCurrentRenderStage());
+        if (SceneUtil::temporalDynamicMotionEnabled())
+        {
+            auto& dynamic = mTemporalDynamicFrames[cv->getTraversalNumber() % 2];
+            // All HUD snapshot readers retain this per-submission frame, and the
+            // Renderer does not publish drawQueue until the whole cull returns.
+            // Capture exact already-visible/deformed RenderLeaves after traversal.
+            if (dynamic && cv->getCurrentRenderStage()) dynamic->capture(*cv->getCurrentRenderStage());
+        }
+        if (mTemporalOwnershipAvailable && cv->getCurrentRenderStage())
+            PingPongCanvas::publishDiagnosticCapture(mTemporalCanvasOwner, cv);
     }
 
     void PostProcessor::cull(unsigned frameId, osgUtil::CullVisitor* cv)
@@ -508,6 +512,7 @@ namespace MWRender
 
         mCanvases[frameId]->setTextureScene(getTexture(Tex_Scene, frameId));
         mCanvases[frameId]->setTextureDepth(getTexture(Tex_OpaqueDepth, frameId));
+        mCanvases[frameId]->setDiagnosticTargetGroup(mDiagnosticTargetGroups[frameId]);
         mCanvases[frameId]->setTextureDistortion(getTexture(Tex_Distortion, frameId));
 
         mTransparentDepthPostPass->mFbo[frameId] = mFbos[frameId][FBO_Primary];
@@ -591,6 +596,17 @@ namespace MWRender
 
     void PostProcessor::update(size_t frameId)
     {
+        // Re-publication after an explicit graph release belongs to this
+        // source owner. Never refresh a stale group from importer observation.
+        if (TemporalMotion::ownershipEnabled() && !Stereo::getStereo())
+        {
+            auto& group = mDiagnosticTargetGroups[frameId];
+            auto* scene = mTextures[frameId][Tex_Scene].get();
+            auto* depth = mTextures[frameId][Tex_OpaqueDepth].get();
+            if (!group || !group->matches(scene, depth))
+                group = RenderCore::Temporal::DiagnosticTargetGroup::issue(scene, depth,
+                    RenderCore::Temporal::DiagnosticTargetGroup::Event::OwnerRepublishedAfterRelease);
+        }
         while (!mQueuedTemplates.empty())
         {
             mTemplates.push_back(std::move(mQueuedTemplates.back()));
@@ -762,6 +778,11 @@ namespace MWRender
                     textures[Tex_OpaqueDepth]->getTextureHeight(), textures[Tex_Scene]->getInternalFormat())));
 #endif
 
+        // Actual replacement event, independent of the coarse history reset
+        // epoch. An older acquired draw keeps its prior group and exact owners.
+        mDiagnosticTargetGroups[frameId] = TemporalMotion::ownershipEnabled() && !Stereo::getStereo()
+            ? RenderCore::Temporal::DiagnosticTargetGroup::issue(textures[Tex_Scene], textures[Tex_OpaqueDepth])
+            : nullptr;
         mCanvases[frameId]->dirty();
     }
 

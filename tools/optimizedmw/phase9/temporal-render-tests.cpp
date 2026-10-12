@@ -83,7 +83,7 @@ int main() try
     // Model a cull-owned matrix finalized after capture. Taking an early copy
     // would give half the expected motion on the following frame.
     (*projection)(0,0)=2;(*projection)(1,1)=2;
-    std::uint64_t lastCommittedTicket=0;
+    std::uint64_t lastCommittedTicket=0, historyOwnerIdentity=0;
     auto draw=[&](unsigned frame,float x,float y,bool reset){
         camera.frame=frame;stamp->setFrameNumber(frame);
         osg::Texture2D* flow=pass.render(info,camera,depth,*quad);
@@ -100,8 +100,12 @@ int main() try
         require(consumer->committedHistoryTicket>lastCommittedTicket,
             "producer did not expose a fresh actual committed history ticket");
         lastCommittedTicket=consumer->committedHistoryTicket;
+        require(consumer->historyOwnerIdentity != 0, "actual History owner did not publish its creation identity");
+        if (!historyOwnerIdentity) historyOwnerIdentity = consumer->historyOwnerIdentity;
+        require(consumer->historyOwnerIdentity == historyOwnerIdentity,
+            "resize/gap/release replaced the CPU History owner identity without an actual owner replacement");
         require(consumer->viewIdentity==1 && consumer->resourceEpoch==camera.resourceEpoch,
-            "consumer submission lost actual view/resource identity");
+            "consumer submission lost mono-view role or coarse history reset epoch");
         require(consumer->motion.get()==flow && consumer->motionInPixels,
             "consumer motion surface or convention changed");
         require(consumer->status.frame==status.frame && consumer->status.previousFrame==status.previousFrame

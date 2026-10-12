@@ -3,6 +3,7 @@
 #include "temporaldynamic.hpp"
 
 #include <components/rendercore/temporalframe.hpp>
+#include <components/rendercore/diagnosticframeidentity.hpp>
 #include <osg/ColorMask>
 #include <osg/FrameBufferObject>
 #include <osg/FrameStamp>
@@ -90,6 +91,7 @@ namespace MWRender
                 osg::Matrixd projection;
             };
             RenderCore::Temporal::History history;
+            const std::uint64_t historyOwnerIdentity = RenderCore::Temporal::issueDiagnosticHistoryOwner();
             osg::ref_ptr<osg::Texture2D> motion;
             osg::ref_ptr<osg::FrameBufferObject> fbo;
             osg::ref_ptr<osg::StateSet> state;
@@ -355,6 +357,7 @@ namespace MWRender
         c.consumer.committedHistoryTicket = frame->ticket;
         c.consumer.viewIdentity = frame->input.identity.view;
         c.consumer.resourceEpoch = camera.resourceEpoch;
+        c.consumer.historyOwnerIdentity = c.historyOwnerIdentity;
         c.consumer.currentViewProjection = RenderCore::Temporal::rowMajor(frame->currentViewProjection);
         c.consumer.previousViewProjection = RenderCore::Temporal::rowMajor(frame->previousViewProjection);
         c.consumer.inverseViewProjection = RenderCore::Temporal::rowMajor(frame->inverseViewProjection);

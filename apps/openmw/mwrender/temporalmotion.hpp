@@ -54,6 +54,10 @@ namespace MWRender
             // This identifies submission, not an async image lease or a native
             // context-lifetime certificate; those remain separate requirements.
             std::uint64_t committedHistoryTicket = 0, viewIdentity = 0, resourceEpoch = 0;
+            // Actual CPU History owner's creation identity. The view above is
+            // mono-role1, resourceEpoch is a coarse reset epoch; none of these
+            // independently certify native context or GL source allocation.
+            std::uint64_t historyOwnerIdentity = 0;
             std::array<float, 16> currentViewProjection{};
             std::array<float, 16> previousViewProjection{};
             std::array<float, 16> inverseViewProjection{};

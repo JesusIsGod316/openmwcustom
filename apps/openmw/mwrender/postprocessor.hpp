@@ -283,6 +283,9 @@ namespace MWRender
         std::shared_ptr<TemporalMotion> mTemporalMotion;
         std::array<std::shared_ptr<TemporalDynamicFrame>, 2> mTemporalDynamicFrames;
         std::shared_ptr<TemporalCanvasOwner> mTemporalCanvasOwner;
+        const std::uint64_t mDiagnosticPublisherIdentity = TemporalMotion::ownershipEnabled()
+            ? RenderCore::Temporal::issueDiagnosticPublisherIdentity() : 0;
+        std::array<std::shared_ptr<RenderCore::Temporal::DiagnosticTargetGroup>, 2> mDiagnosticTargetGroups;
         bool mTemporalOwnershipAvailable = false;
         osg::observer_ptr<osg::Referenced> mTemporalOwnerRenderer;
         std::uint64_t mTemporalWorldEpoch = 1;

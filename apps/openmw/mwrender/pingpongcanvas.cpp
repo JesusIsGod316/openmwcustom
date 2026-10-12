@@ -28,6 +28,8 @@ namespace MWRender
 {
     struct TemporalCanvasOwner
     {
+        explicit TemporalCanvasOwner(std::uint64_t publisher) : publisherIdentity(publisher) {}
+        const std::uint64_t publisherIdentity;
         RenderCore::SceneViewOwner<PingPongCanvas> submissions;
     };
     namespace
@@ -119,9 +121,10 @@ namespace MWRender
         mMultiviewResolveStateSet->addUniform(new osg::Uniform("lastShader", 0));
     }
 
-    std::shared_ptr<TemporalCanvasOwner> PingPongCanvas::createTemporalOwner()
+    std::shared_ptr<TemporalCanvasOwner> PingPongCanvas::createTemporalOwner(std::uint64_t publisherIdentity)
     {
-        return std::make_shared<TemporalCanvasOwner>();
+        if (!publisherIdentity) publisherIdentity = RenderCore::Temporal::issueDiagnosticPublisherIdentity();
+        return std::make_shared<TemporalCanvasOwner>(publisherIdentity);
     }
 
     void PingPongCanvas::finalizeTemporalOwner(const std::shared_ptr<TemporalCanvasOwner>& owner,
@@ -142,6 +145,26 @@ namespace MWRender
                 canvas->mOwnedFxState->addUniform(uniform.first, uniform.second);
             for (const auto& [key, attribute] : canvas->mDrawFxState->getAttributeList())
                 canvas->mOwnedFxState->setAttribute(attribute.first, attribute.second);
+        }
+    }
+
+    void PingPongCanvas::publishDiagnosticCapture(const std::shared_ptr<TemporalCanvasOwner>& owner,
+        osgUtil::CullVisitor* visitor)
+    {
+        if (!owner) return;
+        if (auto* canvas = owner->submissions.find(visitor))
+        {
+            // Called after the acquired leaf's late Fx, stage and optional
+            // dynamic inputs were finalized. This is an actual capture event,
+            // not telemetry/draw/frame%2 or a GPU submission certificate.
+            canvas->mDiagnosticIdentity = {};
+            if (canvas->mOwnedSubmission && owner->publisherIdentity && canvas->mDiagnosticTargets
+                && canvas->mDiagnosticTargets->matches(canvas->mTextureScene.get(), canvas->mTextureDepth.get()))
+            {
+                canvas->mDiagnosticIdentity.publisher = owner->publisherIdentity;
+                canvas->mDiagnosticIdentity.capture = RenderCore::Temporal::issueDiagnosticAcquiredCapture();
+                canvas->mDiagnosticIdentity.targets = canvas->mDiagnosticTargets;
+            }
         }
     }
 
@@ -174,6 +197,8 @@ namespace MWRender
         mTextureDepth = source.mTextureDepth;
         mTextureNormals = source.mTextureNormals;
         mTextureDistortion = source.mTextureDistortion;
+        mDiagnosticTargets = source.mDiagnosticTargets;
+        mDiagnosticIdentity = {}; // Never inherit the prior slot's capture identity.
         mAvgLum = source.mAvgLum;
         mPostprocessing = source.mPostprocessing;
         mMask = source.mMask;
@@ -310,6 +335,9 @@ namespace MWRender
 
     void PingPongCanvas::releaseGLObjects(osg::State* state) const
     {
+        // Graph release invalidates the captured source publication. It does
+        // not end/reissue a native namespace or make later GL-name reuse fresh.
+        if (mDiagnosticTargets) mDiagnosticTargets->invalidate();
         osg::Geometry::releaseGLObjects(state);
         if (mTemporalMotion) mTemporalMotion->releaseGLObjects(state);
         if (mMotionViewState) mMotionViewState->releaseGLObjects(state);
