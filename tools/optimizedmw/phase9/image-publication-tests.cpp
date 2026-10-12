@@ -309,6 +309,8 @@ namespace
         require(expected != baseline.manager->getWarningImage(), "real decoder rejected baseline fixture");
         const auto expectedDigest = digest(*expected);
         const auto expectedBytes = exactPayload ? exactPayload : expected->getTotalSizeInBytesIncludingMipmaps();
+        require(Resource::imagePayloadExtent(*expected).bytes==expectedBytes,
+            "production checked payload disagrees with the real reader fixture allocation");
         ReaderSwap readers(extension);
         {
             Fixture control(extension, bytes, false); readers.observed->reset();
@@ -320,7 +322,7 @@ namespace
             // A cache-only charge follows the winning Item, although both
             // returned raw Image owners remain alive. This is an actual native
             // accounting-gap reproduction, not a byte estimate from the log.
-            require(control.budget.stats().knownOwnerBytes == images.first->getTotalSizeInBytesIncludingMipmaps(),
+            require(control.budget.stats().knownOwnerBytes == expectedBytes,
                 "ordinary replaced owner accounting differs from its one cache Item");
             images.first = nullptr; images.second = nullptr; control.manager->clearCache();
             require(alive(*readers.observed) == 0, "control image backing remained pinned after all owners retired");
