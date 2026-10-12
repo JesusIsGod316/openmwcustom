@@ -5,6 +5,8 @@
 #include <components/resource/keyframemanager.hpp>
 #include <components/resource/cachemaintenance.hpp>
 #include <components/files/memorystream.hpp>
+#include <components/files/configurationmanager.hpp>
+#include <components/sceneutil/shadow.hpp>
 #include <components/toutf8/toutf8.hpp>
 #include <components/vfs/manager.hpp>
 #include <components/vfs/archive.hpp>
@@ -18,6 +20,7 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
+#include <sstream>
 
 namespace
 {
@@ -230,5 +233,78 @@ namespace
         ASSERT_EQ(reloaded->getTotalSizeInBytesIncludingMipmaps(), size);
         EXPECT_TRUE(std::equal(pixels.begin(), pixels.end(), reloaded->data()));
         EXPECT_EQ(file->opens, 2);
+    }
+
+    TEST(ResourceVisualRetention, actualTemplateExpiryAndRecreationPreserveLiveCloneSource)
+    {
+        struct File final : VFS::File
+        {
+            std::string bytes;
+            unsigned opens=0;
+            Files::IStreamPtr open() override
+            { ++opens; return std::make_unique<Files::IMemStream>(bytes.data(), bytes.size()); }
+            std::filesystem::file_time_type getLastModified() const override { return {}; }
+            std::string getStem() const override { return "scene-residence"; }
+        };
+        struct Archive final : VFS::Archive
+        {
+            File file;
+            void listResources(VFS::FileMap& out) override
+            { out.emplace(VFS::Path::Normalized("meshes/retention.osgt"), &file); }
+            bool contains(VFS::Path::NormalizedView path) const override
+            { return path.value()=="meshes/retention.osgt"; }
+            std::string getDescription() const override { return "scene-retention-ordinary-reader"; }
+        };
+        auto* reader=osgDB::Registry::instance()->getReaderWriterForExtension("osgt");
+        ASSERT_NE(reader, nullptr);
+        osg::ref_ptr<osg::Group> authored=new osg::Group;
+        authored->setName("ResidenceSource");
+        std::ostringstream serialized;
+        ASSERT_TRUE(reader->writeNode(*authored, serialized).success());
+        VFS::Manager vfs;
+        auto archive=std::make_unique<Archive>();
+        auto* file=&archive->file;
+        file->bytes=serialized.str();
+        vfs.addArchive(std::move(archive)); vfs.buildIndex();
+        const ToUTF8::Utf8Encoder encoder(ToUTF8::WINDOWS_1252);
+        Resource::ResourceSystem control(&vfs,120,&encoder.getStatelessEncoder());
+        Resource::ResourceSystem candidate(&vfs,120,&encoder.getStatelessEncoder());
+        candidate.configureVisualCacheRetention(0,30);
+        const Files::ConfigurationManager configuration;
+        for (auto* resources : {&control, &candidate})
+        {
+            auto* scenes=resources->getSceneManager();
+            scenes->setShaderPath(configuration.getLocalPath()/"resources/shaders");
+            auto defines=Shader::getDefaultDefines();
+            for (const auto& define:SceneUtil::ShadowManager::getShadowsDisabledDefines())
+                defines[define.first]=define.second;
+            osg::ref_ptr<SceneUtil::LightManager> lights=new SceneUtil::LightManager(SceneUtil::LightSettings{},resources);
+            for (const auto& define:lights->getLightDefines()) defines[define.first]=define.second;
+            scenes->getShaderManager().setGlobalDefines(defines);
+        }
+        const VFS::Path::NormalizedView path("meshes/retention.osgt");
+        auto original=control.getSceneManager()->getTemplate(path,false);
+        auto proposed=candidate.getSceneManager()->getTemplate(path,false);
+        osg::observer_ptr<const osg::Node> originalOwner(original), retired(proposed);
+        original=nullptr; proposed=nullptr;
+        control.getSceneManager()->updateCache(1);
+        candidate.getSceneManager()->updateCache(1);
+        control.getSceneManager()->updateCache(31.1);
+        candidate.getSceneManager()->updateCache(31.1);
+        EXPECT_TRUE(originalOwner.valid());
+        EXPECT_FALSE(retired.valid());
+        auto rebuilt=candidate.getSceneManager()->getTemplate(path,false);
+        ASSERT_EQ(rebuilt->getName(), "ResidenceSource");
+        EXPECT_EQ(file->opens,3);
+        auto clone=candidate.getSceneManager()->getInstance(rebuilt);
+        ASSERT_NE(clone.get(),rebuilt.get());
+        osg::observer_ptr<const osg::Node> pinned(rebuilt);
+        rebuilt=nullptr;
+        candidate.getSceneManager()->updateCache(100);
+        EXPECT_TRUE(pinned.valid());
+        EXPECT_EQ(clone->getName(), "ResidenceSource");
+        clone=nullptr;
+        candidate.getSceneManager()->updateCache(131);
+        EXPECT_FALSE(pinned.valid());
     }
 }
