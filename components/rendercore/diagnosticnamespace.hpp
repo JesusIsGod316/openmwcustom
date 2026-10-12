@@ -70,6 +70,8 @@ namespace RenderCore::Temporal
             // Access only in the one execution scope, on that scope's thread.
             std::uint64_t executionSerial = 0, expectedResourceEpoch = 0;
             std::optional<DiagnosticDrawIdentity> lastPublication;
+            std::uint64_t publisher = 0, historyOwner = 0, lastCapture = 0, largestSourceGroup = 0;
+            std::array<std::uint64_t,2> sourceGroups{};
             bool publicationActive = false;
         };
         inline bool matches(const Control& state, DiagnosticNativeObservation observation) noexcept
@@ -139,9 +141,42 @@ namespace RenderCore::Temporal
         {
             if (!onThread()) return DiagnosticNamespaceStatus::WrongThread;
             if (!admissionOpen()) return DiagnosticNamespaceStatus::Closing;
+            if (mControl.publicationActive) return DiagnosticNamespaceStatus::Busy;
             if (!epoch || epoch < mControl.expectedResourceEpoch)
                 return DiagnosticNamespaceStatus::InvalidResourceEpoch;
             mControl.expectedResourceEpoch = epoch;
+            return DiagnosticNamespaceStatus::Executed;
+        }
+        // Explicit owner transitions, not observation of a convenient GL name
+        // or a telemetry-issued epoch. Keep this metadata contract GL-free.
+        // Real producer/History factories supply their already-issued IDs.
+        DiagnosticNamespaceStatus registerProducerHistory(std::uint64_t publisher, std::uint64_t history) const noexcept
+        {
+            if (!onThread()) return DiagnosticNamespaceStatus::WrongThread;
+            if (!admissionOpen() || mRetirement) return DiagnosticNamespaceStatus::Closing;
+            if (mControl.publicationActive) return DiagnosticNamespaceStatus::Busy;
+            if (!publisher || !history || publisher<mControl.publisher || history<mControl.historyOwner)
+                return DiagnosticNamespaceStatus::InvalidIdentity;
+            if (mControl.lastPublication && !mControl.lastPublication->publisher)
+                return DiagnosticNamespaceStatus::InvalidIdentity; // No midstream legacy downgrade/upgrade.
+            if (publisher==mControl.publisher && history==mControl.historyOwner)
+                return DiagnosticNamespaceStatus::Executed; // Never reset a live watermark by re-registering it.
+            if (mControl.publisher && publisher!=mControl.publisher) mControl.sourceGroups={};
+            mControl.publisher=publisher; mControl.historyOwner=history;
+            mControl.expectedResourceEpoch=0; // The new History must bind its own actual coarse reset epoch.
+            // lastCapture and largestSourceGroup survive owner/ticket reset.
+            return DiagnosticNamespaceStatus::Executed;
+        }
+        DiagnosticNamespaceStatus registerSourceGroup(unsigned slot,std::uint64_t generation) const noexcept
+        {
+            if (!onThread()) return DiagnosticNamespaceStatus::WrongThread;
+            if (!admissionOpen() || mRetirement) return DiagnosticNamespaceStatus::Closing;
+            if (mControl.publicationActive) return DiagnosticNamespaceStatus::Busy;
+            if (!mControl.publisher || !mControl.historyOwner || slot>=mControl.sourceGroups.size() || !generation)
+                return DiagnosticNamespaceStatus::InvalidIdentity;
+            if (mControl.sourceGroups[slot]==generation) return DiagnosticNamespaceStatus::Executed;
+            if (generation<=mControl.largestSourceGroup) return DiagnosticNamespaceStatus::InvalidResourceEpoch;
+            mControl.sourceGroups[slot]=generation; mControl.largestSourceGroup=generation;
             return DiagnosticNamespaceStatus::Executed;
         }
         // Exact backend-reported logical charges only. Pending fences/objects
@@ -171,7 +206,18 @@ namespace RenderCore::Temporal
             if (!mControl.expectedResourceEpoch) return {DiagnosticNamespaceStatus::MissingResources};
             if (id.resourceEpoch != mControl.expectedResourceEpoch)
                 return {DiagnosticNamespaceStatus::InvalidResourceEpoch};
-            if (mControl.lastPublication)
+            const bool acquired=mControl.publisher!=0;
+            if (acquired)
+            {
+                if (id.publisher!=mControl.publisher || id.historyOwner!=mControl.historyOwner || !id.capture
+                    || id.sourceSlot>=mControl.sourceGroups.size() || !id.sourceGroup
+                    || id.sourceGroup!=mControl.sourceGroups[id.sourceSlot])
+                    return {DiagnosticNamespaceStatus::InvalidIdentity};
+                if (id.capture<=mControl.lastCapture) return {DiagnosticNamespaceStatus::StalePublication};
+            }
+            else if (id.publisher || id.historyOwner || id.capture || id.sourceGroup || id.sourceSlot)
+                return {DiagnosticNamespaceStatus::InvalidIdentity};
+            if (mControl.lastPublication && (!acquired || id.historyOwner==mControl.lastPublication->historyOwner))
             {
                 const auto& last = *mControl.lastPublication;
                 if (id.submission <= last.submission || id.ticket <= last.ticket || id.frame <= last.frame
@@ -194,6 +240,7 @@ namespace RenderCore::Temporal
                 ~EndPublication() { active = false; }
             } endPublication{mControl.publicationActive};
             mControl.lastPublication = id;
+            if (acquired) mControl.lastCapture=id.capture;
             mControl.publications.fetch_add(1, std::memory_order_relaxed);
             const DiagnosticBorrowRequest request{id, sources.images[0].width, sources.images[0].height};
             const auto borrowed = metadata.withBorrow(request, std::forward<Consumer>(consumer));

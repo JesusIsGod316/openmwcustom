@@ -29,6 +29,11 @@ namespace RenderCore::Temporal
         std::uint64_t submission = 0, ticket = 0, frame = 0, view = 0;
         std::uint64_t nativeContext = 0, contextEpoch = 0, resourceEpoch = 0, motionRevision = 0;
         unsigned osgContext = 0; // OSG context zero is valid; native identity is separately mandatory.
+        // Optional acquired-producer stream identity. All zero retains the
+        // original diagnostic control. Registration belongs to the real
+        // producer/History/target owner; these fields certify no GL storage.
+        std::uint64_t publisher = 0, historyOwner = 0, capture = 0, sourceGroup = 0;
+        unsigned sourceSlot = 0;
         friend bool operator==(const DiagnosticDrawIdentity&, const DiagnosticDrawIdentity&) = default;
     };
     struct DiagnosticImage

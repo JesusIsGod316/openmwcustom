@@ -451,6 +451,93 @@ int main()
             require(observer.withExecution(correct, emptyConsumer) == DiagnosticNamespaceStatus::Expired,
                 "Observer is weak and keeps neither manager nor platform owner alive");
         });
+        test("registered acquired A/B/A groups and one-group replacement", []
+        {
+            auto owner=create();
+            owner->observer().withExecution(correct,[&](const auto& execution){
+                require(execution.registerProducerHistory(10,20)==DiagnosticNamespaceStatus::Executed,"Actual owner registration enters acquired stream mode");
+                require(execution.registerSourceGroup(0,10)==DiagnosticNamespaceStatus::Executed
+                    && execution.registerSourceGroup(1,11)==DiagnosticNamespaceStatus::Executed,"Two separate storage-group publication IDs register");
+                require(execution.bindProducerResourceEpoch(12)==DiagnosticNamespaceStatus::Executed,"Coarse producer reset epoch remains separate");
+                auto source=[&](std::uint64_t serial,unsigned slot,std::uint64_t group){
+                    auto value=publication(execution.namespaceEpoch(),serial,serial,serial-1,12);
+                    value.identity.publisher=10;value.identity.historyOwner=20;value.identity.capture=100+serial;
+                    value.identity.sourceSlot=slot;value.identity.sourceGroup=group;return value;
+                };
+                for(const auto value:{source(1,0,10),source(2,1,11),source(3,0,10)})
+                    require(execution.withPublication(correct,value,ignoreBorrow).status==DiagnosticNamespaceStatus::Executed,
+                        "Legitimate A1/B2/A1 uses actual registered group identity without inventing a new coarse epoch");
+                require(execution.registerSourceGroup(0,10)==DiagnosticNamespaceStatus::Executed,"Unchanged group rebind preserves identity");
+                require(execution.registerSourceGroup(0,9)==DiagnosticNamespaceStatus::InvalidResourceEpoch,"A retired/older group cannot replace its slot");
+                require(execution.registerSourceGroup(2,12)==DiagnosticNamespaceStatus::InvalidIdentity,"Unregistered third slot refuses bounded ownership");
+                auto stale=source(4,0,10);stale.identity.capture=102;
+                require(execution.withPublication(correct,stale,ignoreBorrow).status==DiagnosticNamespaceStatus::StalePublication,
+                    "Alternating groups never reset the global acquired capture watermark");
+                require(execution.registerSourceGroup(0,12)==DiagnosticNamespaceStatus::Executed,"Actual first-slot replacement registers a newer group");
+                require(execution.withPublication(correct,source(4,0,10),ignoreBorrow).status==DiagnosticNamespaceStatus::InvalidIdentity,
+                    "An old source group cannot borrow authority from a replaced slot");
+                require(execution.withPublication(correct,source(4,0,12),ignoreBorrow).status==DiagnosticNamespaceStatus::Executed,"Replacement group publishes with the same actual coarse reset epoch");
+                require(execution.withPublication(correct,source(5,1,11),[&](const auto& borrow){
+                    require(borrow.sources()->coverage==DiagnosticMotionCoverage::PartialOpaque,"Registered metadata does not claim dense motion or NGX permission");
+                    require(execution.registerProducerHistory(10,21)==DiagnosticNamespaceStatus::Busy
+                        && execution.registerSourceGroup(1,13)==DiagnosticNamespaceStatus::Busy
+                        && execution.bindProducerResourceEpoch(13)==DiagnosticNamespaceStatus::Busy,
+                        "No owner/reset/source binding can mutate an active publication");
+                }).status==DiagnosticNamespaceStatus::Executed,"Unchanged second group survives another slot's replacement");
+            });
+        });
+        test("History-local ticket reset never resets acquired capture authority", []
+        {
+            auto owner=create();
+            owner->observer().withExecution(correct,[&](const auto& execution){
+                execution.registerProducerHistory(17,29);execution.registerSourceGroup(0,23);execution.bindProducerResourceEpoch(12);
+                auto value=publication(execution.namespaceEpoch(),100,71,70,12);
+                value.identity.publisher=17;value.identity.historyOwner=29;value.identity.capture=900;value.identity.sourceGroup=23;
+                require(execution.withPublication(correct,value,ignoreBorrow).status==DiagnosticNamespaceStatus::Executed,"Initial actual History stream publishes");
+                require(execution.registerProducerHistory(17,29)==DiagnosticNamespaceStatus::Executed
+                    && execution.bindProducerResourceEpoch(11)==DiagnosticNamespaceStatus::InvalidResourceEpoch,
+                    "Re-registering a live History cannot reset its epoch or watermark");
+                auto replay=value;replay.identity.capture=901;replay.identity.submission=101;
+                require(execution.withPublication(correct,replay,ignoreBorrow).status==DiagnosticNamespaceStatus::StalePublication,"Fresh capture does not legitimize a repeated local ticket");
+                require(execution.registerProducerHistory(17,30)==DiagnosticNamespaceStatus::Executed,"Actual newer History owner replaces local sequence authority");
+                value=publication(execution.namespaceEpoch(),1,1,0,1);
+                value.identity.motionRevision=1;value.identity.publisher=17;value.identity.historyOwner=30;
+                value.identity.capture=902;value.identity.sourceGroup=23;
+                require(execution.withPublication(correct,value,ignoreBorrow).status==DiagnosticNamespaceStatus::MissingResources,"New History must explicitly bind its actual reset epoch");
+                require(execution.bindProducerResourceEpoch(1)==DiagnosticNamespaceStatus::Executed
+                    && execution.withPublication(correct,value,ignoreBorrow).status==DiagnosticNamespaceStatus::Executed,
+                    "Legitimate local ticket/frame/reset restart preserves the same registered storage group");
+                replay=value;replay.identity.submission=2;replay.identity.ticket=2;replay.identity.frame=1;
+                for(auto& image:replay.images)image.frame=1;
+                replay.identity.capture=901;
+                require(execution.withPublication(correct,replay,ignoreBorrow).status==DiagnosticNamespaceStatus::StalePublication,"Old global capture remains stale after History rebuild");
+                replay.identity.capture=903;replay.identity.historyOwner=29;
+                require(execution.withPublication(correct,replay,ignoreBorrow).status==DiagnosticNamespaceStatus::InvalidIdentity,"Fresh serial cannot replay an old History owner");
+                require(execution.registerProducerHistory(17,29)==DiagnosticNamespaceStatus::InvalidIdentity
+                    && execution.registerProducerHistory(16,31)==DiagnosticNamespaceStatus::InvalidIdentity,"Old publisher/History identities cannot regain registration");
+                require(execution.registerProducerHistory(18,31)==DiagnosticNamespaceStatus::Executed,"New real publisher explicitly replaces its stream");
+                require(execution.registerSourceGroup(0,23)==DiagnosticNamespaceStatus::InvalidResourceEpoch
+                    && execution.registerSourceGroup(0,24)==DiagnosticNamespaceStatus::Executed,"Publisher replacement needs new source-owner publication authority");
+            });
+        });
+        test("legacy control and acquired ownership cannot be silently mixed", []
+        {
+            auto owner=create();
+            owner->observer().withExecution(correct,[&](const auto& execution){
+                execution.bindProducerResourceEpoch(12);
+                auto value=publication(execution.namespaceEpoch());value.identity.publisher=1;
+                require(execution.withPublication(correct,value,ignoreBorrow).status==DiagnosticNamespaceStatus::InvalidIdentity,"Partial/unregistered acquired fields fail closed");
+                value.identity.publisher=0;
+                require(execution.withPublication(correct,value,ignoreBorrow).status==DiagnosticNamespaceStatus::Executed,"Original legacy diagnostic control remains unchanged");
+                require(execution.registerProducerHistory(1,1)==DiagnosticNamespaceStatus::InvalidIdentity,"Midstream upgrade cannot discard legacy stale guards");
+            });
+            auto acquired=create();
+            acquired->observer().withExecution(correct,[&](const auto& execution){
+                execution.registerProducerHistory(1,1);execution.registerSourceGroup(0,1);execution.bindProducerResourceEpoch(12);
+                require(execution.withPublication(correct,publication(execution.namespaceEpoch()),ignoreBorrow).status==DiagnosticNamespaceStatus::InvalidIdentity,
+                    "An acquired stream cannot downgrade to missing producer/History identity");
+            });
+        });
         std::cout << "PASS diagnostic namespace CPU lifecycle: " << cases << " scenarios, " << checks
                   << " assertions; no SDL/GL/game/NGX execution\n";
         return 0;
