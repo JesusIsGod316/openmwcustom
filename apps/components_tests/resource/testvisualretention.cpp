@@ -16,6 +16,7 @@
 #include <chrono>
 #include <functional>
 #include <limits>
+#include <stdexcept>
 
 namespace
 {
@@ -100,10 +101,13 @@ namespace
     {
         VFS::Manager vfs;
         CachedImages control(&vfs, 120), candidate(&vfs, 15);
+        Resource::SpeculativeBudget bytes;
+        candidate.setSpeculativeBudget(&bytes);
         auto source = image();
         osg::observer_ptr<osg::Image> candidateOwner(source);
         candidate.insert("candidate", source, 1);
         source = nullptr;
+        EXPECT_EQ(bytes.stats().knownOwnerBytes, 64);
         auto original = image();
         osg::observer_ptr<osg::Image> controlOwner(original);
         control.insert("control", original, 1);
@@ -113,6 +117,7 @@ namespace
         EXPECT_FALSE(candidateOwner.valid());
         EXPECT_TRUE(controlOwner.valid());
         EXPECT_EQ(candidate.size(), 0);
+        EXPECT_EQ(bytes.stats().knownOwnerBytes, 0);
         EXPECT_EQ(control.size(), 1);
     }
 
