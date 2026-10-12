@@ -375,6 +375,9 @@ add_test(NAME p9-immutable-image-source COMMAND p9-immutable-image-source)
 set_tests_properties(p9-immutable-image-source PROPERTIES TIMEOUT 60)
 if(MSVC)
   target_compile_options(p9-immutable-image-source PRIVATE /WX /Zi)
+  # Existing DerivedAssets uses this supported C++20 MSVC compatibility API.
+  # Keep new source-contract warnings as errors without masking other warnings.
+  target_compile_definitions(p9-immutable-image-source PRIVATE _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING)
   target_link_options(p9-immutable-image-source PRIVATE /DEBUG)
 endif()
 if(MSVC)

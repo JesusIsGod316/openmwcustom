@@ -40,7 +40,7 @@ namespace
         {
             ++opens;
             if (fail) throw std::runtime_error("Native missing/unreadable source");
-            return std::make_unique<Files::IMemStream>(reinterpret_cast<const char*>(bytes.data()),bytes.size());
+            return std::make_unique<ImageSource::SourceStream>(bytes);
         }
         std::filesystem::file_time_type getLastModified() const override { return {}; }
         std::string getStem() const override { return "immutable-source-native"; }
@@ -120,6 +120,17 @@ int main() try
     using namespace Resource;
     require(DerivedAssets::digest("abc")=="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
         "SHA256 revision uses the standard known answer");
+    {
+        Bytes bytes{1,2,3};ImageSource::SourceStream stream(bytes);
+        require(stream.peek()==1,"Bounded source starts on the first exact byte");
+        stream.seekg(-1,std::ios::beg);require(stream.fail(),"Negative absolute source seek refuses without escaping the buffer");
+        stream.clear();stream.seekg(4,std::ios::beg);require(stream.fail(),"Source seek beyond EOF refuses");
+        stream.clear();stream.seekg(std::numeric_limits<std::streamoff>::max(),std::ios::cur);
+        require(stream.fail(),"Huge relative seek cannot overflow pointer arithmetic");
+        stream.clear();stream.seekg(-1,std::ios::end);require(stream.peek()==3,"Valid relative source seek preserves exact contents");
+        ImageSource::SourceStream empty(std::span<const std::uint8_t>{});
+        require(empty.peek()==std::char_traits<char>::eof(),"Empty source stream has a valid bounded EOF");
+    }
     SpeculativeBudget::Config limits;limits.transientLimit=16*SpeculativeBudget::MiB;
     limits.experimentLimit=16*SpeculativeBudget::MiB;limits.experimentScratchLimit=16*SpeculativeBudget::MiB;
     SpeculativeBudget budget(limits);
@@ -146,9 +157,10 @@ int main() try
         auto image=f.read();require(image.valid(),"Installed raw pixel reader succeeds");
         auto recipe=ImageSource::Recipe::capture(f.authority,f.path,*image,&budget,sample(budget),config);
         require(bool(recipe),"Arbitrary small raw dimensions retain an immutable source recipe");
-        auto value=recipe->reconstruct(&budget,sample(budget));
-        require(value && recipe->matches(*value.image),"Raw pixel source reconstructs exact decoder origin, layout and content");
-        value={};
+        {
+            auto value=recipe->reconstruct(&budget,sample(budget));
+            require(value && recipe->matches(*value.image),"Raw pixel source reconstructs exact decoder origin, layout and content");
+        }
         const auto before=f.file->opens.load();
         auto critical=sample(budget);critical.decision.state=OpenGlPressure::Critical;
         require(!recipe->reconstruct(&budget,critical),"Critical host policy refuses optional reconstruction");

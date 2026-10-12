@@ -4,7 +4,6 @@
 #include "derivedassetcache.hpp"
 #include "imagepayload.hpp"
 #include "speculativebudget.hpp"
-#include <components/files/memorystream.hpp>
 #include <components/vfs/manager.hpp>
 
 #include <osgDB/Options>
@@ -21,6 +20,38 @@
 
 namespace Resource::ImageSource
 {
+    class SourceBuffer : public std::streambuf
+    {
+    public:
+        explicit SourceBuffer(std::span<const std::uint8_t> bytes)
+        {
+            if (bytes.size()>static_cast<std::size_t>(std::numeric_limits<off_type>::max()))
+                throw std::length_error("Source stream extent overflow");
+            char* first=bytes.empty()?&mEmpty:const_cast<char*>(reinterpret_cast<const char*>(bytes.data()));
+            setg(first,first,first+bytes.size());
+        }
+    protected:
+        pos_type seekoff(off_type off,std::ios_base::seekdir direction,std::ios_base::openmode mode) override
+        {
+            if (!(mode&std::ios_base::in) || (mode&std::ios_base::out)) return pos_type(off_type(-1));
+            const off_type size=egptr()-eback();
+            const off_type base=direction==std::ios_base::beg?0:direction==std::ios_base::cur?gptr()-eback()
+                :direction==std::ios_base::end?size:-1;
+            if (base<0 || off< -base || off>size-base) return pos_type(off_type(-1));
+            setg(eback(),eback()+base+off,egptr());
+            return pos_type(base+off);
+        }
+        pos_type seekpos(pos_type position,std::ios_base::openmode mode) override
+        { return seekoff(static_cast<off_type>(position),std::ios_base::beg,mode); }
+    private:
+        char mEmpty=0;
+    };
+    class SourceStream final : private SourceBuffer,public std::istream
+    {
+    public:
+        explicit SourceStream(std::span<const std::uint8_t> bytes)
+            : SourceBuffer(bytes),std::istream(static_cast<SourceBuffer*>(this)) {}
+    };
     // Foundation for a future immutable texture factory. No engine factory
     // retires CPU backing through this service yet. Index rebuilds still obey
     // VFS::Manager's quiescent-reader rule; this is not a concurrent VFS index.
@@ -99,7 +130,7 @@ namespace Resource::ImageSource
             if (!add(estimate->sourceBytes) || !add(config.maximumDecodedBytes)
                 || !add(config.maximumDecodedBytes) || !add(config.decoderScratchAllowance)) return {};
             auto reservation=budget->reserve(sample,peak,SpeculativePriority::Background,true);
-            if (!reservation) return {};
+            if (reservation.future()!=peak) return {};
             auto input=mVfs->get(path);
             if (!input) return {};
             Snapshot result{std::move(reservation),DerivedAssets::Bytes(static_cast<std::size_t>(estimate->sourceBytes)),
@@ -222,7 +253,7 @@ namespace Resource::ImageSource
         }
         osg::ref_ptr<osg::Image> decode(const DerivedAssets::Bytes& bytes,osgDB::ReaderWriter& reader) const
         {
-            Files::IMemStream stream(reinterpret_cast<const char*>(bytes.data()),bytes.size());
+            SourceStream stream(bytes);
             osg::ref_ptr<osgDB::Options> options=new osgDB::Options(mRevision.options);
             auto result=reader.readImage(stream,options);
             osg::ref_ptr<osg::Image> image=result.takeImage();
