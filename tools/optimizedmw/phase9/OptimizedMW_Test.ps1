@@ -33,6 +33,8 @@ param(
     [string]$AutomatedDerivedCacheDirectory='',
     [switch]$AllowExternalLuaStorageChanges,
     [switch]$MemoryDiagnostics,
+    [switch]$MemoryGuard,
+    [string]$AutomatedStopFile='',
     [ValidateRange(180,900)][int]$AutomatedDeadlineSeconds=420
 )
 $ErrorActionPreference = 'Stop'
@@ -59,6 +61,9 @@ $automatedSession=$null
 $comparisonDirectory=$GameDir
 if($AllowExternalLuaStorageChanges -and -not $AutomatedRouteCapture){throw 'External Lua-storage approval applies only to isolated automated routes'}
 if($AutomatedTemporalMode -ne 'Off' -and -not $AutomatedRouteCapture){throw 'Automatic temporal inputs require an isolated automated route'}
+if(($MemoryGuard -and (-not $MemoryDiagnostics -or -not $AutomatedRouteCapture)) -or ($AutomatedStopFile -and -not $AutomatedRouteCapture)){
+    throw 'Memory guard and stop requests require an isolated automated route; the guard also requires system memory diagnostics.'
+}
 if($AutomatedRouteCapture){
     if(-not $AutomatedRouteName -or $SavePath -or $OptimizationConfig -or $SystemTrace -or -not $NoPrompt){
         throw 'Automated routes require a route name and -NoPrompt, and use their own save/config; Windows trace is separate.'
@@ -815,6 +820,19 @@ try{
     @("game_process_id=$gameProcessId","game_creation_utc=$gameCreationUtc") | Add-Content -LiteralPath (Join-Path $ProfileDir 'TEST_MODE.txt') -Encoding Ascii
     while(-not $process.HasExited){
         Add-OptimizedMWMemorySample -Journal $memoryJournal -Process $process -Now ([DateTimeOffset]::UtcNow) -Start $start
+        $guardDecision=if($MemoryGuard){Get-OptimizedMWMemoryGuardDecision $memoryJournal.LastPressureSample ([DateTimeOffset]::UtcNow)}else{'continue'}
+        $stopRequested=$AutomatedStopFile -and [IO.File]::Exists($AutomatedStopFile)
+        if($stopRequested -or $guardDecision -in @('urgent','cancel')){
+            $stopReason=if($stopRequested){'supervisor_stop_request'}else{'critical_host_memory_'+$guardDecision}
+            Write-OptimizedMWRouteJson (Join-Path $ProfileDir 'AUTOMATIC-STOP.json') ([ordered]@{
+                schema=1; reason=$stopReason; game_pid=$gameProcessId; creation_utc=$gameCreationUtc
+                sample=$memoryJournal.LastPressureSample; route_complete=$false; performance_qualified=$false
+            })
+            # Only this exact launched Process object is affected. Urgent pressure
+            # cannot wait for further growth. Otherwise allow a bounded close.
+            Stop-OptimizedMWOwnedAutomaticProcess -Process $process -Urgent ($guardDecision -eq 'urgent')
+            throw ('Owned automatic run cancelled: '+$stopReason+'; raw evidence retained and route is incomplete')
+        }
         if($automatedSession -and ([DateTimeOffset]::UtcNow-$start).TotalSeconds -gt $AutomatedDeadlineSeconds){
             $process.Kill();$process.WaitForExit();throw 'Owned automatic route exceeded its deadline'
         }

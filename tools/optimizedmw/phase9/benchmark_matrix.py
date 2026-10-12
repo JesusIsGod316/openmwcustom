@@ -401,7 +401,10 @@ def memory_diagnostic_arguments(case):
     value=case.get('memory_diagnostics',False)
     if not isinstance(value,bool):
         raise ValueError('memory_diagnostics must be a JSON boolean')
-    return ['-MemoryDiagnostics'] if value else []
+    guard=case.get('memory_guard',False)
+    if not isinstance(guard,bool) or (guard and not value):
+        raise ValueError('memory_guard must be a JSON boolean and requires memory_diagnostics')
+    return (['-MemoryDiagnostics'] if value else []) + (['-MemoryGuard'] if guard else [])
 
 
 def run_matrix(plan_path, output):
@@ -459,10 +462,23 @@ def run_matrix(plan_path, output):
                     '-AssetMask',str(case.get('asset_mask',0)),'-TraceLevel',case.get('depth','Normal'),'-Candidate','CONTROL']
             args += temporal_arguments(case)
             args += diagnostic_arguments[index]
+            if plan.get('stop_request_file'):
+                args += ['-AutomatedStopFile',str(Path(plan['stop_request_file']).resolve())]
             if allow_external_lua:
                 args.append('-AllowExternalLuaStorageChanges')
             print(json.dumps({'case':case['id'],'route':case['route'],'state':'started'}),flush=True)
             current_case['stage'] = 'private_launcher'
+            if plan.get('runtime_guard_checkpoint'):
+                # Recheck every launch, including between repeats. Imported host
+                # uses CIM so an unswitched private game is still occupied.
+                import benchmark_supervisor
+                checkpoint=Path(plan['runtime_guard_checkpoint'])
+                if (checkpoint.parent/'OVERNIGHT-HOLD.txt').exists() or not benchmark_supervisor.reservation(checkpoint):
+                    raise ValueError('Human runtime reservation or overnight hold; no game launched')
+                if benchmark_supervisor.occupied() or not benchmark_supervisor.memory_floor()['qualified']:
+                    raise ValueError('Occupied game/build or insufficient fresh memory margin; no game launched')
+            state['current_case']=current_case
+            benchmark_desktop.save(output/'MATRIX.json',state)
             code = benchmark_desktop.launch(plan['powershell'],args,game,directory/'Desktop',plan.get('deadline',600))
             current_case['stage'] = 'run_qualification'
             receipt, desktop = completed_run_receipts(directory, code)
@@ -491,6 +507,7 @@ def run_matrix(plan_path, output):
             if not engaged['all_requested_positive']:
                 raise ValueError('Candidate was inert; stop broad comparisons and inspect '+str(receipt_path))
             current_case = None
+            state['current_case']=None
         state['state']='completed'
         # Calibration must be reviewed across repeats before accepting numerical
         # A/B results. Deep rows are never pooled with ordinary performance.

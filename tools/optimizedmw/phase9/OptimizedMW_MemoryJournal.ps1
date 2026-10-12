@@ -60,7 +60,8 @@ function Start-OptimizedMWMemoryJournal {
         MaxSamples=8192; Attempts=[long]0; AcceptedAttempts=[long]0; Dropped=[long]0
         ProcessRows=[long]0; SystemRows=[long]0; Errors=[long]0; ProcessSampleErrors=[long]0
         SystemSampleErrors=[long]0; WriteErrors=[long]0; Stopped=$false
-        FirstEpochMs=$null; LastEpochMs=$null; ErrorMessages=(New-Object 'System.Collections.Generic.List[string]')
+        FirstEpochMs=$null; LastEpochMs=$null; LastPressureSample=$null
+        ErrorMessages=(New-Object 'System.Collections.Generic.List[string]')
     }
     $encoding = New-Object System.Text.UTF8Encoding($false)
     $stream = $null
@@ -164,6 +165,10 @@ function Add-OptimizedMWMemorySample {
             else { Add-OptimizedMWMemoryJournalError $Journal 'system' ('GlobalMemoryStatusEx error '+[Runtime.InteropServices.Marshal]::GetLastWin32Error()) }
         }
         catch { Add-OptimizedMWMemoryJournalError $Journal 'system' $_.Exception.Message }
+        $Journal.LastPressureSample=[pscustomobject]@{
+            EpochMs=$epoch; PerformanceValid=$performanceValid; PhysicalValid=$physicalValid
+            CommitSpareMiB=($limit-$commit); PhysicalAvailableMiB=$available
+        }
         try {
             $row=@($epochText,$elapsedText,([int]$performanceValid).ToString($culture),([int]$physicalValid).ToString($culture),
                 ([int]$processValid).ToString($culture),$commit.ToString($format,$culture),$limit.ToString($format,$culture),
@@ -174,6 +179,33 @@ function Add-OptimizedMWMemorySample {
         }
         catch { Add-OptimizedMWMemoryJournalError $Journal 'write' $_.Exception.Message }
     }
+}
+
+function Get-OptimizedMWMemoryGuardDecision {
+    param($Sample, [DateTimeOffset]$Now)
+    # Fresh valid host observations only. This cancels a diagnostic run; it is
+    # neither the optional engine admission policy nor a guaranteed RAM ceiling.
+    if ($null -eq $Sample) { return 'unavailable' }
+    $age=$Now.ToUnixTimeMilliseconds()-$Sample.EpochMs
+    if ($age -lt 0 -or $age -gt 2500) { return 'unavailable' }
+    if (($Sample.PerformanceValid -and $Sample.CommitSpareMiB -lt 256) -or
+        ($Sample.PhysicalValid -and $Sample.PhysicalAvailableMiB -lt 128)) { return 'urgent' }
+    if (($Sample.PerformanceValid -and $Sample.CommitSpareMiB -lt 1024) -or
+        ($Sample.PhysicalValid -and $Sample.PhysicalAvailableMiB -lt 512)) { return 'cancel' }
+    return 'continue'
+}
+
+function Stop-OptimizedMWOwnedAutomaticProcess {
+    param([Parameter(Mandatory=$true)][Diagnostics.Process]$Process, [bool]$Urgent=$false)
+    # Caller passes the exact Process returned by its own launch; no name/PID
+    # enumeration or lookup, so an unrelated game cannot become the target.
+    if($Process.HasExited){return}
+    if(-not $Urgent){
+        try{
+            if($Process.CloseMainWindow()){$null=$Process.WaitForExit(1000)}
+        }catch{if($Process.HasExited){return};throw}
+    }
+    if(-not $Process.HasExited){$Process.Kill();$Process.WaitForExit()}
 }
 
 function Stop-OptimizedMWMemoryJournal {

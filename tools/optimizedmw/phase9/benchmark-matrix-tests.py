@@ -28,6 +28,10 @@ class Benchmarks(unittest.TestCase):
         for value in ('false','true',None,1):
             with self.assertRaisesRegex(ValueError,'JSON boolean'):
                 matrix.memory_diagnostic_arguments({'memory_diagnostics':value})
+        self.assertEqual(matrix.memory_diagnostic_arguments({'memory_diagnostics':True,'memory_guard':True}),['-MemoryDiagnostics','-MemoryGuard'])
+        for case in ({'memory_guard':True},{'memory_diagnostics':True,'memory_guard':'true'}):
+            with self.assertRaisesRegex(ValueError,'memory_guard'):
+                matrix.memory_diagnostic_arguments(case)
 
     def test_build_c_flags_require_real_measured_work(self):
         with tempfile.TemporaryDirectory() as temporary:
