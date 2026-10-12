@@ -26,6 +26,8 @@ namespace Settings
         SettingValue<bool> mV33IdleTimerFastPath{ mIndex, "Lua", "idle timer fast path" };
         // Startup-only, per-state registry trampoline; protected calls and lifecycle order remain unchanged.
         SettingValue<bool> mProtectedCallReuse{ mIndex, "Lua", "protected call reuse" };
+        // Startup-only. Instruction hook/watchdog and profiler boundary order remain unchanged.
+        SettingValue<bool> mLazyInstructionStatistics{ mIndex, "Lua", "lazy instruction statistics" };
         // V3.20 stock-semantic handler and pure-conversion fast paths.
         SettingValue<bool> mV320EngineLuaFastPaths{ mIndex, "Lua", "engine event fast paths" };
         SettingValue<bool> mV320SoundConversionCache{ mIndex, "Lua", "sound conversion cache" };

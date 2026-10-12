@@ -40,6 +40,7 @@ namespace LuaUtil
         LuaUtil::LuaState* lua, std::string_view namePrefix, ScriptTracker* tracker, bool load)
         : mNamePrefix(namePrefix)
         , mLua(*lua)
+        , mLazyInstructionStatistics(lua->getSettings().mLazyInstructionStatistics)
         , mThis(std::make_shared<ScriptsContainer*>(this))
         , mTracker(tracker)
     {
@@ -122,6 +123,8 @@ namespace LuaUtil
         script.mHiddenData[sScriptDebugNameKey] = debugName;
         script.mPath = path;
         script.mStats.mAvgInstructionCount = 0;
+        script.mStats.mFrameInstructionCount = 0;
+        script.mStatsFrame = mStatsFrame;
 
         const auto oldMemoryUsageIt = mRemovedScriptsMemoryUsage.find(scriptId);
         if (oldMemoryUsageIt != mRemovedScriptsMemoryUsage.end())
@@ -984,10 +987,99 @@ namespace LuaUtil
 
     static constexpr float instructionCountAvgCoef = 1.0f / 30; // averaging over approximately 30 frames
 
-    void ScriptsContainer::statsNextFrame()
+    float ScriptsContainer::decayedInstructionCount(const Script& script, std::uint64_t& steps) const
     {
+        assert(script.mStatsFrame <= mStatsFrame);
+        std::uint64_t frames = mStatsFrame - script.mStatsFrame;
+        float average = script.mStats.mAvgInstructionCount;
+        if (frames == 0)
+            return average;
+        if (average == 0)
+            return 0;
+        // Replay exactly the ordinary float operations instead of pow: folding
+        // them changes rounding and can change the existing <5 zero decision.
+        // Finite positive floats reach that cutoff within a few thousand steps,
+        // independent of the size of an idle epoch gap. No loop over idle frames
+        // remains after the average reaches zero. Reads do not write script state.
+        if (!std::isfinite(average))
+        {
+            average *= 1 - instructionCountAvgCoef;
+            ++steps;
+            return average < 5 ? 0 : average;
+        }
+        while (frames != 0)
+        {
+            --frames;
+            average *= 1 - instructionCountAvgCoef;
+            ++steps;
+            if (average < 5)
+                return 0;
+        }
+        return average;
+    }
+
+    void ScriptsContainer::materializeInstructionStats(Script& script)
+    {
+        if (script.mStatsFrame == mStatsFrame)
+            return;
+        script.mStats.mAvgInstructionCount
+            = decayedInstructionCount(script, mLua.mInstructionStatisticsWork.mWriteDecaySteps);
+        script.mStats.mFrameInstructionCount = 0;
+        script.mStatsFrame = mStatsFrame;
+    }
+
+    void ScriptsContainer::setLazyInstructionStatistics(bool enabled)
+    {
+        if (mLazyInstructionStatistics == enabled)
+            return;
         if (LoadedData* data = std::get_if<LoadedData>(&mData))
         {
+            for (auto& [scriptId, script] : data->mScripts)
+            {
+                materializeInstructionStats(script);
+                ++mLua.mInstructionStatisticsWork.mModeTransitionScriptVisits;
+            }
+        }
+        mLazyInstructionStatistics = enabled;
+    }
+
+    void ScriptsContainer::statsNextFrame()
+    {
+        auto& work = mLua.mInstructionStatisticsWork;
+        ++work.mContainerFrameBoundaries;
+        if (mLazyInstructionStatistics)
+            ++work.mLazyFrameBoundaries;
+        // Unsigned epoch wrap is handled before increment. The exceptional
+        // rebase performs the same one-frame decay/reset and retains current
+        // statistics, rather than accidentally reviving stale frame counts.
+        if (mStatsFrame == std::numeric_limits<std::uint64_t>::max())
+        {
+            if (LoadedData* data = std::get_if<LoadedData>(&mData))
+            {
+                for (auto& [scriptId, script] : data->mScripts)
+                {
+                    materializeInstructionStats(script);
+                    script.mStats.mAvgInstructionCount *= 1 - instructionCountAvgCoef;
+                    if (script.mStats.mAvgInstructionCount < 5)
+                        script.mStats.mAvgInstructionCount = 0;
+                    script.mStats.mFrameInstructionCount = 0;
+                    script.mStatsFrame = 0;
+                    ++work.mRebaseScriptVisits;
+                }
+            }
+            mStatsFrame = 0;
+            ++work.mEpochRebases;
+            return;
+        }
+        ++mStatsFrame;
+        if (LoadedData* data = std::get_if<LoadedData>(&mData))
+        {
+            if (mLazyInstructionStatistics)
+            {
+                work.mLazyScriptVisitsAvoided += data->mScripts.size();
+                return;
+            }
+            work.mOrdinaryScriptVisits += data->mScripts.size();
             for (auto& [scriptId, script] : data->mScripts)
             {
                 // The averaging formula is: averageValue = averageValue * (1-c) + newValue * c
@@ -995,6 +1087,7 @@ namespace LuaUtil
                 if (script.mStats.mAvgInstructionCount < 5)
                     script.mStats.mAvgInstructionCount = 0; // speeding up converge to zero if newValue is zero
                 script.mStats.mFrameInstructionCount = 0;
+                script.mStatsFrame = mStatsFrame;
             }
         }
     }
@@ -1006,6 +1099,8 @@ namespace LuaUtil
             auto it = data->mScripts.find(scriptId);
             if (it != data->mScripts.end())
             {
+                if (mLazyInstructionStatistics)
+                    materializeInstructionStats(it->second);
                 it->second.mStats.mAvgInstructionCount += instructionCount * instructionCountAvgCoef;
                 it->second.mStats.mFrameInstructionCount += instructionCount;
             }
@@ -1048,8 +1143,17 @@ namespace LuaUtil
         {
             for (auto& [id, script] : data->mScripts)
             {
-                stats[id].mAvgInstructionCount += script.mStats.mAvgInstructionCount;
-                stats[id].mFrameInstructionCount += script.mStats.mFrameInstructionCount;
+                if (mLazyInstructionStatistics)
+                {
+                    std::uint64_t steps = 0;
+                    stats[id].mAvgInstructionCount += decayedInstructionCount(script, steps);
+                    if (steps != 0)
+                        mLua.mInstructionStatisticsReadDecaySteps.fetch_add(steps, std::memory_order_relaxed);
+                }
+                else
+                    stats[id].mAvgInstructionCount += script.mStats.mAvgInstructionCount;
+                stats[id].mFrameInstructionCount
+                    += script.mStatsFrame == mStatsFrame ? script.mStats.mFrameInstructionCount : 0;
                 stats[id].mMemoryUsage += script.mStats.mMemoryUsage;
             }
         }

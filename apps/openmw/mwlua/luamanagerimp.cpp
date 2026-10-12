@@ -225,7 +225,8 @@ namespace MWLua
             .mMemoryLimit = Settings::lua().mMemoryLimit,
             .mSmallAllocMaxSize = Settings::lua().mSmallAllocMaxSize,
             .mLogMemoryUsage = Settings::lua().mLogMemoryUsage,
-            .mInstructionProfilerEnabled = Settings::lua().mLuaProfiler };
+            .mInstructionProfilerEnabled = Settings::lua().mLuaProfiler,
+            .mLazyInstructionStatistics = Settings::lua().mLazyInstructionStatistics };
     }
 
     LuaManager::LuaManager(const VFS::Manager* vfs, const std::filesystem::path& libsDir)
@@ -248,6 +249,18 @@ namespace MWLua
 
     LuaManager::~LuaManager()
     {
+        const auto instructionWork = mLua.instructionStatisticsWork();
+        Log(Debug::Info) << "OptimizedMW instruction statistics: enabled=" << mLua.getSettings().mLazyInstructionStatistics
+            << " container_boundaries=" << instructionWork.mContainerFrameBoundaries
+            << " lazy_boundaries=" << instructionWork.mLazyFrameBoundaries
+            << " ordinary_script_visits=" << instructionWork.mOrdinaryScriptVisits
+            << " avoided_script_visits=" << instructionWork.mLazyScriptVisitsAvoided
+            << " write_decay_steps=" << instructionWork.mWriteDecaySteps
+            << " read_decay_steps=" << instructionWork.mReadDecaySteps
+            << " epoch_rebases=" << instructionWork.mEpochRebases
+            << " rebase_script_visits=" << instructionWork.mRebaseScriptVisits
+            << " mode_transition_script_visits=" << instructionWork.mModeTransitionScriptVisits
+            << " scope=lifetime_bookkeeping_not_saved_time";
         mLua.stopDiagnosticVmSampler();
         Log(Debug::Info) << "OptimizedMW VM work capture: producer_rows=" << mVmWorkRows
             << " callback_deliveries=" << mLua.diagnosticVmSamples().mCallbacks;

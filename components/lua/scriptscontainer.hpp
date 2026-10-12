@@ -189,6 +189,10 @@ namespace LuaUtil
 
         // Informs that new frame is started. Needed to track Lua instruction count per frame.
         void statsNextFrame();
+        // Lua-owner-thread only. Normally initialized from the startup setting;
+        // an explicit transition first materializes every loaded script's current statistics.
+        void setLazyInstructionStatistics(bool enabled);
+        bool lazyInstructionStatistics() const { return mLazyInstructionStatistics; }
 
         struct ScriptStats
         {
@@ -298,6 +302,7 @@ namespace LuaUtil
             std::map<int64_t, sol::main_protected_function> mTemporaryCallbacks;
             VFS::Path::Normalized mPath;
             ScriptStats mStats;
+            std::uint64_t mStatsFrame = 0;
 
             ~Script();
         };
@@ -315,7 +320,10 @@ namespace LuaUtil
         using EventHandlerList = std::vector<Handler>;
 
         friend class LuaState;
+        friend struct InstructionStatisticsTestAccess;
         void addInstructionCount(int scriptId, int64_t instructionCount);
+        float decayedInstructionCount(const Script& script, std::uint64_t& steps) const;
+        void materializeInstructionStats(Script& script);
         void addMemoryUsage(int scriptId, int64_t memoryDelta);
 
         // Add to container without calling onInit/onLoad.
@@ -374,6 +382,8 @@ namespace LuaUtil
         int64_t mTemporaryCallbackCounter = 0;
 
         std::map<int, int64_t> mRemovedScriptsMemoryUsage;
+        std::uint64_t mStatsFrame = 0;
+        bool mLazyInstructionStatistics = false;
         ScriptsContainerLifetime mThis; // used by LuaState to track ownership of memory allocations
 
         ScriptTracker* mTracker;

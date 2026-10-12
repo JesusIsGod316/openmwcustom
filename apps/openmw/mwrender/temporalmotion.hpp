@@ -49,6 +49,11 @@ namespace MWRender
         {
             Status status;
             osg::ref_ptr<osg::Texture2D> motion;
+            // Issued by this context's History::prepare and published only after
+            // commit succeeds. Frame/target revision cannot substitute for it.
+            // This identifies submission, not an async image lease or a native
+            // context-lifetime certificate; those remain separate requirements.
+            std::uint64_t committedHistoryTicket = 0, viewIdentity = 0, resourceEpoch = 0;
             std::array<float, 16> currentViewProjection{};
             std::array<float, 16> previousViewProjection{};
             std::array<float, 16> inverseViewProjection{};

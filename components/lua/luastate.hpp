@@ -2,6 +2,7 @@
 #define COMPONENTS_LUA_LUASTATE_H
 
 #include <array>
+#include <atomic>
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -40,6 +41,7 @@ namespace LuaUtil
         uint64_t mSmallAllocMaxSize = 1024 * 1024; // big default value efficiently disables memory tracking
         bool mLogMemoryUsage = false;
         bool mInstructionProfilerEnabled = false;
+        bool mLazyInstructionStatistics = false;
     };
 
     class LuaState;
@@ -223,6 +225,27 @@ namespace LuaUtil
         };
         ProtectedCallStats protectedCallStats() const { return mProtectedCallStats; }
 
+        // Access follows the existing Lua-owner-thread/worker-completion contract.
+        // These count container boundaries and actual bookkeeping, not saved wall time.
+        struct InstructionStatisticsWork
+        {
+            std::uint64_t mContainerFrameBoundaries = 0;
+            std::uint64_t mLazyFrameBoundaries = 0;
+            std::uint64_t mOrdinaryScriptVisits = 0;
+            std::uint64_t mLazyScriptVisitsAvoided = 0;
+            std::uint64_t mWriteDecaySteps = 0;
+            std::uint64_t mReadDecaySteps = 0;
+            std::uint64_t mEpochRebases = 0;
+            std::uint64_t mRebaseScriptVisits = 0;
+            std::uint64_t mModeTransitionScriptVisits = 0;
+        };
+        InstructionStatisticsWork instructionStatisticsWork() const
+        {
+            auto result = mInstructionStatisticsWork;
+            result.mReadDecaySteps = mInstructionStatisticsReadDecaySteps.load(std::memory_order_relaxed);
+            return result;
+        }
+
         // Explicit diagnostic owner only: process-global LuaJIT sampling never
         // starts for ordinary gameplay. Callbacks only update bounded counters.
         // Counts are delivered during a scope; timer-triggered VM states may
@@ -328,6 +351,7 @@ namespace LuaUtil
         static sol::protected_function_result throwIfError(sol::protected_function_result&&);
 
     private:
+        friend class ScriptsContainer;
         template <typename... Args>
         friend sol::protected_function_result call(const sol::protected_function& fn, Args&&... args);
         template <typename... Args>
@@ -370,6 +394,10 @@ namespace LuaUtil
         bool mProtectedCallReuse = false;
         int mProtectedCallReference = LUA_NOREF;
         mutable ProtectedCallStats mProtectedCallStats;
+        InstructionStatisticsWork mInstructionStatisticsWork;
+        // Const statistics reads do not alter scripts. A separate relaxed
+        // diagnostic counter also avoids making concurrent readers race.
+        mutable std::atomic<std::uint64_t> mInstructionStatisticsReadDecaySteps{ 0 };
         DiagnosticVmSamples mDiagnosticVmSamples;
         void (*mVmProfileStop)(lua_State*) = nullptr;
 

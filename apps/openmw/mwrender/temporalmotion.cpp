@@ -352,6 +352,9 @@ namespace MWRender
 
         c.consumer.status = c.status;
         c.consumer.motion = c.motion;
+        c.consumer.committedHistoryTicket = frame->ticket;
+        c.consumer.viewIdentity = frame->input.identity.view;
+        c.consumer.resourceEpoch = camera.resourceEpoch;
         c.consumer.currentViewProjection = RenderCore::Temporal::rowMajor(frame->currentViewProjection);
         c.consumer.previousViewProjection = RenderCore::Temporal::rowMajor(frame->previousViewProjection);
         c.consumer.inverseViewProjection = RenderCore::Temporal::rowMajor(frame->inverseViewProjection);
@@ -370,6 +373,7 @@ namespace MWRender
     {
         if (context >= mImpl->contexts.size() || !mImpl->contexts[context]
             || !mImpl->contexts[context]->consumer.status.submitted
+            || !mImpl->contexts[context]->consumer.committedHistoryTicket
             || mImpl->contexts[context]->consumer.status.frame != expectedFrame
             || !mImpl->contexts[context]->consumer.motion)
             return std::nullopt;
