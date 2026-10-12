@@ -288,8 +288,8 @@ namespace Resource::ImageSource
         static std::uint64_t decodedBound(const Authority::Snapshot& source,std::string_view extension,const Config& config)
         { return preflight(source.bytes,extension=="targa"?std::string_view("tga"):extension,config); }
         static SpeculativeBudget::Stage admitDecode(SpeculativeBudget* budget,const OpenGlPressureSample& sample,
-            std::uint64_t bound,const Config& config)
-        { return bound?reserveDecode(budget,sample,bound,config):SpeculativeBudget::Stage{}; }
+            std::uint64_t bound,const Config& config,bool experimental=true)
+        { return bound?reserveDecode(budget,sample,bound,config,experimental):SpeculativeBudget::Stage{}; }
         bool matches(const osg::Image& image) const
         {
             const auto layout=Layout::of(image);
@@ -368,10 +368,10 @@ namespace Resource::ImageSource
             return result;
         }
         static SpeculativeBudget::Stage reserveDecode(SpeculativeBudget* budget,const OpenGlPressureSample& sample,
-            std::uint64_t bound,const Config& config)
+            std::uint64_t bound,const Config& config,bool experimental=true)
         {
             if (!budget || bound>(std::numeric_limits<std::uint64_t>::max()-config.decoderScratchAllowance)/2) return {};
-            return budget->reserve(sample,bound*2+config.decoderScratchAllowance,SpeculativePriority::Background,true);
+            return budget->reserve(sample,bound*2+config.decoderScratchAllowance,SpeculativePriority::Background,experimental);
         }
         static std::uint64_t preflight(const DerivedAssets::Bytes& bytes,std::string_view extension,const Config& config)
         {

@@ -362,6 +362,7 @@ namespace Resource
             if (ext == "targa") ext = "tga";
             std::optional<ImageSource::Authority::Snapshot> source;
             std::optional<SpeculativeBudget::Stage> decodedAdmission;
+            const bool optionalImage=SpeculativeScope::active();
             Files::IStreamPtr stream;
             try
             {
@@ -378,7 +379,7 @@ namespace Resource
                             source.emplace(std::move(*captured));
                         if (source)
                             decodedAdmission.emplace(ImageSource::Recipe::admitDecode(mCache->speculativeBudget(),sampled,
-                                ImageSource::Recipe::decodedBound(*source,ext,mImageSourceConfig),mImageSourceConfig));
+                                ImageSource::Recipe::decodedBound(*source,ext,mImageSourceConfig),mImageSourceConfig,optionalImage));
                     }
                     catch (...) { ++mImageSourceDeclined; }
                 }
@@ -515,8 +516,16 @@ namespace Resource
                             // its later claim shares this charge, never adds it.
                             // Losing publications retain their own receipt until
                             // destruction; never overwrite the winner's source.
+                            // Required output already belongs to the ordinary
+                            // image-cache/common owner ledger. Sealing a recipe
+                            // must not charge that same required allocation to
+                            // the incremental experimental child as well; its
+                            // small cap would otherwise make this mechanism
+                            // inert long before the demanded view is loaded.
+                            // Optional source snapshots, speculative images and
+                            // reconstructed/clone outputs retain child admission.
                             auto charge=mCache->speculativeBudget()->track({image->data(),1u},recipe->revision().layout.bytes,
-                                true,&*decodedAdmission,true);
+                                true,&*decodedAdmission,optionalImage);
                             image->getOrCreateUserDataContainer()->addUserObject(new SourcePublication(image,std::move(recipe),std::move(charge)));
                             ++mImageSourcePublished;
                         }

@@ -115,6 +115,45 @@ namespace
         padded->data()[0]=1;
         require(ImageSource::payloadDigest(*padded,*layout)!=before,"Supported-layout digest still detects changed visible RGB texels");
     }
+    void requiredSourceAdmission()
+    {
+        // Required payload is an ordinary owner, not an incremental recipe
+        // allocation. Actual source/scratch and reconstructed CPU outputs still
+        // intersect the same bounded child and common/headroom policies.
+        VFS::Manager vfs;std::vector<VFS::Path::Normalized> paths;
+        const auto bytes=encoded("tga");
+        for(unsigned i=0;i<20;++i)
+        {
+            auto archive=std::make_unique<Archive>("textures/admission"+std::to_string(i)+".tga");
+            archive->file.bytes=bytes;paths.push_back(archive->path);vfs.addArchive(std::move(archive));
+        }
+        vfs.buildIndex();
+        SpeculativeBudget budget({2*SpeculativeBudget::MiB,4,0,2048,2048,1});
+        ImageSource::Config config;config.decoderScratchAllowance=64;
+        ImageManager manager(&vfs,120);manager.setSpeculativeBudget(&budget);manager.configureImageSources(true,sample,&budget,config);
+        std::vector<osg::ref_ptr<osg::Image>> cpu;std::uint64_t payload=0;
+        for(const auto& path:paths)
+        {
+            auto image=manager.getImage(path);require(image && ImageManager::imageSourceRecipe(*image),
+                "Actual required publication keeps its source receipt after aggregate ordinary backing exceeds the child cap");
+            payload+=imagePayloadExtent(*image).bytes;cpu.push_back(std::move(image));
+        }
+        require(payload>2048 && budget.stats().knownOwnerBytes==payload && !budget.stats().experimentRetainedBytes,
+            "Required original backing is uniquely charged to the common owner ledger, with no incremental-child double charge");
+        require(!budget.stats().futureBytes && !budget.stats().experimentFutureBytes,
+            "Actual winning source/decode work ends all source/scratch reservations after publication");
+        const auto recipe=ImageManager::imageSourceRecipe(*cpu.front());
+        auto reconstructed=recipe->reconstructOwned(&budget,sample(&budget));
+        require(reconstructed && ImageSource::ownedBackingBytes(*reconstructed)==imagePayloadExtent(*cpu.front()).bytes
+            && budget.stats().experimentRetainedBytes==imagePayloadExtent(*reconstructed).bytes,
+            "A distinct reconstructed output still consumes its exact bounded incremental-child charge");
+        auto critical=sample(&budget);critical.decision.state=OpenGlPressure::Critical;
+        require(!recipe->reconstructOwned(&budget,critical),"Required-owner accounting never bypasses pressure gates for optional reconstruction");
+        manager.clearCache();cpu.clear();require(budget.stats().knownOwnerBytes==imagePayloadExtent(*reconstructed).bytes,
+            "Reconstructed CPU consumer survives ordinary cache and original-owner retirement with its own charge");
+        reconstructed=nullptr;require(!budget.stats().knownOwnerBytes && !budget.stats().experimentRetainedBytes && !budget.stats().futureBytes,
+            "Required/reconstructed backing and scratch debt all end with actual CPU owners");
+    }
 }
 int main(int argc,char** argv) try
 {
@@ -123,6 +162,7 @@ int main(int argc,char** argv) try
         const std::string_view mode=argv[1];
         if (mode=="--clone-receipt") cloneReceipt();
         else if (mode=="--padded-tga") paddedTga();
+        else if (mode=="--required-source-admission") requiredSourceAdmission();
         else throw std::runtime_error("Unknown isolated source regression");
         std::cout<<"PASS actual image source publication: "<<checks<<" assertions; isolated publication regression\n";return 0;
     }
@@ -186,7 +226,7 @@ int main(int argc,char** argv) try
         require(!budget.stats().futureBytes && !budget.stats().knownOwnerBytes && !budget.stats().experimentRetainedBytes,
             "Final actual image backing retirement repays all surviving unique charges");
     }
-    cloneReceipt();paddedTga();
+    cloneReceipt();paddedTga();requiredSourceAdmission();
     // Unknown materialization remains one ordinary required open. A candidate
     // refusal must never turn a valid source into the warning image.
     {
