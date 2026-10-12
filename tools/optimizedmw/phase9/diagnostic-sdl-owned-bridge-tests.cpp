@@ -205,6 +205,9 @@ int main()
     catch(const std::exception& error)
     {
         std::cerr<<"FAIL production SDL-owned bridge: "<<error.what()<<"; SDL="<<SDL_GetError()<<'\n';
-        if(window)SDL_DestroyWindow(window);SDL_Quit();return 1;
+        // A failed assertion may leave real importer/native-close debt. Do not
+        // manufacture cleanup by destroying its external window/SDL subsystem.
+        // This finite fixture exits; the OS reclaims its failed process.
+        return 1;
     }
 }
