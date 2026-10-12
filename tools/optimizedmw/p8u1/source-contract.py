@@ -2,8 +2,12 @@
 """Protect P8U1 integration and packaging; not a runtime performance test."""
 from pathlib import Path
 import re
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from settings_contract import SettingsContract
 
 root = Path(__file__).resolve().parents[3]
+settings = SettingsContract(root)
 checks = 0
 
 def require(value, message):
@@ -16,9 +20,9 @@ def text(path):
     return (root / path).read_text(encoding="utf-8")
 
 cfg = text("files/settings-default.cfg")
-for setting in ("optimizedmw canonical terrain textures", "optimizedmw composite slicing",
-                "optimizedmw object userdata cache", "warm sounds", "optimizedmw setting consistency"):
-    require(re.search(r"^" + re.escape(setting) + r" = false$", cfg, re.M), setting + " must default off")
+for section,setting in (("Cells","optimizedmw canonical terrain textures"), ("Cells","optimizedmw composite slicing"),
+                ("Lua","optimizedmw object userdata cache"), ("Sound","warm sounds"), ("Shadows","optimizedmw setting consistency")):
+    require(settings.default(section,setting,"false"), setting + " must default off")
 engine = text("apps/openmw/engine.cpp")
 require("_endDynamicDrawBlock->block();" in engine, "dynamic safe-point removed")
 require(engine.count("mSoundManager->warmStoreSounds();") == 1, "warming discovery must run once at loading")
@@ -36,7 +40,20 @@ texture = text("components/resource/preparedterraintexture.hpp")
 for token in ("previous->context.get() == state.getGraphicsContext()", "getModifiedCount()",
               "isDirty(context)", "getForceTextureDownloadGeometry()", "getSubloadCallback()"):
     require(token in texture, "missing texture identity/side-effect condition: " + token)
-require("void apply(" not in texture, "draw-time apply must remain stock")
+# Event 161 adds exact diagnostic attribution around callback-free terrain
+# applies. The later upload pool adds a recycled-object passthrough branch.
+# All three paths still delegate once to the retained OSG implementation;
+# readiness never substitutes a skipped apply or forces a download at draw time.
+apply_body = texture.split("void apply(", 1)[1].split("bool preparationUnchanged", 1)[0]
+require(apply_body.count("osg::Texture2D::apply(state);") == 3
+        and re.search(r"if\s*\(getSubloadCallback\(\)\)\s*\{\s*osg::Texture2D::apply\(state\);\s*return;\s*\}", apply_body)
+        and re.search(r"if\s*\(object->isAllocated\(\)\)\s*\{\s*_modifiedCount\[state.getContextID\(\)\]\s*=\s*_image->getModifiedCount\(\)-1;\s*osg::Texture2D::apply\(state\);\s*return;\s*\}", apply_body)
+        and re.search(r"osg::Texture2D::apply\(state\);\s*\}\s*$", apply_body)
+        and "if (UploadPool::requested()" in apply_body
+        and "SceneUtil::GLCallTrace::ScopedTextureApply" in apply_body,
+        "diagnostic wrapper must retain stock apply and callback passthrough")
+for forbidden in ("glFinish(", "compileGLObjects(", "rememberPreparation(", "preparationUnchanged("):
+    require(forbidden not in apply_body, "draw-time readiness/download behavior changed: " + forbidden)
 composite = text("components/terrain/compositemaprenderer.cpp")
 require("compileUntil" in composite and "mRequired.load" in composite, "required composite progress missing")
 lua = text("apps/openmw/mwlua/luamanagerimp.cpp")

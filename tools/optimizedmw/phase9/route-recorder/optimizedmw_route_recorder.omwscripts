@@ -1,0 +1,6 @@
+# Private route acquisition only. The host adds this content last in its copied profile.
+MENU: scripts/optimizedmw_route_recorder/menu.lua
+GLOBAL: scripts/optimizedmw_route_recorder/global.lua
+GLOBAL: scripts/optimizedmw_route/policy.lua
+NPC,CREATURE: scripts/optimizedmw_route/policy_actor.lua
+PLAYER: scripts/optimizedmw_route_recorder/player.lua

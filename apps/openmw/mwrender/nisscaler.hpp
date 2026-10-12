@@ -29,6 +29,7 @@ namespace MWRender
             int outputWidth, int outputHeight, float sharpness) const;
 
         void resizeGLObjectBuffers(unsigned int maxSize);
+        void releaseGLObjects(osg::State* state = nullptr) const;
 
     private:
         bool ensureProgram(osg::State& state, osg::GLExtensions* ext) const;

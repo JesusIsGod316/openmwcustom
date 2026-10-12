@@ -36,6 +36,8 @@ namespace LuaUi
         MyGUI::Widget* widget() const { return mWidget; }
 
         bool isRoot() const { return mElementRoot; }
+        // Frozen at process startup; Lua layout mutation does not change this policy.
+        bool reflowReuseEnabled() const { return mReflowReuseEnabled; }
         WidgetExtension* getParent() const { return mParent; }
         void detachFromParent();
 
@@ -183,6 +185,7 @@ namespace LuaUi
         WidgetExtension* mParent;
         bool mTemplateChild;
         bool mElementRoot;
+        const bool mReflowReuseEnabled;
         MyGUI::Widget* mContentWidget;
 
         void attach(WidgetExtension* ext);

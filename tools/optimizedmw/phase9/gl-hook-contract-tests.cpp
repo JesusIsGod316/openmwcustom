@@ -1,4 +1,5 @@
 #include <components/sceneutil/glcalltrace.hpp>
+#include <osg/FrameBufferObject>
 #include <iostream>
 #include <thread>
 #include <stdexcept>
@@ -21,8 +22,19 @@ void GL_APIENTRY query(GLuint id,GLenum pname,GLuint* result)
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
 }
 GLboolean GL_APIENTRY unmap(GLenum target){return target==5?GL_TRUE:GL_FALSE;}
+unsigned framebufferCalls=0;
+GLenum GL_APIENTRY framebufferStatus(GLenum target)
+{
+    if(target!=GL_FRAMEBUFFER_EXT)throw std::runtime_error("framebuffer target changed");
+    ++framebufferCalls;
+    return GL_FRAMEBUFFER_COMPLETE_EXT;
+}
 
 bool expectCompressedBreadcrumb=false;
+bool expectTextureIdentity=false;
+std::uintptr_t expectedTexture=0, expectedObject=0, expectedImage=0;
+unsigned expectedRevision=0;
+struct NoApplyTexture : osg::Texture2D { void apply(osg::State&) const override {} };
 void GL_APIENTRY compressed(GLenum target,GLint level,GLenum internalFormat,GLsizei width,GLsizei height,
     GLint border,GLsizei imageSize,const void* data)
 {
@@ -38,6 +50,26 @@ void GL_APIENTRY compressed(GLenum target,GLint level,GLenum internalFormat,GLsi
             || breadcrumb.row.args[5]!=0 || breadcrumb.row.args[6]!=8388608)
             throw std::runtime_error("extended texture-upload breadcrumb missing");
     }
+    if(expectTextureIdentity)
+    {
+        const auto row=Capture::instance().breadcrumb(15).row;
+        if(row.texture!=expectedTexture || row.textureObject!=expectedObject || row.glName!=73
+            || row.image!=expectedImage || row.imageRevision!=expectedRevision || row.textureUnit!=0
+            || row.allocated || !row.dirty || !row.firstUse || row.where.camera!=88)
+            throw std::runtime_error("actual OSG texture/object/revision/unit attribution wrong");
+    }
+}
+
+int mipmapCalls=0;
+void GL_APIENTRY mipmap(GLenum target)
+{
+    if(target!=GL_TEXTURE_2D)throw std::runtime_error("mipmap target changed");
+    ++mipmapCalls;
+    const auto row=Capture::instance().breadcrumb(15).row;
+    if(row.nativeThread!=Debug::HitchTrace::threadId())throw std::runtime_error("native thread correlation missing");
+    if(expectTextureIdentity && (row.texture!=expectedTexture || row.glName!=73))
+        throw std::runtime_error("explicit mipmap texture owner missing");
+    if(!expectTextureIdentity && row.texture!=0)throw std::runtime_error("mipmap owner leaked outside its scope");
 }
 
 int main(int argc,char** argv) try
@@ -72,10 +104,43 @@ int main(int argc,char** argv) try
     expectCompressedBreadcrumb=false;
     if(Capture::instance().total(15,CompressedTexImage2D).calls!=1)
         throw std::runtime_error("compressed upload dispatch not counted");
+    osg::ref_ptr<osg::State> state=new osg::State;state->setContextID(15);
+    osg::ref_ptr<NoApplyTexture> texture=new NoApplyTexture;
+    osg::ref_ptr<osg::Image> image=new osg::Image;
+    image->allocateImage(4,4,1,GL_RGBA,GL_UNSIGNED_BYTE);image->dirty();texture->setImage(image);
+    texture->resizeGLObjectBuffers(16);
+    osg::ref_ptr<osg::Texture::TextureObject> object=new osg::Texture::TextureObject(texture,73,GL_TEXTURE_2D);
+    texture->setTextureObject(15,object);
+    state->applyTextureAttribute(0,texture);
+    expectedTexture=reinterpret_cast<std::uintptr_t>(texture.get());expectedObject=reinterpret_cast<std::uintptr_t>(object.get());
+    expectedImage=reinterpret_cast<std::uintptr_t>(image.get());expectedRevision=image->getModifiedCount();
+    expectTextureIdentity=true;
+    { Scope scope({15,45,State,11,state.get(),88});ScopedTextureApply apply(*state,*texture);
+      compressedFn(1,2,3,2048,1024,0,8388608,&payload); }
+    expectTextureIdentity=false;
+    auto mipmapFn=&mipmap;
+    Hook<15,GenerateMipmap,decltype(mipmapFn)>::install(mipmapFn);
+    expectTextureIdentity=true;
+    { Scope scope({15,45,State,11,state.get(),88});ScopedTextureApply owner(*state,*texture);
+      mipmapFn(GL_TEXTURE_2D); }
+    expectTextureIdentity=false;
+    { Scope scope({15,46,State,11,state.get(),88});mipmapFn(GL_TEXTURE_2D); }
+    if(mipmapCalls!=2)throw std::runtime_error("mipmap dispatch count changed");
+    { Scope scope({15,46,State,11,state.get(),88});compressedFn(1,2,3,2048,1024,0,8388608,&payload); }
+    if(Capture::instance().breadcrumb(15).row.texture!=0)
+        throw std::runtime_error("unscoped direct apply inherited previous texture identity");
 
     Hook<15,GetQueryObjectuiv,decltype(fn)>::install(fn);
     { Scope scope({15,43,State,9});fn(7,9,&result); }
     if(calls!=3)throw std::runtime_error("idempotent installation chained itself");
+
+    auto framebufferFn=&framebufferStatus;
+    Hook<15,CheckFramebufferStatus,decltype(framebufferFn)>::install(framebufferFn);
+    { Scope scope({15,47,Drawable,11});
+      if(framebufferFn(GL_FRAMEBUFFER_EXT)!=GL_FRAMEBUFFER_COMPLETE_EXT)
+          throw std::runtime_error("framebuffer result changed"); }
+    if(framebufferCalls!=1 || Capture::instance().total(15,CheckFramebufferStatus).calls!=1)
+        throw std::runtime_error("framebuffer dispatch not counted exactly once");
 
     std::cout<<"PASS: synthetic dispatch ABI, active crash breadcrumb, eight-argument texture upload metadata, "
                 "returns, exactly one original call, idempotent hook and outside-scope passthrough\n";

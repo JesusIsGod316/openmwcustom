@@ -2,15 +2,19 @@
 """P8G4 integration/package guards supplement, not replace, native tests."""
 from pathlib import Path
 import re,json,hashlib
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from settings_contract import SettingsContract
 root=Path(__file__).resolve().parents[3]
+settings=SettingsContract(root)
 def read(p):return (root/p).read_text()
 def need(ok,label):
  if not ok:raise SystemExit('P8G4 contract failed: '+label)
 g=read('components/sceneutil/groundcoverbatch.hpp');o=read('apps/openmw/mwrender/objectpaging.cpp')
 h=read('components/debug/v3hitchtelemetry.hpp');e=read('apps/openmw/engine.cpp');c=read('components/resource/benchmarkcapture.hpp')
 s=read('components/sceneutil/shadowproxygroup.cpp');l=read('tools/optimizedmw/gl-p8g4/OptimizedMW_Test.ps1')
-for setting in ['optimizedmw cull input reuse','optimizedmw lod2','optimizedmw active shadow batching']:
- need(setting+' = false' in read('files/settings-default.cfg'),'default-off '+setting)
+for section,setting in [('Groundcover','optimizedmw cull input reuse'),('Groundcover','optimizedmw lod2'),('Cells','optimizedmw active shadow batching')]:
+ need(settings.default(section,setting,'false'),'default-off '+setting)
 need('inline static thread_local CullInputScope* current' in g and '~CullInputScope()' in g,'bounded traversal scope')
 need('view == camera->getViewMatrix()' in g and 'modelView == *cv.getModelViewMatrix()' in g,'exact view/transform cache inputs')
 need('No per-geometry StateSet/uniform copies on LOD2' in g and 'mLod2States->state(bucket)' in g,'shared policy state')
@@ -30,7 +34,9 @@ need('settings_restore_verified' in l and '$originalEnv' in l,'settings/environm
 need('Add-Content -LiteralPath $memoryCsv' not in l,'memory sampler avoids gameplay I/O')
 cm=read('CMakeLists.txt')
 installed=re.findall(r'"\$\{CMAKE_SOURCE_DIR\}/([^"\n]+\.bat)"',cm)
-need(installed==['tools/optimizedmw/gl-p8g4/START-OptimizedMW-Test.bat'],'one public BAT whitelist')
+need(installed==['tools/optimizedmw/gl-p8g4/START-OptimizedMW-Test.bat',
+ 'tools/optimizedmw/phase9/START-OptimizedMW-SystemTrace.bat'],
+ 'one benchmark BAT plus the retained advanced system recorder whitelist')
 manifest=json.loads(read('files/shaders/v3overlay/p8g3/manifest.json'))
 need(manifest['id']=='optimizedmw-p8g4-pbr-groundcover','deployed P8G4 identity')
 for name,entry in manifest['files'].items():

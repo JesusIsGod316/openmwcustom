@@ -1,4 +1,5 @@
 #include "parser.hpp"
+#include "optimizationaliases.hpp"
 
 #include <sstream>
 
@@ -33,6 +34,9 @@ void Settings::SettingsFileParser::loadSettingsFile(
     }
 
     Log(Debug::Info) << "Loading settings file: " << file;
+    // Resolve a complete file before merging its configuration layer. Canonical
+    // names beat aliases in either line order; user layers still beat defaults.
+    CategorySettingValueMap parsed;
     std::string currentCategory;
     mLine = 0;
     while (!stream.get().eof() && !stream.get().fail())
@@ -77,15 +81,23 @@ void Settings::SettingsFileParser::loadSettingsFile(
         Misc::StringUtils::trim(value);
 
         if (overrideExisting)
-            settings[std::make_pair(currentCategory, setting)] = std::move(value);
-        else if (settings.insert(std::make_pair(std::make_pair(currentCategory, setting), value)).second == false)
+            parsed[std::make_pair(currentCategory, setting)] = std::move(value);
+        else if (parsed.insert(std::make_pair(std::make_pair(currentCategory, setting), value)).second == false)
             fail(std::string("duplicate setting: [" + currentCategory + "] " + setting));
+    }
+    for (auto& [key, value] : OptimizationAliases::normalize(parsed))
+    {
+        if (overrideExisting)
+            settings.insert_or_assign(key, std::move(value));
+        else if (!settings.emplace(key, std::move(value)).second)
+            fail("duplicate setting: [" + key.first + "] " + key.second);
     }
 }
 
 void Settings::SettingsFileParser::saveSettingsFile(
-    const std::filesystem::path& file, const CategorySettingValueMap& settings)
+    const std::filesystem::path& file, const CategorySettingValueMap& inputSettings)
 {
+    const auto settings = OptimizationAliases::normalize(inputSettings);
     using CategorySettingStatusMap = std::map<CategorySetting, bool>;
 
     // No options have been written to the file yet.
@@ -234,7 +246,19 @@ void Settings::SettingsFileParser::saveSettingsFile(
 
         // Construct the setting map key to determine whether the setting has already been
         // written to the file.
-        CategorySetting key = std::make_pair(currentCategory, setting);
+        const auto canonical = OptimizationAliases::canonical(currentCategory, setting);
+        if (canonical.first != currentCategory)
+        {
+            ostream << "# Setting moved to [" << canonical.first << "] " << canonical.second << std::endl;
+            changed = true;
+            continue;
+        }
+        CategorySetting key{ canonical.first, canonical.second };
+        if (canonical.second != setting)
+        {
+            setting = canonical.second;
+            changed = true;
+        }
         CategorySettingStatusMap::iterator finder = written.find(key);
 
         // Settings not in the written map are definitely invalid.  Currently, this can only
@@ -244,6 +268,11 @@ void Settings::SettingsFileParser::saveSettingsFile(
         if (finder == written.end())
         {
             ostream << "# invalid setting: " << line << std::endl;
+            changed = true;
+            continue;
+        }
+        if (finder->second)
+        {
             changed = true;
             continue;
         }

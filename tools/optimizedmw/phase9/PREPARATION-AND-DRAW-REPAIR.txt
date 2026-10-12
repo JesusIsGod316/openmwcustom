@@ -1,0 +1,222 @@
+OptimizedMW preparation and draw work, 2026-10-10
+
+This batch keeps three independent areas active: preparation correctness,
+LOD construction cost, and render submission. It does not promote a runtime
+performance result. Full scene ownership changes remain valid experiments.
+
+Implemented
+
+1. Resource compilation restores the caller's GL buffer bindings, OSG binding
+   pointers, current vertex-array state and VAO. Terrain's direct buffer
+   compile path uses the same scope. CPU-array terrain composite drawing
+   clears stale dispatch/buffer state before establishing its client pointers.
+   The rejected static prewarm experiment remains disabled in the launcher.
+
+   The pinned OSG compileBuffer implementation binds GL directly. Its cached
+   unbind methods do nothing if their cached pointer is null. The native GL
+   fixture reproduces live VBO/EBO bindings with empty OSG caches safely,
+   without issuing an invalid draw. The repaired path also passes populated
+   cache restoration, exception unwinding, VBO-to-client backend transition
+   and caller VAO restoration. This proves the defect and the binding repair;
+   it does not establish that this was the cause of the earlier driver crash.
+
+2. [Cells] lod retain source indices = false
+   The candidate shares certified immutable original primitive/index data
+   during cooking. Actual reduced outputs still get private index data/EBOs.
+   The existing deep primitive copy remains the control. Both original
+   source serialization and simplifier/cache overlap stay in the budget.
+   This control is independent of lod cache hit admission.
+
+   Native validation compares exact reduced indices on a miss and a hit,
+   checks source array/primitive/buffer identities and revisions, and proves
+   a lower conservative cook peak. It also exercises real reduced draws.
+   A runtime comparison must show both avoided copies and actual LOD draws.
+
+3. [Optimizations] indirect command reuse = false
+   Both private command slots already contain the immutable base commands
+   after allocation. The candidate skips redundant CPU uploads, except when
+   GPU visibility has changed a selected slot. That slot is restored once.
+   Existing fence availability, busy fallback, capacity and retirement rules
+   remain in force. Each primitive captures its startup policy.
+
+   Native validation performs a GPU visibility dispatch, returns to the CPU
+   command path, and compares exact pixels on 12 real indirect draws. Control
+   makes 12 uploads; candidate makes one upload and avoids 11. Shader/view
+   parity, actual offscreen rejection and bounded retirement also pass.
+   This is measured work reduction, not a route FPS claim.
+
+The editable settings generator includes these controls and the existing
+material image preparation, cache-hit admission and ordinary packet controls.
+Automated comparisons reject requested mechanisms that did no positive work.
+Preserve the same architecture/asset masks in each control/candidate pair.
+
+Runtime evidence and remaining questions
+
+The prior 2bd2c353 engine completed both private Balmora diagnostic runs without
+a crash. The LOD candidate built 702 products and had 346 fast cache hits, but
+recorded zero actual reduced draws. Of 228 owned preparation requests, 217 were
+pruned with expired owners; no owned completion callback ran. Completion,
+publication and visible adoption therefore remain an independent work item.
+Do not count this run as evidence that LOD improved rendering.
+
+Both deep captures overflowed the uninstrumented leaf pool. Compile attribution
+has its own valid family receipt, but that does not validate the dropped leaf
+timeline. Heavy diagnostic catalog work and queue backlog make these unsuitable
+for an FPS comparison. Normal runs must establish adoption and frame pacing;
+focused diagnostic runs investigate the exact pending owners afterward.
+
+Broader next mechanisms, with measurable acceptance
+
+- Paging and shader readiness: keep exact demanded owners alive through bounded
+  preparation and publication; prioritize visible demand over abandoned work.
+  First identify where live demand is lost. Acceptance requires actual ready
+  callbacks/adopted draws, bounded residence and preserved invalidation.
+- General texture preparation: use the existing material-driven preparation
+  lane across changing assets, then compare image lookup/decode/mip/upload
+  costs and first-use readiness. Avoid a hardcoded texture list. Retain pressure,
+  context ownership and fallback rules while testing larger upload pools.
+- Persistent render ownership: retain certified opaque geometry/material
+  packets and immutable current/previous frame inputs, rather than reconstructing
+  traversal/state every frame. Measure reduced CPU traversal/dispatch and total
+  frame time, with ordinary control and secondary-view/shadow parity.
+- GPU visibility/submission: expand the current indirect prototype only where
+  supported shader recipes and scene ownership are explicit. GPU frustum and
+  later depth-pyramid occlusion can write bounded command counts. Measure saved
+  CPU work against compute, upload, synchronization and GPU time. Disocclusion
+  and unknown shader recipes must keep a conservative original fallback.
+- Deformation and DLSS inputs: publish owned current/previous transform and
+  deformation snapshots; validate complete dynamic motion/depth inputs before
+  enabling evaluation. A bounded frame pipeline is an architectural candidate,
+  with latency, stalls, correctness and memory measured separately.
+- Lua/update scheduling: attack observed script, animation and wait costs using
+  independent controls. Extra threads require independent work/VM ownership;
+  raising a thread count alone does not safely parallelize shared Lua state.
+
+Testing order
+
+Use one assembled build. Start with normal control and independent candidates
+on both recorded routes, then combine proven engaged candidates. Pin executable,
+settings, mod loadout, route, cap, cache starting state and symbols. Keep game
+tests muted on the unswitched private desktop, use the Phase 9 process guard,
+and defer launches during a reserved manual Engine Expansions test. Native
+fixtures prove their bounded workloads; user route validation governs promotion.
+
+Follow-up: indirect installation on ordinary retained material subtrees
+
+The f00 engine's Balmora gate submitted 1,037,105 ordinary packet rows but
+recorded zero indirect builds or draws. Its flat installer inspected only
+Geometry children directly under a merge group. The ordinary packet installer
+also reaches geometry under retained Geodes and relative MatrixTransforms.
+This is a source integration gap; it does not alone prove the reason for every
+zero-installation run.
+
+The follow-up connects the original-before-CopyOp certified private ordinary
+population to a bounded recursive indirect installer. It runs after original
+shadow certification and before packet rows capture their draw callbacks.
+The existing G4/G16 or G4/G16/G32 switches, ordinary opaque packets setting,
+shader certificates, mutation fallback, command fences and budget limits remain
+required. Asset-owned LOD/HLOD partitions are not included in this extension.
+Unknown/dynamic/callback-managed containers, absolute/nonfinite transforms and
+transparent ancestry preserve their original path. No geometry is reparented
+by the indirect installer and no new culling policy is introduced.
+
+Native checks cover actual nested Geode/transform drawing, exact control pixels,
+opacity/dynamic/custom-node/node-capacity refusals and the existing producer,
+shader/view, SSBO and retirement cases. They also check a CPU indirect draw
+with one long primitive divided into two commands: both CPU and GPU variants
+already cluster long primitives, so a primitive-set count of one is not an
+explanation for all zero-build results. Natural route engagement and performance
+must be qualified independently after compilation. The actual private-desktop
+native checks passed with exact pixels and retired owner budgets in both upload
+policies (12 uploads for control; one upload and 11 avoided for reuse). A first
+fixture cleanup check retained its newly recursive private root; releasing that
+test owner before quota inspection repaired the test. The failed receipt is
+preserved separately and is not counted as a passing check. Installation counters expose
+nested leaves reached, callbacks built, ancestor refusals and source/command-
+shape refusals without a new per-frame diagnostic stream.
+
+Follow-up: exact production PBR command/projection proof
+
+The a083 Balmora gate built 86 nested callbacks, but all 72,390 observed
+attempts declined on their shader proof. Zero indirect draws means that this
+run cannot compare indirect performance. Ordinary packet submission is a
+different counter and does not qualify indirect work.
+
+The repair adds a separate exact PBR object include/link closure, generated
+only from Git object 52761bedc0f369bd37ceb17eaeaf53701f2ed551 and overlay archive
+SHA256 6f42a686e2a6a9038bbd4a9e2d0d1be6d8812b9b3e681d8b569560c2fe110255.
+All 34 dependency files, including inactive link branches, are pinned. The
+reviewed object position is gl_Position = modelToClip(gl_Vertex), with the
+unchanged mono projection/model-view product; lighting storage is read-only
+in these consumers, and no draw/vertex/instance ID or storage side effects
+are introduced. This proof does not borrow asset or temporal eligibility.
+Raw file changes and statement-bearing @ parameters keep ordinary rendering.
+
+Trusted numeric global recipe regeneration renews a still-current source
+proof and its complete linked program. Externally changed producers cannot
+use this renewal path. A separate nonblocking shared read lease protects
+indirect proof consumption through command execution; manager publication
+holds its writer lease. Busy producers use original primitives. Hot-reloaded
+unreviewed source remains uncertified. Source metadata remains capped at 8 MiB.
+
+generate-indirect-shader-baseline.py --check validates the exact generated
+header and inventory. Its --fixture-dir option materializes the immutable
+reviewed PBR closure for ShaderManager tests; installed/mutable bytes are not
+certificate authorities. The production material fixture accepts
+--indirect-cpu or --indirect-gpu, with --clustered and --reverse-z variants.
+Actual checks require textured RGB pixels, exact control parity, real indirect
+calls, real GPU dispatches when selected, numeric recipe renewal and unknown
+shader fallback. CPU command reuse is checked separately: continuous GPU
+dispatch writes commands itself and need not avoid CPU command uploads.
+
+The automatic matrix now requires built callbacks, submitted indirect draws
+and commands for G16, and actual visibility dispatches for G32. Its ordinary
+paging combination also requires nested installations. A built-only run or
+ordinary packet activity cannot silently qualify these candidates. Real
+route engagement, repeatability, visuals and performance remain separate gates.
+
+The indirect source proof also seals each shader's imported/required define
+names and define mode, plus the program's effective import set. Transform
+feedback output recipes cannot qualify. At draw time a bounded, allocation-free
+read of OSG's effective define stack/cache refuses statement-bearing imported
+values, including a legal preprocessor injection that leaves original Shader
+source bytes unchanged. Actual stock/PBR CPU/GPU fixtures verify that this
+case renders exact control pixels through the original primitive path.
+
+Independent draw overhead controls (both default false)
+[Optimizations] indirect context capability reuse = true
+The current GL extension owner supplies its captured version. GPU-only indexed
+query functions are resolved only when visibility needs them, then retained for
+that exact private context/retirement generation and extension owner. CPU-only
+draws resolve neither GPU function. Mutable actual bindings, linked-program
+readiness and fence availability are still checked. Missing mandatory support
+keeps original draws; missing optional GPU functions keeps CPU commands.
+
+[Optimizations] gpu visibility opportunity filter = true
+The complete private immutable command-bound union must be strictly contained
+in the actual consumer's current side clip planes. Double evaluation of float
+inputs uses conservative float/FMA roundoff and clip-epsilon margins. Boundary,
+partial, non-finite and extreme cancellation cases retain the existing GPU path.
+Contained cases submit the original primitives before any private allocation,
+dispatch or MDI submission. Prior private buffers/fences remain owned. The
+requested-dispatch avoidance counter describes this chosen path; paired draws
+and dispatch counts are needed to establish actual work reduction.
+
+Native fixtures independently exercise each control and their combination with
+command reuse. Capability hooks count actual version queries and function
+resolutions. Context release, missing support, a second real GL namespace and
+return to the first must not reuse another owner's functions or storage.
+Production stock/PBR fixtures accept --reuse-capabilities and
+--filter-opportunities, including reverse depth and clustered-light variants.
+Both real GPU dispatch and exact original submissions are required by these
+fixtures; untested source/compilation is not a native pass.
+
+Clean captures also write p9-indirect-work.csv from a bounded, preallocated
+single-producer buffer. It samples cumulative all-view work after the main
+frame without GL queries, waits or formatting. snapshot_frame is an observation
+point, not an asynchronous render-origin frame. Offline joins use the same
+phase clock/margins and zero-context policy as pacing, reject lost/truncated
+output, reset counters and bad joins, and retain observation-gap uncertainty.
+New matrix controls require positive measured-interval work; engine startup
+totals alone cannot qualify them. Older captures without this family retain
+their older explicit aggregate-engagement limit.

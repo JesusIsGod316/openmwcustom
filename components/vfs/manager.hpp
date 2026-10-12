@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "filemap.hpp"
+#include "file.hpp"
 #include "pathutil.hpp"
 
 namespace VFS
@@ -60,6 +61,9 @@ namespace VFS
         Files::IStreamPtr get(const Path::Normalized& name) const;
 
         Files::IStreamPtr get(Path::NormalizedView name) const;
+        // Winning provider metadata only; safe under the same quiescent-index
+        // lifetime rule as get(). This does not open or decompress the source.
+        std::optional<SourceOpenEstimate> getOpenEstimate(Path::NormalizedView name) const;
 
         std::string getArchive(const Path::Normalized& name) const;
 

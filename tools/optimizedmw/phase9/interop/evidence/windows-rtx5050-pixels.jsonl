@@ -1,0 +1,25 @@
+{"schema":1,"status":"pass","check":"gl_capability","detail":"all external-object, Win32, FBO, format-query and retirement entry points available; vendor=NVIDIA Corporation; renderer=NVIDIA GeForce RTX 5050 Laptop GPU/PCIe/SSE2; version=4.6.0 NVIDIA 616.92"}
+{"schema":1,"status":"pass","check":"same_device","detail":"NVIDIA GeForce RTX 5050 Laptop GPU; uuid=e3e40b0ec905af6b62fc8714ec308439; driver_uuid=16edf6112967515eb44ea51f39e45424; luid=2744010000000000; node_mask=1"}
+{"schema":1,"status":"pass","check":"external_contract","detail":"RGBA8_UNORM; optimal tiling; color_attachment|transfer_src|transfer_dst|sampled; opaque_win32; dedicated allocation; image_features=6; semaphore_features=3"}
+{"schema":1,"status":"pass","check":"shared_allocation","detail":"generation=1; extent=16x16; bytes=1024; memory_type=1; requires_dedicated=0; prefers_dedicated=0; dedicated=1; offset=0; valid_exported_NT_handle"}
+{"schema":1,"status":"pass","check":"shared_allocation","detail":"generation=1; extent=16x16; bytes=1024; memory_type=1; requires_dedicated=0; prefers_dedicated=0; dedicated=1; offset=0; valid_exported_NT_handle"}
+{"schema":1,"status":"pass","check":"round_trip_pixels","detail":"generation=1; sequence=1; extent=16x16; all_pixels_verified_both_directions; both_API_consumers_retired"}
+{"schema":1,"status":"pass","check":"round_trip_pixels","detail":"generation=1; sequence=2; extent=16x16; all_pixels_verified_both_directions; both_API_consumers_retired"}
+{"schema":1,"status":"pass","check":"round_trip_pixels","detail":"generation=1; sequence=3; extent=16x16; all_pixels_verified_both_directions; both_API_consumers_retired"}
+{"schema":1,"status":"pass","check":"round_trip_pixels","detail":"generation=1; sequence=4; extent=16x16; all_pixels_verified_both_directions; both_API_consumers_retired"}
+{"schema":1,"status":"pass","check":"resize_retirement","detail":"generation=1; two_slot_resources_released_after_GL_and_Vulkan_completion"}
+{"schema":1,"status":"pass","check":"shared_allocation","detail":"generation=2; extent=37x19; bytes=6144; memory_type=1; requires_dedicated=0; prefers_dedicated=0; dedicated=1; offset=0; valid_exported_NT_handle"}
+{"schema":1,"status":"pass","check":"shared_allocation","detail":"generation=2; extent=37x19; bytes=6144; memory_type=1; requires_dedicated=0; prefers_dedicated=0; dedicated=1; offset=0; valid_exported_NT_handle"}
+{"schema":1,"status":"pass","check":"round_trip_pixels","detail":"generation=2; sequence=5; extent=37x19; all_pixels_verified_both_directions; both_API_consumers_retired"}
+{"schema":1,"status":"pass","check":"round_trip_pixels","detail":"generation=2; sequence=6; extent=37x19; all_pixels_verified_both_directions; both_API_consumers_retired"}
+{"schema":1,"status":"pass","check":"round_trip_pixels","detail":"generation=2; sequence=7; extent=37x19; all_pixels_verified_both_directions; both_API_consumers_retired"}
+{"schema":1,"status":"pass","check":"round_trip_pixels","detail":"generation=2; sequence=8; extent=37x19; all_pixels_verified_both_directions; both_API_consumers_retired"}
+{"schema":1,"status":"pass","check":"resize_retirement","detail":"generation=2; two_slot_resources_released_after_GL_and_Vulkan_completion"}
+{"schema":1,"status":"pass","check":"shared_allocation","detail":"generation=3; extent=16x16; bytes=1024; memory_type=1; requires_dedicated=0; prefers_dedicated=0; dedicated=1; offset=0; valid_exported_NT_handle"}
+{"schema":1,"status":"pass","check":"shared_allocation","detail":"generation=3; extent=16x16; bytes=1024; memory_type=1; requires_dedicated=0; prefers_dedicated=0; dedicated=1; offset=0; valid_exported_NT_handle"}
+{"schema":1,"status":"pass","check":"round_trip_pixels","detail":"generation=3; sequence=9; extent=16x16; all_pixels_verified_both_directions; both_API_consumers_retired"}
+{"schema":1,"status":"pass","check":"round_trip_pixels","detail":"generation=3; sequence=10; extent=16x16; all_pixels_verified_both_directions; both_API_consumers_retired"}
+{"schema":1,"status":"pass","check":"round_trip_pixels","detail":"generation=3; sequence=11; extent=16x16; all_pixels_verified_both_directions; both_API_consumers_retired"}
+{"schema":1,"status":"pass","check":"round_trip_pixels","detail":"generation=3; sequence=12; extent=16x16; all_pixels_verified_both_directions; both_API_consumers_retired"}
+{"schema":1,"status":"pass","check":"resize_retirement","detail":"generation=3; two_slot_resources_released_after_GL_and_Vulkan_completion"}
+{"schema":1,"status":"pass","check":"fixture","detail":"same-device GL->Vulkan->GL verified; submissions=12; no engine/DLSS/NGX capability or performance promotion"}

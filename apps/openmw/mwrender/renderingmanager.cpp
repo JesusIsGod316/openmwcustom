@@ -209,6 +209,8 @@ namespace MWRender
         bool reverseZ = SceneUtil::AutoDepth::isReversed();
 
         resourceSystem->getSceneManager()->setParticleSystemMask(MWRender::Mask_ParticleSystem);
+        resourceSystem->getSceneManager()->configureMaterialImagePreparation(
+            Settings::cells().mOptimizedMWPrepareMaterialImages, Settings::cells().mOptimizedMWMaterialImageBudget);
         resourceSystem->getSceneManager()->setAutoUseNormalMaps(Settings::shaders().mAutoUseObjectNormalMaps);
         resourceSystem->getSceneManager()->setNormalMapPattern(Settings::shaders().mNormalMapPattern);
         resourceSystem->getSceneManager()->setNormalHeightMapPattern(Settings::shaders().mNormalHeightMapPattern);
@@ -321,11 +323,28 @@ namespace MWRender
         if (getenv("OPENMW_DONT_PRECOMPILE") == nullptr)
         {
             osg::ref_ptr<osgUtil::IncrementalCompileOperation> ico;
-            const int p4CompileSchedulerMode
-                = static_cast<int>(Settings::cells().mOptimizedMWCompileSchedulerMode);
+            const bool p9CompositePreparation = [] {
+                const char* value = std::getenv("OPENMW_P9_COMPOSITE_PREPARE");
+                return value && std::string_view(value) == "1";
+            }();
+            const int configuredCompileScheduler = static_cast<int>(Settings::cells().mOptimizedMWCompileSchedulerMode);
+            const bool p9DeleteAdmission = [] {
+                const char* value = std::getenv("OPENMW_P9_DELETE_ADMISSION");
+                return value && std::string_view(value) == "1";
+            }();
+            const int p4CompileSchedulerMode = (p9CompositePreparation || p9DeleteAdmission) && configuredCompileScheduler == 0
+                ? 2 : configuredCompileScheduler;
             if (p4CompileSchedulerMode > 0)
             {
                 Resource::OpenMWCompileSchedulerConfig config;
+                config.mCompositePreparation = p9CompositePreparation;
+                config.mDeleteAdmission = p9DeleteAdmission;
+                // A qualified composite bootstrap also defers ordinary GL
+                // deletion, even when the separate cleanup candidate is off.
+                // Both owners must read the same cached pressure publication.
+                if (p9DeleteAdmission || p9CompositePreparation)
+                    config.mPressureContext = { mResourceSystem->speculativeBudget(),
+                        &Resource::ResourceSystem::speculativeSample, mResourceSystem };
                 config.mMode = p4CompileSchedulerMode;
                 config.mTargetFrameRate = static_cast<double>(Settings::cells().mTargetFramerate);
                 config.mMaxBudgetMs
@@ -536,6 +555,7 @@ namespace MWRender
 
         mSky = std::make_unique<SkyManager>(
             sceneRoot, mRootNode, mViewer->getCamera(), resourceSystem->getSceneManager(), mSkyBlending);
+        mSky->configureCloudPreparation(resourceSystem, mWorkQueue);
         if (mSkyBlending)
         {
             int skyTextureUnit = mResourceSystem->getSceneManager()->getShaderManager().reserveGlobalTextureUnits(
@@ -943,7 +963,7 @@ namespace MWRender
         const int v38ResidencyMode = static_cast<int>(Settings::cells().mV38GpuResidencyMode);
         const bool v38ResidencyEnabled = v38ResidencyMode > 0;
         if (Settings::cells().mV32GpuMemoryTelemetry || Settings::cells().mV32GpuMemoryManagement
-            || v38ResidencyEnabled)
+            || v38ResidencyEnabled || Resource::AssetPolicy::mask())
         {
             Debug::V3GpuMemory::sampleIfDue(static_cast<bool>(Settings::cells().mV32GpuMemoryTelemetry),
                 static_cast<bool>(Settings::cells().mV32GpuMemoryManagement) || v38ResidencyEnabled,
@@ -1781,6 +1801,7 @@ namespace MWRender
             {
                 newChunkMgr.mObjectPaging
                     = std::make_unique<ObjectPaging>(mResourceSystem->getSceneManager(), worldspace);
+                newChunkMgr.mObjectPaging->setAssetMainCamera(mViewer->getCamera());
                 if (mOcclusionCuller)
                 {
                     const unsigned int maxTriangles
@@ -1994,7 +2015,7 @@ namespace MWRender
 
     float RenderingManager::getFieldOfView() const
     {
-        return mFieldOfViewOverridden ? mFieldOfViewOverridden : mFieldOfView;
+        return mFieldOfViewOverridden ? mFieldOfViewOverride : mFieldOfView;
     }
 
     osg::Vec3f RenderingManager::getHalfExtents(const MWWorld::ConstPtr& object) const

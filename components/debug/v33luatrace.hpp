@@ -10,6 +10,7 @@
 #include <string_view>
 
 #include "v3diagnostics.hpp"
+#include "hitchtrace.hpp"
 
 namespace Debug::V33LuaTrace
 {
@@ -354,7 +355,8 @@ namespace Debug::V33LuaTrace
     public:
         CallbackScope(std::string_view context, std::string_view scope, std::string_view container, int scriptId,
             std::string_view scriptPath, std::string_view callbackName, std::string_view detail = {})
-            : mRecorder(sRecorder)
+            : mHitchScope("lua.callback", callbackName, scriptPath)
+            , mRecorder(sRecorder)
             , mPhase(mRecorder ? mRecorder->phase() : Phase::None)
             , mContext(context)
             , mScope(scope)
@@ -378,6 +380,7 @@ namespace Debug::V33LuaTrace
         CallbackScope& operator=(const CallbackScope&) = delete;
 
     private:
+        HitchTrace::Scope mHitchScope;
         Recorder* mRecorder;
         Phase mPhase;
         std::string_view mContext;

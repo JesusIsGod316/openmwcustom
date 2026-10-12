@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -24,7 +25,7 @@ namespace Resource
             double cull, draw, gpu;
             unsigned available;
         };
-        static constexpr std::array<const char*, 27> ResourceNames{
+        static constexpr std::array<const char*, 43> ResourceNames{
             "StateSet",
             "P8G3 Groups Tested",
             "P8G3 Groups Rejected",
@@ -51,12 +52,33 @@ namespace Resource
             "P8G4 Shadow Original Fallback 1",
             "P8G4 Shadow Proxy Visits 2",
             "P8G4 Shadow Proxy Indices 2",
-            "P8G4 Shadow Original Fallback 2"
+            "P8G4 Shadow Original Fallback 2",
+            "P9 Composite CPU Mips Attempts",
+            "P9 Composite CPU Mips Prepared",
+            "P9 Composite CPU Mips Declined",
+            "P9 Composite CPU Mips Allocation Failures",
+            "P9 Composite CPU Mips Source Bytes",
+            "P9 Composite CPU Mips Supplied Bytes",
+            "P9 Composite CPU Mips Control Applies",
+            "P9 Composite CPU Mips Supplied Applies",
+            "P9 Composite CPU Mips Upload Submissions",
+            "P9 Composite CPU Mips Producer Draw Uses",
+            "P9 Composite CPU Mips First Producer Uses",
+            "P9 Composite CPU Mips Required First Uses",
+            "P9 Composite CPU Mips Optional First Uses",
+            "P9 Composite CPU Mips Control Producer Uses",
+            "P9 Composite CPU Mips Control First Uses",
+            "P9 Composite CPU Mips Unproven Producer Uses"
         };
         struct ResourceRecord
         {
             unsigned frame;
             std::array<double, ResourceNames.size()> values;
+        };
+        struct IndirectWorkRecord
+        {
+            unsigned snapshotFrame;
+            std::array<std::uint64_t, 36> values;
         };
     public:
         BenchmarkCapture()
@@ -64,9 +86,14 @@ namespace Resource
             if (!Debug::DeferredCapture::enabled()) return;
             mRender.prepare(262144);
             mResources.prepare(8192);
+            mIndirectWork.prepare(131072);
             mCameras.reserve(32);
         }
         ~BenchmarkCapture() { finish(false); }
+        void captureIndirectWork(unsigned frame, const std::array<std::uint64_t, 36>& values)
+        {
+            if (Debug::DeferredCapture::enabled()) mIndirectWork.push({frame, values});
+        }
         void capture(unsigned currentFrame, osgViewer::Viewer& viewer)
         {
             if (!Debug::DeferredCapture::enabled()) return;
@@ -125,6 +152,7 @@ namespace Resource
                 if (!raw || !*raw) return;
                 const auto root = std::filesystem::path(reinterpret_cast<const char8_t*>(raw));
                 std::ofstream render(root / "p8g4-render.csv"), resources(root / "p8g4-resource.csv");
+                std::ofstream indirect(root / "p9-indirect-work.csv");
                 render << "frame,read_frame,camera,main_camera,cull_ms,draw_ms,gpu_ms,available_bits\n" << std::fixed << std::setprecision(6);
                 for (const auto& record : mRender)
                     render << record.frame << ',' << record.readFrame << ',' << record.camera << ',' << record.mainCamera
@@ -138,16 +166,38 @@ namespace Resource
                     for (double value : record.values) resources << ',' << value;
                     resources << '\n';
                 }
-                render.flush(); resources.flush();
+                indirect << "snapshot_frame,indirect_draws,commands,gpu_dispatches,command_uploads,command_uploads_avoided,"
+                    "capability_draws,gpu_function_resolutions_avoided,opportunity_original_draws,requested_dispatches_avoided,"
+                    "projection_proof_reuses,early_admission_fallbacks,early_busy_fallbacks,paging_score_table_runs,"
+                    "paging_pow_reuses,paging_pow_computations,paging_uncached_pow_computations,"
+                    "preload_priority_submitted,preload_priority_promoted,preload_priority_started,preload_priority_fairness,"
+                    "cull_snapshot_publications,cull_bound_reads_avoided,cull_classification_visits_avoided,"
+                    "cull_snapshot_invalidations,cull_snapshot_refusals,transform_dirty_calls_avoided,transform_changed_inputs,"
+                    "template_after_load_reuses,template_publication_reuses,template_canonical_publications,"
+                    "temporal_history_indexed_lookups,temporal_history_compatibility_comparisons,"
+                    "static_vao_draws,static_vao_layout_reuses,static_vao_producer_fallbacks,static_vao_context_fallbacks\n";
+                for (const auto& record : mIndirectWork)
+                {
+                    indirect << record.snapshotFrame;
+                    for (auto value : record.values) indirect << ',' << value;
+                    indirect << '\n';
+                }
+                render.flush(); resources.flush(); indirect.flush();
                 std::ofstream status(root / "p8g4-render.capture-status.txt");
                 status << "format=p8g4-numeric-v1\nnormal_finish=" << normal << "\nrender_rows=" << mRender.size()
                        << "\nrender_dropped=" << mRender.dropped() << "\nresource_rows=" << mResources.size()
                        << "\nresource_dropped=" << mResources.dropped()
-                       << "\nallocation_failed=" << (mRender.allocationFailed() || mResources.allocationFailed())
+                       << "\nindirect_work_rows=" << mIndirectWork.size()
+                       << "\nindirect_work_dropped=" << mIndirectWork.dropped()
+                       << "\nallocation_failed=" << (mRender.allocationFailed() || mResources.allocationFailed()
+                           || mIndirectWork.allocationFailed())
                        << "\nexpired_origin_frames=" << mUnavailableFrames
                        << "\nlast_read_frame=" << mLastReadFrame << "\nread_delay_frames=8"
                        << "\nterminal_render_frames_not_read=8\nresource_sample_interval=60"
-                       << "\noutput_ok=" << (render.good() && resources.good())
+                       << "\noutput_ok=" << (render.good() && resources.good() && indirect.good())
+                       << "\nindirect_work_scope=cumulative_all_views_observed_after_main_frame_not_render_origin_attribution"
+                       << "\npreload_priority_scope=cumulative_queue_admissions_and_starts_not_cpu_ready_or_origin_frame"
+                       << "\nowned_cull_scope=cumulative_all_views_read_and_classification_work_not_saved_milliseconds"
                        << "\nproxy_visits_are_cull_visits_not_driver_draws=1\n";
             }
             catch (...) { /* Missing status explicitly means incomplete capture. */ }
@@ -156,6 +206,7 @@ namespace Resource
         static constexpr double NaN = std::numeric_limits<double>::quiet_NaN();
         Debug::DeferredCapture::Buffer<RenderRecord> mRender;
         Debug::DeferredCapture::Buffer<ResourceRecord> mResources;
+        Debug::DeferredCapture::Buffer<IndirectWorkRecord> mIndirectWork;
         osgViewer::Viewer::Cameras mCameras;
         unsigned mNextFrame = 0, mLastReadFrame = 0;
         std::size_t mUnavailableFrames = 0;

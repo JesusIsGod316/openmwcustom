@@ -10,6 +10,52 @@
 
 #include <components/testing/util.hpp>
 
+#include <chrono>
+#include <bit>
+#include <cmath>
+#include <limits>
+#include <thread>
+
+namespace LuaUtil
+{
+    // Exact boundary inputs are injected into the production container. Native
+    // hook/watchdog execution is separately exercised below, without a model VM.
+    struct InstructionStatisticsTestAccess
+    {
+        static void add(ScriptsContainer& container, int scriptId, int64_t count)
+        {
+            container.addInstructionCount(scriptId, count);
+        }
+        static ScriptsContainer::ScriptStats stored(ScriptsContainer& container, int scriptId)
+        {
+            return container.getScript(scriptId).mStats;
+        }
+        static std::uint64_t writtenFrame(ScriptsContainer& container, int scriptId)
+        {
+            return container.getScript(scriptId).mStatsFrame;
+        }
+        static void setAverage(ScriptsContainer& container, int scriptId, float average)
+        {
+            container.getScript(scriptId).mStats.mAvgInstructionCount = average;
+        }
+        static void setEpoch(ScriptsContainer& container, std::uint64_t epoch, bool stampScripts)
+        {
+            // Preserve current statistics before artificially rebasing a test
+            // epoch. Re-stamping an unmaterialized lazy script would erase its
+            // idle decay and construct a state production can never produce.
+            if (stampScripts)
+                if (auto* data = std::get_if<ScriptsContainer::LoadedData>(&container.mData))
+                    for (auto& [id, script] : data->mScripts)
+                        container.materializeInstructionStats(script);
+            container.mStatsFrame = epoch;
+            if (stampScripts)
+                if (auto* data = std::get_if<ScriptsContainer::LoadedData>(&container.mData))
+                    for (auto& [id, script] : data->mScripts)
+                        script.mStatsFrame = epoch;
+        }
+    };
+}
+
 namespace
 {
     using namespace testing;
@@ -186,6 +232,20 @@ return {
 }
 )X");
 
+    constexpr VFS::Path::NormalizedView descriptor1Path("descriptorcontainer1.lua");
+    constexpr VFS::Path::NormalizedView descriptor2Path("descriptorcontainer2.lua");
+    constexpr VFS::Path::NormalizedView descriptor3Path("descriptorcontainer3.lua");
+    VFSTestFile descriptorContainerScript(R"X(
+local api = require('fixture.static')
+local common = require('fixture.common')
+local actor = require('fixture.actor')
+local count = 0
+return { eventHandlers = { Probe = function()
+    count = count + 1
+    print(api.name, common.name, actor.serial, count)
+end } }
+)X");
+
     struct LuaScriptsContainerTest : Test
     {
         std::unique_ptr<VFS::Manager> mVFS = createTestVFS({
@@ -202,6 +262,9 @@ return {
             { useInterfacePath, &useInterfaceScript },
             { unloadPath, &unloadScript },
             { customDataPath, &customDataScript },
+            { descriptor1Path, &descriptorContainerScript },
+            { descriptor2Path, &descriptorContainerScript },
+            { descriptor3Path, &descriptorContainerScript },
         });
 
         LuaUtil::ScriptsConfiguration mCfg;
@@ -224,6 +287,9 @@ CUSTOM, PLAYER: overrideInterface.lua
 CUSTOM, PLAYER: useInterface.lua
 CUSTOM: unload.lua
 CUSTOM: customdata.lua
+CUSTOM: descriptorcontainer1.lua
+CUSTOM: descriptorcontainer2.lua
+CUSTOM: descriptorcontainer3.lua
 )X");
             mCfg.init(std::move(cfg), false);
         }
@@ -261,6 +327,41 @@ CUSTOM: customdata.lua
         LuaUtil::ScriptsContainer scripts(&mLua, "Test");
         EXPECT_TRUE(scripts.addCustomScript(getId(emptyPath)));
         EXPECT_FALSE(scripts.addCustomScript(getId(emptyPath)));
+    }
+
+    TEST_F(LuaScriptsContainerTest, PackageDescriptorsRespectReentrantApiAndCommonGeneration)
+    {
+        mLua.setPackageDescriptorReuse(true);
+        mLua.setPackagePrototypeReuse(true);
+        LuaUtil::ScriptsContainer scripts(&mLua, "Descriptor");
+        mLua.protectedCall([&](LuaUtil::LuaView& view) {
+            unsigned factoryCalls = 0;
+            scripts.addPackage("fixture.static", LuaUtil::makeReadOnly(view.sol().create_table_with("name", "api1")));
+            mLua.addCommonPackage("fixture.common", view.sol().create_table_with("name", "common1"));
+            view.sol().set_function("fixtureContainerFactory", [&](sol::object) {
+                if (++factoryCalls == 1)
+                    scripts.addPackage("fixture.static",
+                        LuaUtil::makeReadOnly(view.sol().create_table_with("name", "api2")));
+                return view.sol().create_table_with("serial", factoryCalls);
+            });
+            mLua.addCommonPackage("fixture.actor", view.sol()["fixtureContainerFactory"]);
+            EXPECT_TRUE(scripts.addCustomScript(getId(descriptor1Path)));
+            EXPECT_TRUE(scripts.addCustomScript(getId(descriptor2Path)));
+            // No container addPackage invalidation here: only the generation of
+            // the registered common package changes for the third sandbox.
+            mLua.addCommonPackage("fixture.common", view.sol().create_table_with("name", "common2"));
+            EXPECT_TRUE(scripts.addCustomScript(getId(descriptor3Path)));
+            EXPECT_EQ(factoryCalls, 3);
+            testing::internal::CaptureStdout();
+            scripts.receiveEvent("Probe", {});
+            EXPECT_EQ(internal::GetCapturedStdout(),
+                "Descriptor[descriptorcontainer3.lua]:\tapi2\tcommon2\t3\t1\n"
+                "Descriptor[descriptorcontainer2.lua]:\tapi2\tcommon1\t2\t1\n"
+                "Descriptor[descriptorcontainer1.lua]:\tapi1\tcommon1\t1\t1\n");
+            testing::internal::CaptureStdout();
+            scripts.receiveEvent("Probe", {});
+            EXPECT_THAT(internal::GetCapturedStdout(), HasSubstr("\tapi1\tcommon1\t1\t2\n"));
+        });
     }
 
     TEST_F(LuaScriptsContainerTest, CallHandler)
@@ -454,6 +555,66 @@ CUSTOM: customdata.lua
                 "Test[loadsave2.lua]:\t0.5\t3.5\n"
                 "Test[test1.lua]:\tprint\n");
             EXPECT_TRUE(scripts3.hasScript(getId(testInterfacePath)));
+        }
+    }
+
+    TEST_F(LuaScriptsContainerTest, ProtectedReusePreservesLazyInitTimersAndSave)
+    {
+        constexpr VFS::Path::NormalizedView path("protected-init.lua");
+        VFSTestFile source(R"X(
+            local fixture = require('fixture.init')
+            fixture.source()
+            local value = 0
+            return {
+                engineHandlers = {
+                    onInit = function() value = 7; fixture.ready() end,
+                    onSave = function() return { value = value } end,
+                    onLoad = function(data) value = data.value; fixture.loaded(value) end,
+                },
+                eventHandlers = { Probe = function() fixture.loaded(value) end },
+            }
+        )X");
+        for (bool reuse : { false, true })
+        {
+            auto vfs = createTestVFS({ { path, &source } });
+            LuaUtil::ScriptsConfiguration cfg;
+            ESM::LuaScriptsCfg scriptsCfg;
+            LuaUtil::parseOMWScripts(scriptsCfg, "NPC: protected-init.lua");
+            cfg.init(std::move(scriptsCfg), false);
+            LuaUtil::LuaState lua(vfs.get(), &cfg);
+            lua.setProtectedCallReuse(reuse);
+            LuaUtil::ScriptsContainer scripts(&lua, "ProtectedInit", nullptr, false);
+            scripts.setAutoStartConf(cfg.getLocalConf(ESM::REC_NPC_, ESM::RefId(), ESM::RefNum()));
+            std::vector<int> order;
+            const int scriptId = *cfg.findId(path);
+            lua.protectedCall([&](LuaUtil::LuaView& view) {
+                sol::table fixture = view.newTable();
+                fixture["source"] = [&] { order.push_back(1); };
+                fixture["ready"] = [&] {
+                    order.push_back(2);
+                    using Timer = LuaUtil::ScriptsContainer::TimerType;
+                    scripts.setupUnsavableTimer(Timer::GAME_TIME, 5, scriptId,
+                        sol::make_object(view.sol(), [&] { order.push_back(4); }));
+                    scripts.setupUnsavableTimer(Timer::SIMULATION_TIME, 5, scriptId,
+                        sol::make_object(view.sol(), [&] { order.push_back(3); }));
+                };
+                fixture["loaded"] = [&](int value) { order.push_back(value); };
+                scripts.addPackage("fixture.init", LuaUtil::makeReadOnly(fixture));
+                // The timer pass must still materialize the previously unloaded
+                // container and fire timers scheduled by initialization, even
+                // with idle fast paths and protected reuse enabled.
+                scripts.processTimers(5, 5, true);
+                EXPECT_EQ(order, (std::vector<int>{ 1, 2, 3, 4 }));
+                scripts.processTimers(5, 5, true);
+                EXPECT_EQ(order, (std::vector<int>{ 1, 2, 3, 4 }));
+                ESM::LuaScripts saved;
+                scripts.save(saved);
+                scripts.load(saved);
+                scripts.receiveEvent("Probe", "");
+                EXPECT_EQ(order, (std::vector<int>{ 1, 2, 3, 4, 1, 7, 7 }));
+            });
+            if (reuse)
+                EXPECT_GT(lua.protectedCallStats().mReusedCalls, 0);
         }
     }
 
@@ -678,5 +839,336 @@ CUSTOM: test1.lua
         EXPECT_NE(scriptId, newScriptId);
         EXPECT_EQ(newScriptId, 2);
         EXPECT_TRUE(scripts2.hasScript(newScriptId));
+    }
+
+    LuaUtil::ScriptsContainer::ScriptStats instructionStats(const LuaUtil::ScriptsContainer& container, int scriptId)
+    {
+        std::vector<LuaUtil::ScriptsContainer::ScriptStats> stats;
+        container.collectStats(stats);
+        return stats.at(scriptId);
+    }
+
+    void expectInstructionStatsEqual(const LuaUtil::ScriptsContainer& ordinary,
+        const LuaUtil::ScriptsContainer& lazy, int scriptId)
+    {
+        const auto control = instructionStats(ordinary, scriptId);
+        const auto candidate = instructionStats(lazy, scriptId);
+        EXPECT_EQ(std::bit_cast<std::uint32_t>(candidate.mAvgInstructionCount),
+            std::bit_cast<std::uint32_t>(control.mAvgInstructionCount));
+        EXPECT_EQ(candidate.mFrameInstructionCount, control.mFrameInstructionCount);
+    }
+
+    TEST_F(LuaScriptsContainerTest, LazyInstructionStatisticsPreserveWritesReadsAndFrameReset)
+    {
+        LuaUtil::LuaState ordinaryLua(mVFS.get(), &mCfg);
+        LuaUtil::LuaStateSettings settings;
+        settings.mLazyInstructionStatistics = true;
+        LuaUtil::LuaState lazyLua(mVFS.get(), &mCfg, settings);
+        LuaUtil::ScriptsContainer ordinary(&ordinaryLua, "Stats");
+        LuaUtil::ScriptsContainer lazy(&lazyLua, "Stats");
+        const int id = getId(emptyPath);
+        ASSERT_TRUE(ordinary.addCustomScript(id));
+        ASSERT_TRUE(lazy.addCustomScript(id));
+        ASSERT_FALSE(ordinary.lazyInstructionStatistics());
+        ASSERT_TRUE(lazy.lazyInstructionStatistics());
+        using Access = LuaUtil::InstructionStatisticsTestAccess;
+        for (unsigned frame = 0; frame < 500; ++frame)
+        {
+            SCOPED_TRACE(frame);
+            if (frame % 17 == 0 || frame < 6)
+            {
+                Access::add(ordinary, id, 1000 + frame * 1000);
+                Access::add(lazy, id, 1000 + frame * 1000);
+                Access::add(ordinary, id, 1000);
+                Access::add(lazy, id, 1000);
+            }
+            const auto beforeRead = Access::stored(lazy, id);
+            const auto beforeFrame = Access::writtenFrame(lazy, id);
+            expectInstructionStatsEqual(ordinary, lazy, id);
+            expectInstructionStatsEqual(ordinary, lazy, id); // Read does not materialize/reset the writer.
+            EXPECT_EQ(std::bit_cast<std::uint32_t>(Access::stored(lazy, id).mAvgInstructionCount),
+                std::bit_cast<std::uint32_t>(beforeRead.mAvgInstructionCount));
+            EXPECT_EQ(Access::stored(lazy, id).mFrameInstructionCount, beforeRead.mFrameInstructionCount);
+            EXPECT_EQ(Access::writtenFrame(lazy, id), beforeFrame);
+            // Recorder-style read precedes the reset, exactly as in LuaManager.
+            ordinary.statsNextFrame();
+            lazy.statsNextFrame();
+            expectInstructionStatsEqual(ordinary, lazy, id);
+            EXPECT_EQ(instructionStats(lazy, id).mFrameInstructionCount, 0);
+        }
+        EXPECT_EQ(ordinaryLua.instructionStatisticsWork().mOrdinaryScriptVisits, 500);
+        EXPECT_EQ(lazyLua.instructionStatisticsWork().mOrdinaryScriptVisits, 0);
+        EXPECT_EQ(lazyLua.instructionStatisticsWork().mLazyScriptVisitsAvoided, 500);
+    }
+
+    TEST_F(LuaScriptsContainerTest, LazyInstructionStatisticsPreserveZeroCutoffAndBoundIdleCatchup)
+    {
+        LuaUtil::LuaStateSettings settings;
+        settings.mLazyInstructionStatistics = true;
+        LuaUtil::LuaState ordinaryLua(mVFS.get(), &mCfg);
+        LuaUtil::LuaState lazyLua(mVFS.get(), &mCfg, settings);
+        LuaUtil::ScriptsContainer ordinary(&ordinaryLua, "Stats");
+        LuaUtil::ScriptsContainer lazy(&lazyLua, "Stats");
+        const int id = getId(emptyPath);
+        ASSERT_TRUE(ordinary.addCustomScript(id));
+        ASSERT_TRUE(lazy.addCustomScript(id));
+        using Access = LuaUtil::InstructionStatisticsTestAccess;
+        constexpr float decay = 1 - 1.0f / 30;
+        const float edge = 5 / decay;
+        const float values[] = { 0, 5, std::nextafter(edge, 0.f), edge,
+            std::nextafter(edge, std::numeric_limits<float>::infinity()), 1000,
+            std::numeric_limits<float>::max() };
+        for (float value : values)
+        {
+            SCOPED_TRACE(value);
+            Access::setEpoch(ordinary, 0, true);
+            Access::setEpoch(lazy, 0, true);
+            Access::setAverage(ordinary, id, value);
+            Access::setAverage(lazy, id, value);
+            for (unsigned frame = 0; frame < 4096; ++frame)
+            {
+                ordinary.statsNextFrame();
+                lazy.statsNextFrame();
+                if (frame < 8 || frame % 37 == 0)
+                    expectInstructionStatsEqual(ordinary, lazy, id);
+            }
+            expectInstructionStatsEqual(ordinary, lazy, id);
+            EXPECT_EQ(instructionStats(lazy, id).mAvgInstructionCount, 0);
+        }
+        // A uint64-sized idle gap does not become a uint64-sized loop.
+        Access::setEpoch(lazy, 0, true);
+        Access::setAverage(lazy, id, std::numeric_limits<float>::max());
+        Access::setEpoch(lazy, std::numeric_limits<std::uint64_t>::max() - 1, false);
+        const auto before = lazyLua.instructionStatisticsWork().mReadDecaySteps;
+        EXPECT_EQ(instructionStats(lazy, id).mAvgInstructionCount, 0);
+        EXPECT_LE(lazyLua.instructionStatisticsWork().mReadDecaySteps - before, 4096);
+        Access::add(lazy, id, 1000);
+        EXPECT_EQ(instructionStats(lazy, id).mFrameInstructionCount, 1000);
+        EXPECT_EQ(instructionStats(lazy, id).mAvgInstructionCount, 1000 * (1.f / 30));
+    }
+
+    TEST_F(LuaScriptsContainerTest, LazyInstructionStatisticsToggleAndEpochWrapPreserveCurrentFrame)
+    {
+        LuaUtil::LuaState ordinaryLua(mVFS.get(), &mCfg);
+        LuaUtil::LuaState lazyLua(mVFS.get(), &mCfg);
+        LuaUtil::ScriptsContainer ordinary(&ordinaryLua, "Stats");
+        LuaUtil::ScriptsContainer lazy(&lazyLua, "Stats");
+        const int id = getId(emptyPath);
+        ASSERT_TRUE(ordinary.addCustomScript(id));
+        ASSERT_TRUE(lazy.addCustomScript(id));
+        using Access = LuaUtil::InstructionStatisticsTestAccess;
+        for (unsigned frame = 0; frame < 200; ++frame)
+        {
+            if (frame % 11 == 0)
+                lazy.setLazyInstructionStatistics(!lazy.lazyInstructionStatistics());
+            if (frame % 7 == 0)
+            {
+                Access::add(ordinary, id, 3000);
+                Access::add(lazy, id, 3000);
+            }
+            expectInstructionStatsEqual(ordinary, lazy, id);
+            ordinary.statsNextFrame();
+            lazy.statsNextFrame();
+            expectInstructionStatsEqual(ordinary, lazy, id);
+        }
+        lazy.setLazyInstructionStatistics(true);
+        Access::setEpoch(ordinary, std::numeric_limits<std::uint64_t>::max() - 1, true);
+        Access::setEpoch(lazy, std::numeric_limits<std::uint64_t>::max() - 1, true);
+        Access::add(ordinary, id, 1000);
+        Access::add(lazy, id, 1000);
+        for (unsigned boundary = 0; boundary < 3; ++boundary)
+        {
+            ordinary.statsNextFrame();
+            lazy.statsNextFrame();
+            expectInstructionStatsEqual(ordinary, lazy, id);
+            EXPECT_EQ(instructionStats(lazy, id).mFrameInstructionCount, 0);
+        }
+        Access::add(ordinary, id, 2000);
+        Access::add(lazy, id, 2000);
+        expectInstructionStatsEqual(ordinary, lazy, id);
+        EXPECT_EQ(lazyLua.instructionStatisticsWork().mEpochRebases, 1);
+        EXPECT_EQ(lazyLua.instructionStatisticsWork().mRebaseScriptVisits, 1);
+        EXPECT_GT(lazyLua.instructionStatisticsWork().mModeTransitionScriptVisits, 0);
+    }
+
+    TEST_F(LuaScriptsContainerTest, LazyInstructionStatisticsPreserveRemovalReloadUnloadAndAggregation)
+    {
+        LuaUtil::LuaStateSettings settings;
+        settings.mLazyInstructionStatistics = true;
+        LuaUtil::LuaState ordinaryLua(mVFS.get(), &mCfg);
+        LuaUtil::LuaState lazyLua(mVFS.get(), &mCfg, settings);
+        LuaUtil::ScriptTracker ordinaryTracker;
+        LuaUtil::ScriptTracker lazyTracker;
+        LuaUtil::ScriptsContainer ordinary(&ordinaryLua, "Stats", &ordinaryTracker);
+        LuaUtil::ScriptsContainer lazy(&lazyLua, "Stats", &lazyTracker);
+        const int id = getId(emptyPath);
+        ASSERT_TRUE(ordinary.addCustomScript(id));
+        ASSERT_TRUE(lazy.addCustomScript(id));
+        using Access = LuaUtil::InstructionStatisticsTestAccess;
+        Access::add(ordinary, id, 6000);
+        Access::add(lazy, id, 6000);
+        for (unsigned i = 0; i < 40; ++i)
+        {
+            ordinary.statsNextFrame();
+            lazy.statsNextFrame();
+        }
+        expectInstructionStatsEqual(ordinary, lazy, id);
+        ESM::LuaScripts controlSave;
+        ESM::LuaScripts candidateSave;
+        ordinary.save(controlSave);
+        lazy.save(candidateSave);
+        ASSERT_EQ(controlSave.mScripts.size(), candidateSave.mScripts.size());
+        ASSERT_EQ(controlSave.mScripts.size(), 1);
+        EXPECT_EQ(controlSave.mScripts[0].mData, candidateSave.mScripts[0].mData);
+        ordinary.load(controlSave);
+        lazy.load(candidateSave);
+        expectInstructionStatsEqual(ordinary, lazy, id);
+        EXPECT_EQ(instructionStats(lazy, id).mFrameInstructionCount, 0);
+        ordinary.removeScript(id);
+        lazy.removeScript(id);
+        ASSERT_TRUE(ordinary.addCustomScript(id));
+        ASSERT_TRUE(lazy.addCustomScript(id));
+        EXPECT_EQ(Access::writtenFrame(lazy, id), 40);
+        Access::add(ordinary, id, 2000);
+        Access::add(lazy, id, 2000);
+        expectInstructionStatsEqual(ordinary, lazy, id);
+        lazyLua.protectedCall([&](LuaUtil::LuaView& view) {
+            for (unsigned i = 0; i < 600; ++i)
+                lazyTracker.unloadInactiveScripts(view);
+        });
+        ordinaryLua.protectedCall([&](LuaUtil::LuaView& view) {
+            for (unsigned i = 0; i < 600; ++i)
+                ordinaryTracker.unloadInactiveScripts(view);
+        });
+        EXPECT_EQ(lazyTracker.size(), 0);
+        EXPECT_EQ(ordinaryTracker.size(), 0);
+        for (unsigned i = 0; i < 5; ++i)
+        {
+            ordinary.statsNextFrame();
+            lazy.statsNextFrame();
+        }
+        expectInstructionStatsEqual(ordinary, lazy, id);
+        lazy.receiveEvent("NoHandler", {});
+        ordinary.receiveEvent("NoHandler", {});
+        expectInstructionStatsEqual(ordinary, lazy, id);
+        EXPECT_EQ(Access::writtenFrame(lazy, id), 45);
+        Access::add(ordinary, id, 1000);
+        Access::add(lazy, id, 1000);
+        std::vector<LuaUtil::ScriptsContainer::ScriptStats> total;
+        ordinary.collectStats(total);
+        lazy.collectStats(total);
+        EXPECT_EQ(total[id].mFrameInstructionCount, 2000);
+        EXPECT_EQ(total[id].mAvgInstructionCount, instructionStats(ordinary, id).mAvgInstructionCount * 2);
+    }
+
+    TEST_F(LuaScriptsContainerTest, LazyInstructionStatisticsUseActualHookAndUnchangedWatchdog)
+    {
+        constexpr VFS::Path::NormalizedView path("instruction-work.lua");
+        VFSTestFile source(R"(
+local value = 0
+return { eventHandlers = { Work = function()
+    for i = 1, 15000 do value = value + i end
+end } }
+)");
+        auto vfs = createTestVFS({ { path, &source } });
+        LuaUtil::ScriptsConfiguration configuration;
+        ESM::LuaScriptsCfg cfg;
+        LuaUtil::parseOMWScripts(cfg, "CUSTOM: instruction-work.lua");
+        configuration.init(std::move(cfg), false);
+        for (const std::uint64_t limit : { 1000000ull, 2000ull })
+        {
+            LuaUtil::LuaStateSettings settings;
+            settings.mInstructionProfilerEnabled = true;
+            settings.mInstructionLimit = limit;
+            LuaUtil::LuaState ordinaryLua(vfs.get(), &configuration, settings);
+            settings.mLazyInstructionStatistics = true;
+            LuaUtil::LuaState lazyLua(vfs.get(), &configuration, settings);
+            ASSERT_TRUE(ordinaryLua.isInstructionProfilerEnabled());
+            ASSERT_TRUE(lazyLua.isInstructionProfilerEnabled());
+            // This fixture tests the actual count hook/watchdog in interpreted
+            // work, independently of LuaJIT's trace/hook sampling behavior.
+            ordinaryLua.protectedCall([](LuaUtil::LuaView& view) {
+                view.sol().script("if jit then jit.off() end");
+            });
+            lazyLua.protectedCall([](LuaUtil::LuaView& view) {
+                view.sol().script("if jit then jit.off() end");
+            });
+            LuaUtil::ScriptsContainer ordinary(&ordinaryLua, "Hooks");
+            LuaUtil::ScriptsContainer lazy(&lazyLua, "Hooks");
+            const int id = *configuration.findId(path);
+            ASSERT_TRUE(ordinary.addCustomScript(id));
+            ASSERT_TRUE(lazy.addCustomScript(id));
+            ordinary.statsNextFrame();
+            lazy.statsNextFrame();
+            internal::CaptureStdout();
+            ordinary.receiveEvent("Work", {});
+            const std::string controlOutput = internal::GetCapturedStdout();
+            internal::CaptureStdout();
+            lazy.receiveEvent("Work", {});
+            const std::string candidateOutput = internal::GetCapturedStdout();
+            EXPECT_EQ(candidateOutput, controlOutput);
+            if (limit == 2000)
+                EXPECT_THAT(candidateOutput, HasSubstr("Lua instruction count exceeded"));
+            else
+                EXPECT_TRUE(candidateOutput.empty());
+            EXPECT_GT(instructionStats(lazy, id).mFrameInstructionCount, 0);
+            expectInstructionStatsEqual(ordinary, lazy, id);
+            ordinary.statsNextFrame();
+            lazy.statsNextFrame();
+            EXPECT_EQ(instructionStats(lazy, id).mFrameInstructionCount, 0);
+            ordinaryLua.setInstructionProfilerEnabled(false);
+            lazyLua.setInstructionProfilerEnabled(false);
+            ordinary.receiveEvent("Work", {});
+            lazy.receiveEvent("Work", {});
+            expectInstructionStatsEqual(ordinary, lazy, id);
+            EXPECT_EQ(instructionStats(lazy, id).mFrameInstructionCount, 0);
+        }
+    }
+
+    TEST(LuaScriptsContainerTrace, DeepEventTimerAttributionPreservesDelivery)
+    {
+        if (!Debug::HitchTrace::requested())
+            GTEST_SKIP() << "Run in an isolated Deep subprocess to qualify production attribution";
+        constexpr VFS::Path::NormalizedView path("trace-delivery.lua");
+        VFSTestFile source(R"(
+local probe = require('fixture.trace')
+probe.hit(0)
+return { eventHandlers = { TraceEvent = function(event) probe.hit(event.value) end } }
+)");
+        auto vfs = createTestVFS({ { path, &source } });
+        LuaUtil::ScriptsConfiguration configuration;
+        ESM::LuaScriptsCfg cfg;
+        LuaUtil::parseOMWScripts(cfg, "CUSTOM: trace-delivery.lua");
+        configuration.init(std::move(cfg), false);
+        LuaUtil::LuaState lua(vfs.get(), &configuration);
+        LuaUtil::ScriptsContainer scripts(&lua, "TraceFixture");
+        int delivered = 0;
+        auto hit = [&](int value) {
+            delivered += value;
+            // A deliberately slow native subscriber qualifies the production
+            // threshold without forced retention or modifying dispatch code.
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        };
+        lua.protectedCall([&](LuaUtil::LuaView& view) {
+            sol::table probe = view.newTable();
+            probe["hit"] = hit;
+            scripts.addPackage("fixture.trace", LuaUtil::makeReadOnly(probe));
+        });
+        const int scriptId = *configuration.findId(path);
+        ASSERT_TRUE(scripts.addCustomScript(scriptId));
+        scripts.receiveEvent("TraceEvent",
+            LuaUtil::serialize(sol::state_view(lua.unsafeState()).create_table_with("value", 1)));
+        ASSERT_EQ(delivered, 1);
+        sol::function callback = sol::make_object(lua.unsafeState(), hit);
+        scripts.registerTimerCallback(scriptId, "TraceTimer", callback);
+        using TimerType = LuaUtil::ScriptsContainer::TimerType;
+        scripts.setupSerializableTimer(TimerType::SIMULATION_TIME, 5, scriptId, "TraceTimer",
+            sol::make_object(lua.unsafeState(), 2));
+        scripts.setupSerializableTimer(TimerType::GAME_TIME, 10, scriptId, "TraceTimer",
+            sol::make_object(lua.unsafeState(), 4));
+        scripts.processTimers(8, 20);
+        EXPECT_EQ(delivered, 7);
+        scripts.processTimers(8, 20, true);
+        EXPECT_EQ(delivered, 7); // Timer dequeue/idle path still delivers once.
     }
 }

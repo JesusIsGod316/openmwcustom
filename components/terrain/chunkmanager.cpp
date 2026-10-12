@@ -1,5 +1,7 @@
 #include "chunkmanager.hpp"
 
+
+#include <algorithm>
 #include <osg/BufferObject>
 #include <osg/Program>
 #include <osg/Texture>
@@ -13,13 +15,19 @@
 
 #include <components/esm/util.hpp>
 #include <components/resource/objectcache.hpp>
+#include <components/resource/assetpolicy.hpp>
+#include <components/resource/texturestreaming.hpp>
 #include <components/resource/openmwcompileoperation.hpp>
 #include <components/resource/preparedterraintexture.hpp>
+#include <components/resource/compositecpumips.hpp>
+#include <components/resource/programvariantcompile.hpp>
 #include <components/debug/v3diagnostics.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/resource/v321classifiedcompileset.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/material.hpp>
+#include <components/sceneutil/drawphasetrace.hpp>
+#include <components/sceneutil/bufferpreparationscope.hpp>
 #include <components/sceneutil/prepjobservice.hpp>
 #include <components/settings/values.hpp>
 
@@ -33,6 +41,20 @@ namespace Terrain
 {
     namespace
     {
+        // The composite renderer invokes drawImplementation directly, so an
+        // ordinary Drawable callback would miss actual source consumption.
+        class NativeCompositeSourceGeometry final : public osg::Geometry
+        {
+        public:
+            explicit NativeCompositeSourceGeometry(const osg::Geometry& source) : osg::Geometry(source) {}
+            void drawImplementation(osg::RenderInfo& info) const override
+            {
+                osg::Geometry::drawImplementation(info);
+                if(info.getState() && std::any_of(getPrimitiveSetList().begin(),getPrimitiveSetList().end(),
+                    [](const auto& primitive) { return primitive && primitive->getNumIndices()>=3; }))
+                    Resource::TextureStreaming::recordDrawUse(*info.getState(),getStateSet());
+            }
+        };
         class TerrainStateAttributeCompileOp final : public osgUtil::IncrementalCompileOperation::CompileOp
         {
         public:
@@ -113,7 +135,10 @@ namespace Terrain
                 osg::GLBufferObject* glBuffer
                     = mBuffer->getOrCreateGLBufferObject(info.getState()->getContextID());
                 if (glBuffer && glBuffer->isDirty())
+                {
+                    SceneUtil::BufferPreparationScope bufferState(info.getState());
                     glBuffer->compileBuffer();
+                }
                 return true;
             }
 
@@ -260,12 +285,56 @@ namespace Terrain
                 compileList._compileOps.swap(rebuilt._compileOps);
             }
         }
+
+        void prepareExactTerrainPrograms(Resource::V321ClassifiedCompileSet& compileSet,
+            TerrainDrawable& geometry, const osg::StateSet* root,
+            const osgUtil::IncrementalCompileOperation::ContextSet& contexts)
+        {
+            if (!Shader::exactProgramVariantsEnabled() || contexts.size() != 1)
+                return;
+            auto* context = *contexts.begin();
+            osgUtil::IncrementalCompileOperation::CompileList prepared;
+            std::unordered_set<const osg::Program*> replaced;
+            std::set<std::pair<const osg::Program*, std::string>> variants;
+            for (const auto& pass : geometry.getPasses())
+            {
+                if (variants.size() >= 64)
+                    break; // Remaining passes retain ordinary first-use fallback.
+                auto* program = pass ? dynamic_cast<osg::Program*>(pass->getAttribute(osg::StateAttribute::PROGRAM)) : nullptr;
+                if (!program)
+                    continue;
+                const std::vector<const osg::StateSet*> path{ root, pass.get() };
+                const auto defines = Shader::ProgramDefineSnapshot::fromStateSets(*program, path);
+                if (!defines.bounded || !variants.emplace(program, defines.string).second)
+                    continue;
+                if (auto op = Resource::exactProgramCompileOp(context, program, path))
+                {
+                    prepared.add(op.get());
+                    replaced.insert(program);
+                }
+            }
+            if (replaced.empty())
+                return;
+            if (compileSet._compileMap.find(context) == compileSet._compileMap.end())
+                ++compileSet._numberCompileListsToCompile;
+            auto& list = compileSet._compileMap[context];
+            for (const auto& op : list._compileOps)
+            {
+                const auto* program = dynamic_cast<const osgUtil::IncrementalCompileOperation::CompileProgramOp*>(op.get());
+                if (!program || replaced.find(program->_program.get()) == replaced.end())
+                    prepared.add(op.get());
+            }
+            // Exact pass Programs lead this same bounded ICO set. Texture and
+            // geometry realization keeps its original ordering after them.
+            list._compileOps.swap(prepared._compileOps);
+        }
     }
 
     struct ChunkManager::PreparedPassData
     {
         std::vector<LayerInfo> mLayers;
         std::vector<osg::ref_ptr<osg::Image>> mBlendmaps;
+        std::vector<Resource::CompositeCpuMips::PreparedImage> mCpuMipmaps;
         int mTileCount = 0;
     };
 
@@ -298,6 +367,7 @@ namespace Terrain
         , mCompositeMapSize(512)
         , mCompositeMapLevel(1.f)
         , mMaxCompGeometrySize(1.f)
+        , mCpuCompositeMips(Resource::CompositeCpuMips::requested())
     {
         mMultiPassRoot = new osg::StateSet;
         mMultiPassRoot->setRenderingHint(osg::StateSet::OPAQUE_BIN);
@@ -342,6 +412,26 @@ namespace Terrain
     void ChunkManager::reportStats(unsigned int frameNumber, osg::Stats* stats) const
     {
         Resource::reportStats("Terrain Chunk", frameNumber, mCache->getStats(), *stats);
+        if (mCpuCompositeMips)
+        {
+            const auto values = Resource::CompositeCpuMips::stats();
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Attempts", static_cast<double>(values.attempted));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Prepared", static_cast<double>(values.prepared));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Declined", static_cast<double>(values.declined));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Allocation Failures", static_cast<double>(values.allocationFailures));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Source Bytes", static_cast<double>(values.sourceBytes));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Supplied Bytes", static_cast<double>(values.mipBytes));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Control Applies", static_cast<double>(values.controlApplies));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Supplied Applies", static_cast<double>(values.suppliedApplies));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Upload Submissions", static_cast<double>(values.uploadSubmissions));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Producer Draw Uses", static_cast<double>(values.producerDrawUses));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips First Producer Uses", static_cast<double>(values.firstProducerUses));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Required First Uses", static_cast<double>(values.requiredFirstUses));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Optional First Uses", static_cast<double>(values.optionalFirstUses));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Control Producer Uses", static_cast<double>(values.controlProducerUses));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Control First Uses", static_cast<double>(values.controlFirstUses));
+            stats->setAttribute(frameNumber, "P9 Composite CPU Mips Unproven Producer Uses", static_cast<double>(values.unprovenProducerUses));
+        }
     }
 
     void ChunkManager::clearCache()
@@ -359,7 +449,16 @@ namespace Terrain
 
     osg::ref_ptr<osg::Texture2D> ChunkManager::createCompositeMapRTT()
     {
-        osg::ref_ptr<osg::Texture2D> texture = new osg::Texture2D;
+        osg::ref_ptr<osg::Texture2D> texture;
+        if (mCompositeMapRenderer->preparationEnabled() || SceneUtil::GLCallTrace::Capture::instance().enabled())
+        {
+            auto* prepared = new Resource::PreparedTerrainTexture;
+            prepared->setPreparationRenderTarget(true);
+            prepared->setPreparationMemoEnabled(mCompositeMapRenderer->preparationEnabled());
+            texture = prepared;
+        }
+        else
+            texture = new osg::Texture2D;
         texture->setTextureWidth(mCompositeMapSize);
         texture->setTextureHeight(mCompositeMapSize);
         texture->setInternalFormat(GL_RGB);
@@ -402,12 +501,16 @@ namespace Terrain
             {
                 osg::ref_ptr<osg::Geometry> geom = osg::createTexturedQuadGeometry(
                     osg::Vec3(left, top, 0), osg::Vec3(width, 0, 0), osg::Vec3(0, height, 0));
+                if(Resource::AssetPolicy::enabled(Resource::AssetPolicy::TexturePreparation))
+                    geom=new NativeCompositeSourceGeometry(*geom);
                 geom->setUseDisplayList(
                     false); // don't bother making a display list for an object that is just rendered once.
                 geom->setUseVertexBufferObjects(false);
                 geom->setTexCoordArray(1, geom->getTexCoordArray(0), osg::Array::BIND_PER_VERTEX);
 
                 geom->setStateSet(*it);
+                if (SceneUtil::DrawPhaseTrace::Capture::instance().enabled())
+                    SceneUtil::DrawPhaseTrace::catalogStateSets({it->get()},0,~0u,0,2);
 
                 compositeMap.mDrawables.emplace_back(geom);
             }
@@ -415,11 +518,40 @@ namespace Terrain
     }
 
     ChunkManager::PreparedPassData ChunkManager::preparePassData(
-        float chunkSize, const osg::Vec2f& chunkCenter)
+        float chunkSize, const osg::Vec2f& chunkCenter, bool forCompositeMap)
     {
         PreparedPassData result;
         mStorage->getBlendmaps(chunkSize, chunkCenter, result.mBlendmaps, result.mLayers, mWorldspace);
         result.mTileCount = mStorage->getTextureTileCount(chunkSize, mWorldspace);
+        const auto purpose=forCompositeMap ? Resource::TexturePurpose::CompositeSource : Resource::TexturePurpose::MainDraw;
+        for(const LayerInfo& info:result.mLayers)
+        {
+            mTextureManager->prepareTexture(info.mDiffuseMap,
+                info.mSpecular ? Resource::TextureRole::DiffuseSpecular : Resource::TextureRole::Diffuse,purpose);
+        }
+        // Main color consumers enter the bounded queue before normal/data
+        // payloads; T2 alone does not materialize a lane it cannot consume.
+        if(!forCompositeMap && Resource::AssetPolicy::enabled(Resource::AssetPolicy::TexturePreparation))
+            for(const LayerInfo& info:result.mLayers) if(!info.mNormalMap.empty())
+                mTextureManager->prepareTexture(info.mNormalMap,
+                    info.mParallax ? Resource::TextureRole::NormalHeight : Resource::TextureRole::Normal,purpose);
+        if (mCpuCompositeMips && forCompositeMap && !ESM::isEsm4Ext(mWorldspace))
+        {
+            Debug::HitchTrace::Scope scope("terrain.composite_cpu_mips", Debug::HitchTrace::CpuTiming::WallEnvelope);
+            const auto capabilities = Resource::CompositeCpuMips::startupCapabilities();
+            try { result.mCpuMipmaps.reserve(result.mBlendmaps.size()); }
+            catch (const std::bad_alloc&)
+            {
+                Resource::CompositeCpuMips::sAllocationFailures.fetch_add(1, std::memory_order_relaxed);
+                return result; // original images have not been changed.
+            }
+            for (auto& image : result.mBlendmaps)
+            {
+                auto prepared = Resource::CompositeCpuMips::prepare(image, capabilities, true, true);
+                if (prepared.mipmapped) image = prepared.mipmapped;
+                result.mCpuMipmaps.push_back(std::move(prepared));
+            }
+        }
         return result;
     }
 
@@ -433,22 +565,52 @@ namespace Terrain
             TextureLayer textureLayer;
             textureLayer.mParallax = info.mParallax;
             textureLayer.mSpecular = info.mSpecular;
-            textureLayer.mDiffuseMap = mTextureManager->getTexture(info.mDiffuseMap);
+            textureLayer.mDiffuseMap = mTextureManager->getTexture(info.mDiffuseMap,
+                info.mSpecular ? Resource::TextureRole::DiffuseSpecular : Resource::TextureRole::Diffuse,
+                forCompositeMap ? Resource::TexturePurpose::CompositeSource : Resource::TexturePurpose::MainDraw);
             if (!forCompositeMap && !info.mNormalMap.empty())
-                textureLayer.mNormalMap = mTextureManager->getTexture(info.mNormalMap);
+                textureLayer.mNormalMap = mTextureManager->getTexture(info.mNormalMap,
+                    info.mParallax ? Resource::TextureRole::NormalHeight : Resource::TextureRole::Normal,
+                    Resource::TexturePurpose::MainDraw);
             layers.push_back(std::move(textureLayer));
         }
 
         std::vector<osg::ref_ptr<osg::Texture2D>> blendmapTextures;
         blendmapTextures.reserve(prepared.mBlendmaps.size());
+        std::size_t blendmapIndex = 0;
         for (osg::ref_ptr<osg::Image>& image : prepared.mBlendmaps)
         {
-            osg::ref_ptr<osg::Texture2D> texture(new osg::Texture2D);
+            osg::ref_ptr<osg::Texture2D> texture;
+            if (blendmapIndex < prepared.mCpuMipmaps.size() && prepared.mCpuMipmaps[blendmapIndex].mipmapped
+                && prepared.mCpuMipmaps[blendmapIndex].mipmapped == image)
+            {
+                try
+                {
+                    auto* supplied = new Resource::CompositeCpuMips::Texture(prepared.mCpuMipmaps[blendmapIndex]);
+                    supplied->setPreparationMemoEnabled(forCompositeMap && mCompositeMapRenderer->preparationEnabled());
+                    texture = supplied;
+                }
+                catch (const std::bad_alloc&)
+                {
+                    Resource::CompositeCpuMips::sAllocationFailures.fetch_add(1, std::memory_order_relaxed);
+                    image = prepared.mCpuMipmaps[blendmapIndex].source;
+                }
+            }
+            if (!texture && ((forCompositeMap && mCompositeMapRenderer->preparationEnabled())
+                               || SceneUtil::GLCallTrace::Capture::instance().enabled()))
+            {
+                auto* preparedTexture = new Resource::PreparedTerrainTexture;
+                preparedTexture->setPreparationMemoEnabled(forCompositeMap && mCompositeMapRenderer->preparationEnabled());
+                texture = preparedTexture;
+            }
+            else if (!texture)
+                texture = new osg::Texture2D;
             texture->setImage(image);
             texture->setWrap(osg::Texture::WRAP_S, osg::Texture::CLAMP_TO_EDGE);
             texture->setWrap(osg::Texture::WRAP_T, osg::Texture::CLAMP_TO_EDGE);
             texture->setResizeNonPowerOfTwoHint(false);
             blendmapTextures.push_back(std::move(texture));
+            ++blendmapIndex;
         }
 
         return ::Terrain::createPasses(mSceneManager, layers, blendmapTextures, prepared.mTileCount,
@@ -458,7 +620,7 @@ namespace Terrain
     std::vector<osg::ref_ptr<osg::StateSet>> ChunkManager::createPasses(
         float chunkSize, const osg::Vec2f& chunkCenter, bool forCompositeMap)
     {
-        return realizePasses(preparePassData(chunkSize, chunkCenter), forCompositeMap);
+        return realizePasses(preparePassData(chunkSize, chunkCenter, forCompositeMap), forCompositeMap);
     }
 
     osg::ref_ptr<osg::Node> ChunkManager::createChunk(float chunkSize, const osg::Vec2f& chunkCenter, unsigned char lod,
@@ -490,13 +652,19 @@ namespace Terrain
                     lane, [&] { preparedPasses = preparePassData(chunkSize, chunkCenter); }, fillVertices);
                 if (!paired)
                 {
-                    fillVertices();
-                    preparedPasses = preparePassData(chunkSize, chunkCenter);
+                    if(Resource::AssetPolicy::enabled(Resource::AssetPolicy::TexturePreparation|Resource::AssetPolicy::TextureStreaming))
+                    { preparedPasses=preparePassData(chunkSize,chunkCenter);fillVertices(); }
+                    else { fillVertices();preparedPasses=preparePassData(chunkSize,chunkCenter); }
                 }
                 hasPreparedPasses = true;
             }
             else
+            {
+                if(!useCompositeMap && Resource::AssetPolicy::enabled(
+                    Resource::AssetPolicy::TexturePreparation|Resource::AssetPolicy::TextureStreaming))
+                { preparedPasses=preparePassData(chunkSize,chunkCenter);hasPreparedPasses=true; }
                 fillVertices();
+            }
 
             if (Settings::cells().mOptimizedMWTerrainSplitVertexBuffers)
             {
@@ -589,11 +757,13 @@ namespace Terrain
             if (useCompositeMap)
             {
                 osg::ref_ptr<CompositeMap> compositeMap = new CompositeMap;
+                compositeMap->mBatchingEligible = true;
                 compositeMap->mTexture = createCompositeMapRTT();
 
                 createCompositeMapGeometry(chunkSize, chunkCenter, osg::Vec4f(0, 0, 1, 1), *compositeMap);
 
-                mCompositeMapRenderer->addCompositeMap(compositeMap.get(), false);
+                if (!mCompositeMapRenderer->producerPreparationEnabled())
+                    mCompositeMapRenderer->addCompositeMap(compositeMap.get(), false);
 
                 geometry->setCompositeMap(compositeMap);
                 geometry->setCompositeMapRenderer(mCompositeMapRenderer);
@@ -604,6 +774,14 @@ namespace Terrain
                 layer.mSpecular = false;
                 geometry->setPasses(::Terrain::createPasses(mSceneManager, std::vector<TextureLayer>(1, layer),
                     std::vector<osg::ref_ptr<osg::Texture2D>>(), 1, 1.f, false));
+                if (mCompositeMapRenderer->producerPreparationEnabled())
+                {
+                    // The exact producer passes and output consumer now exist.
+                    // ICO can prepare their dependencies before renderer draw;
+                    // no GL operation runs on this terrain preparation thread.
+                    mCompositeMapRenderer->prepareAtCreation(*compositeMap);
+                    mCompositeMapRenderer->addCompositeMap(compositeMap.get(), false);
+                }
             }
             else
             {
@@ -629,12 +807,20 @@ namespace Terrain
                 compileSet->buildCompileMap(ico->getContextSet());
                 phaseTerrainCompileSetV2(*compileSet, *geometry,
                     static_cast<bool>(Settings::cells().mOptimizedMWTerrainSplitVertexBuffers));
+                prepareExactTerrainPrograms(*compileSet, *geometry, mMultiPassRoot, ico->getContextSet());
                 ico->add(compileSet, false);
             }
             else if (Settings::cells().mOptimizedMWTerrainPhasedCompile)
             {
                 compileSet->buildCompileMap(ico->getContextSet());
                 phaseTerrainCompileSet(*compileSet, *geometry);
+                prepareExactTerrainPrograms(*compileSet, *geometry, mMultiPassRoot, ico->getContextSet());
+                ico->add(compileSet, false);
+            }
+            else if (Shader::exactProgramVariantsEnabled())
+            {
+                compileSet->buildCompileMap(ico->getContextSet());
+                prepareExactTerrainPrograms(*compileSet, *geometry, mMultiPassRoot, ico->getContextSet());
                 ico->add(compileSet, false);
             }
             else

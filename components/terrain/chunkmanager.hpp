@@ -107,7 +107,7 @@ namespace Terrain
         void createCompositeMapGeometry(
             float chunkSize, const osg::Vec2f& chunkCenter, const osg::Vec4f& texCoords, CompositeMap& map);
 
-        PreparedPassData preparePassData(float chunkSize, const osg::Vec2f& chunkCenter);
+        PreparedPassData preparePassData(float chunkSize, const osg::Vec2f& chunkCenter, bool forCompositeMap = false);
         std::vector<osg::ref_ptr<osg::StateSet>> realizePasses(
             PreparedPassData&& prepared, bool forCompositeMap);
         std::vector<osg::ref_ptr<osg::StateSet>> createPasses(
@@ -126,6 +126,7 @@ namespace Terrain
         unsigned int mCompositeMapSize;
         float mCompositeMapLevel;
         float mMaxCompGeometrySize;
+        bool mCpuCompositeMips = false;
     };
 
 }

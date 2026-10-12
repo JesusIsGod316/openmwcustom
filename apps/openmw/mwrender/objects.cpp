@@ -9,6 +9,7 @@
 #include <components/misc/resourcehelpers.hpp>
 #include <components/misc/strings/algorithm.hpp>
 #include <components/sceneutil/positionattitudetransform.hpp>
+#include <components/sceneutil/ownedcellcull.hpp>
 #include <components/sceneutil/unrefqueue.hpp>
 
 #include "../mwworld/class.hpp"
@@ -57,7 +58,8 @@ namespace MWRender
         CellMap::iterator found = mCellSceneNodes.find(ptr.getCell());
         if (found == mCellSceneNodes.end())
         {
-            cellnode = new osg::Group;
+            cellnode = SceneUtil::OwnedCellCull::enabled.load(std::memory_order_relaxed)
+                ? static_cast<osg::Group*>(new SceneUtil::OwnedCellCull::Group(mOccluderMinRadius)) : new osg::Group;
             cellnode->setName("Cell Root");
             if (mOcclusionCuller)
                 cellnode->addCullCallback(new CellOcclusionCallback(mOcclusionCuller, mOccluderMinRadius,
@@ -385,7 +387,8 @@ namespace MWRender
         osg::Group* cellnode;
         if (mCellSceneNodes.find(newCell) == mCellSceneNodes.end())
         {
-            cellnode = new osg::Group;
+            cellnode = SceneUtil::OwnedCellCull::enabled.load(std::memory_order_relaxed)
+                ? static_cast<osg::Group*>(new SceneUtil::OwnedCellCull::Group(mOccluderMinRadius)) : new osg::Group;
             if (mOcclusionCuller)
                 cellnode->addCullCallback(new CellOcclusionCallback(mOcclusionCuller, mOccluderMinRadius,
                     mOccluderMaxRadius, mOccluderShrinkFactor, mOccluderMeshResolution, mOccluderMaxMeshResolution,

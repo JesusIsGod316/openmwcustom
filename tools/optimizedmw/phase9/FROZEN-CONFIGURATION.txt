@@ -1,0 +1,55 @@
+OptimizedMW manual tests with a frozen SaintJs mod configuration
+
+Use START-OptimizedMW-FrozenTest.bat for tests that must retain the old full-mod
+configuration while the normal gameplay openmw.cfg changes. The numeric test
+menus and Normal/Deep choices remain the same. This is a manual test launcher;
+it does not load a save, move the player, activate doors, or run a benchmark
+route automatically.
+
+The locked baseline is Configuration/Benchmark-SaintJs. Each frozen launch
+checks LOCK.json and its file hashes, then creates a separate writable profile
+in TestSessions/FrozenConfig_<unique id>. Game settings, Lua global/player
+storage, key bindings, post-processing settings, logs, dumps, screenshots and
+the copied save belong to that private profile. Use Load Game to select the
+copied Gallus Darkwind Wake up save. Changing the normal gameplay config later
+does not replace the frozen baseline. The ordinary START-OptimizedMW-Test.bat
+continues using the normal gameplay profile unless passed -FrozenConfigDirectory.
+
+The supplied baseline preserves the captured ordered mod configuration and
+Normal Headroom settings: 227 content entries, 309 explicit mod data paths,
+8 groundcover entries, and 3 fallback archives. Runtime configuration also
+retains the package's ordinary resources/vfs-mw data and original local mod
+data with their priorities. Lua storage, key bindings and shaders.yaml were
+snapshotted from current gameplay state at freeze time; earlier captures did
+not preserve those files, so their historical byte identity is unproven.
+
+On 2026-10-09 the user authorized removing the unused Wearable Lanterns data
+directory requirement. Its plugin/scripts were already absent from the captured
+content list. The revised LOCK.json records the prior lock/config identities and
+this one-directory removal as a new configuration cohort. SaintJs, Hip Lanterns,
+Belt Lanterns, copied saves and all remaining requirements are preserved.
+
+The same day, the user authorized removing the obsolete Physical Maps/Held
+Prototype/Data Files directory requirement. The current main Physical Maps
+Data Files already supplies the held scripts and an empty compatibility
+manifest. That content entry, Physical Maps.esp, and Test Copies remain
+enabled. Only the stale directory reference was removed in this next cohort.
+
+SaintJs means the 16 visual/PBR replacer directories. Their 1,027 referenced
+files have a saved SHA256/length manifest. Keep the installed asset directories:
+the frozen configuration references them without duplicating the 10 GB payload.
+Each launch verifies their paths and lengths; same-size edits and added files
+are not detected by that lightweight check. Use -VerifyFrozenAssetHashes for
+full SHA256 checking of the recorded files. That option reads their payloads
+and warms OS caches, so it must be recorded as part of the comparison protocol.
+Other mod asset payloads are not copied or fully frozen. The Windows renderer
+cache remains shared and is neither isolated nor cleared by this launcher.
+
+Do not edit the locked templates as a way of changing a test. Select an existing
+numeric candidate, or the Custom configuration category to apply the copied
+descriptive Optimizations.cfg to that private run. Future intentional baseline
+changes require a new lock/cohort. Save/config/frame-cap/route identity and real
+candidate engagement remain required before performance comparisons.
+
+The automatic benchmark runner is held at the user's request. The frozen
+configuration provides its future starting inputs; no automatic route exists.

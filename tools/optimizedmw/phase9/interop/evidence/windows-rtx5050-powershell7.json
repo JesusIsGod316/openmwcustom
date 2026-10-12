@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "executable": "C:\\Users\\LSCha\\AppData\\Local\\Temp\\optimizedmw-phase9-interop-cmake\\interop\\p9-gl-vulkan-interop.exe",
+  "executable_sha256": "56ecce55444b3533cef22d076cadcb003c04d997fe30e601b8c1e9d93d3dc4a8",
+  "frames_per_generation": 4,
+  "gpu_timeout_ms": 1500,
+  "process_timeout_seconds": 30,
+  "started_utc": "2026-09-30T01:19:42.2768247Z",
+  "require_support": true,
+  "exit_code": 0,
+  "result": "passed_pixels_and_protocol",
+  "completed_utc": "2026-09-30T01:19:43.6582586Z"
+}

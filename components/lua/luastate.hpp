@@ -1,13 +1,18 @@
 #ifndef COMPONENTS_LUA_LUASTATE_H
 #define COMPONENTS_LUA_LUASTATE_H
 
+#include <array>
+#include <atomic>
 #include <filesystem>
 #include <map>
+#include <optional>
+#include <type_traits>
 #include <typeinfo>
 
 #include <sol/sol.hpp>
 
 #include <components/vfs/pathutil.hpp>
+#include <components/debug/hitchtrace.hpp>
 
 #include "configuration.hpp"
 #include "luastateptr.hpp"
@@ -36,6 +41,7 @@ namespace LuaUtil
         uint64_t mSmallAllocMaxSize = 1024 * 1024; // big default value efficiently disables memory tracking
         bool mLogMemoryUsage = false;
         bool mInstructionProfilerEnabled = false;
+        bool mLazyInstructionStatistics = false;
     };
 
     class LuaState;
@@ -53,6 +59,7 @@ namespace LuaUtil
     public:
         template <class Function>
         friend int invokeProtectedCall(lua_State*, Function&&);
+        friend int invokeReusableProtectedCall(lua_State*);
         // Returns underlying sol::state.
         sol::state_view& sol() { return mSol; }
 
@@ -79,17 +86,15 @@ namespace LuaUtil
         lua_pushcfunction(luaState, [](lua_State* state) {
             void* f = lua_touserdata(state, 1);
             LuaView view(state);
-            (*static_cast<Function*>(f))(view);
+            (*static_cast<std::remove_reference_t<Function>*>(f))(view);
             return 0;
         });
-        lua_pushlightuserdata(luaState, &function);
+        lua_pushlightuserdata(luaState, const_cast<void*>(static_cast<const void*>(&function)));
         return lua_pcall(luaState, 1, 0, 0);
     }
 
-    template <class Lambda>
-    void protectedCall(lua_State* luaState, Lambda&& f)
+    inline void checkProtectedCallResult(lua_State* luaState, int result)
     {
-        int result = invokeProtectedCall(luaState, std::forward<Lambda>(f));
         switch (result)
         {
             case LUA_OK:
@@ -106,6 +111,29 @@ namespace LuaUtil
             default:
                 throw std::runtime_error("Lua error: " + std::to_string(result));
         }
+    }
+
+    template <class Lambda>
+    void protectedCall(lua_State* luaState, Lambda&& f)
+    {
+        checkProtectedCallResult(luaState, invokeProtectedCall(luaState, std::forward<Lambda>(f)));
+    }
+
+    // One registry-owned zero-upvalue C closure can serve every protected job.
+    // The job and its callable stay on the C++ stack until the synchronous pcall
+    // returns. Nested jobs therefore have separate storage and no shared capture.
+    struct ProtectedCallFrame
+    {
+        void* mCallable;
+        void (*mInvoke)(void*, LuaView&);
+    };
+
+    inline int invokeReusableProtectedCall(lua_State* state)
+    {
+        auto* frame = static_cast<ProtectedCallFrame*>(lua_touserdata(state, 1));
+        LuaView view(state);
+        frame->mInvoke(frame->mCallable, view);
+        return 0;
     }
 
     // Holds Lua state.
@@ -125,14 +153,146 @@ namespace LuaUtil
     public:
         explicit LuaState(const VFS::Manager* vfs, const ScriptsConfiguration* conf,
             const LuaStateSettings& settings = LuaStateSettings{});
+        ~LuaState();
         LuaState(const LuaState&) = delete;
         LuaState(LuaState&&) = delete;
 
         template <class Lambda>
         void protectedCall(Lambda&& f) const
         {
-            LuaUtil::protectedCall(mSol.lua_state(), std::forward<Lambda>(f));
+            lua_State* state = mSol.lua_state();
+            if (!mProtectedCallReuse || mProtectedCallReference == LUA_NOREF)
+            {
+                ++mProtectedCallStats.mOrdinaryCalls;
+                ++mProtectedCallStats.mClosureCreations;
+                LuaUtil::protectedCall(state, std::forward<Lambda>(f));
+                return;
+            }
+            if (!lua_checkstack(state, 3))
+                checkProtectedCallResult(state, LUA_ERRMEM);
+            // lua_pushcclosure inherits its current caller environment on Lua
+            // 5.1/LuaJIT. Only reuse from top-level native code or directly from
+            // our trampoline. A Lua/native API callback may carry a sandbox
+            // environment, so it keeps the original freshly inherited closure.
+            lua_Debug caller{};
+            if (lua_getstack(state, 0, &caller))
+            {
+                const bool identified = lua_getinfo(state, "f", &caller) != 0;
+                const bool ownCaller = identified && lua_tocfunction(state, -1) == &invokeReusableProtectedCall;
+                if (identified)
+                    lua_pop(state, 1);
+                if (!ownCaller)
+                {
+                    ++mProtectedCallStats.mContextFallbacks;
+                    ++mProtectedCallStats.mOrdinaryCalls;
+                    ++mProtectedCallStats.mClosureCreations;
+                    LuaUtil::protectedCall(state, std::forward<Lambda>(f));
+                    return;
+                }
+            }
+            lua_rawgeti(state, LUA_REGISTRYINDEX, mProtectedCallReference);
+            if (lua_tocfunction(state, -1) != &invokeReusableProtectedCall)
+            {
+                // Fail closed if native code has invalidated the private registry
+                // entry. Do not invoke a substituted function or carry extra stack
+                // entries into the ordinary path.
+                lua_pop(state, 1);
+                ++mProtectedCallStats.mRegistryFallbacks;
+                ++mProtectedCallStats.mOrdinaryCalls;
+                ++mProtectedCallStats.mClosureCreations;
+                LuaUtil::protectedCall(state, std::forward<Lambda>(f));
+                return;
+            }
+            using Function = std::remove_reference_t<Lambda>;
+            ProtectedCallFrame frame{ const_cast<void*>(static_cast<const void*>(&f)),
+                [](void* callable, LuaView& view) { (*static_cast<Function*>(callable))(view); } };
+            lua_pushlightuserdata(state, &frame);
+            ++mProtectedCallStats.mReusedCalls;
+            checkProtectedCallResult(state, lua_pcall(state, 1, 0, 0));
         }
+
+        // Startup/owner-thread only. The registry reference belongs to this VM
+        // and is released with its registry when the Lua state is destroyed.
+        void setProtectedCallReuse(bool enabled);
+        bool getProtectedCallReuse() const { return mProtectedCallReuse; }
+        struct ProtectedCallStats
+        {
+            std::uint64_t mOrdinaryCalls = 0;
+            std::uint64_t mReusedCalls = 0;
+            std::uint64_t mClosureCreations = 0;
+            std::uint64_t mRegistryFallbacks = 0;
+            std::uint64_t mContextFallbacks = 0;
+        };
+        ProtectedCallStats protectedCallStats() const { return mProtectedCallStats; }
+
+        // Access follows the existing Lua-owner-thread/worker-completion contract.
+        // These count container boundaries and actual bookkeeping, not saved wall time.
+        struct InstructionStatisticsWork
+        {
+            std::uint64_t mContainerFrameBoundaries = 0;
+            std::uint64_t mLazyFrameBoundaries = 0;
+            std::uint64_t mOrdinaryScriptVisits = 0;
+            std::uint64_t mLazyScriptVisitsAvoided = 0;
+            std::uint64_t mWriteDecaySteps = 0;
+            std::uint64_t mReadDecaySteps = 0;
+            std::uint64_t mEpochRebases = 0;
+            std::uint64_t mRebaseScriptVisits = 0;
+            std::uint64_t mModeTransitionScriptVisits = 0;
+        };
+        InstructionStatisticsWork instructionStatisticsWork() const
+        {
+            auto result = mInstructionStatisticsWork;
+            result.mReadDecaySteps = mInstructionStatisticsReadDecaySteps.load(std::memory_order_relaxed);
+            return result;
+        }
+
+        // Explicit diagnostic owner only: process-global LuaJIT sampling never
+        // starts for ordinary gameplay. Callbacks only update bounded counters.
+        // Counts are delivered during a scope; timer-triggered VM states may
+        // predate delivery and must not be treated as exact callback blame.
+        bool startDiagnosticVmSampler();
+        void stopDiagnosticVmSampler();
+        struct DiagnosticVmSamples
+        {
+            std::array<std::uint64_t, 6> mStates{}; // native, interpreted, C, GC, JIT, unknown
+            std::uint64_t mCallbacks = 0;
+        };
+        DiagnosticVmSamples diagnosticVmSamples() const { return mDiagnosticVmSamples; }
+        bool diagnosticVmSamplerStarted() const { return mVmProfileStop != nullptr; }
+
+        // Loading/bootstrap owner only. These are fresh, single-use functions;
+        // neither script bodies nor package factories run during preparation.
+        // Module require and util.loadCode keep their ordinary loader path.
+        static constexpr std::size_t sMaxPreparedScriptRoots = 64;
+        struct PreparedScriptRootLimits
+        {
+            bool mEnabled = false;
+            std::size_t mMaxRoots = 0;
+            std::uint64_t mMaxPositiveBytes = 0;
+        };
+        struct PreparedScriptRootStats
+        {
+            std::uint64_t mCreated = 0, mConsumed = 0, mDiscarded = 0;
+            std::uint64_t mOrdinaryDirectLoads = 0, mOrdinaryModuleLoads = 0;
+            std::uint64_t mUntrackedRefusals = 0, mContextRefusals = 0;
+            std::uint64_t mCapacityRefusals = 0, mBudgetRefusals = 0, mFailures = 0;
+            std::uint64_t mMissingBytecodeRefusals = 0;
+            std::uint64_t mUnsupportedVmRefusals = 0;
+            std::uint64_t mStaleRefusals = 0, mGenerationRefusals = 0;
+            std::uint64_t mOrdinaryBytecodeLoads = 0, mPreparationBytecodeLoads = 0;
+            std::uint64_t mPreparationPositiveLuaBytes = 0, mPreparationNativeBytes = 0;
+            std::uint64_t mTransferredPositiveBytes = 0, mPeakPendingPositiveBytes = 0;
+            std::size_t mPendingRoots = 0;
+            std::uint64_t mPendingPositiveBytes = 0;
+        };
+        bool configurePreparedScriptRoots(PreparedScriptRootLimits limits);
+        std::size_t prepareScriptRoots(const VFS::Path::Normalized& path, std::size_t count = 1);
+        std::size_t prepareConfiguredScriptRoots(std::size_t rootsPerScript = 1);
+        void discardPreparedScriptRoots();
+        // Read only after the VM owner has joined. Charges conservatively include
+        // temporary growth/scratch; transfer is not freed memory or a Proto census.
+        PreparedScriptRootStats preparedScriptRootStats() const { return mPreparedScriptRootStats; }
+        std::size_t preparedScriptRootMetadataBytes() const;
 
         // Note that constructing a sol::state_view is only safe from a Lua context. Use protectedCall to get one
         lua_State* unsafeState() const { return mSol.lua_state(); }
@@ -159,9 +319,9 @@ namespace LuaUtil
         sol::protected_function_result runInNewSandbox(const VFS::Path::Normalized& path,
             const std::string& envName = "unnamed", const std::map<std::string, sol::main_object>& packages = {},
             const sol::main_object& hiddenData = sol::nil, const sol::main_table* packagePrototype = nullptr,
-            ScriptId scriptId = {});
+            ScriptId scriptId = {}, bool additionalPackagesReadOnly = false);
 
-        void dropScriptCache() { mCompiledScripts.clear(); }
+        void dropScriptCache();
 
         // V3.12: compile configured top-level scripts into the existing bytecode
         // cache without creating a sandbox or executing script code.
@@ -176,6 +336,10 @@ namespace LuaUtil
         sol::main_table makePackagePrototype(const std::map<std::string, sol::main_object>& packages);
         void setPackagePrototypeReuse(bool enabled) { mPackagePrototypeReuse = enabled; }
         bool getPackagePrototypeReuse() const { return mPackagePrototypeReuse; }
+        // Registered metadata only; every factory still runs for every sandbox.
+        void setPackageDescriptorReuse(bool enabled);
+        bool getPackageDescriptorReuse() const { return mPackageDescriptorReuse; }
+        std::uint64_t commonPackageGeneration() const { return mCommonPackageGeneration; }
 
         const ScriptsConfiguration& getConfiguration() const { return *mConf; }
 
@@ -187,6 +351,9 @@ namespace LuaUtil
         sol::environment newInternalLibEnvironment();
 
         uint64_t getTotalMemoryUsage() const { return mSol.memory_used(); }
+        // Performs the same single explicit VM step as the engine GC worker.
+        // Diagnostics observe its return value; they do not change GC policy.
+        bool gcStep(int steps);
         uint64_t getSmallAllocMemoryUsage() const { return mSmallAllocMemoryUsage; }
         uint64_t getMemoryUsageByScriptIndex(unsigned id) const
         {
@@ -202,20 +369,56 @@ namespace LuaUtil
         void setInstructionProfilerEnabled(bool enabled);
         bool isInstructionProfilerEnabled() const { return mInstructionProfilerEnabled; }
 
+        struct DiagnosticAllocations
+        {
+            std::uint64_t calls = 0, growthBytes = 0, shrinkBytes = 0, failures = 0;
+            std::uint64_t serviceCalls = 0, serviceNs = 0, serviceFailures = 0, policyBlocked = 0, frees = 0;
+            // Attempted nonzero nsize: <=64, <=256, <=1KiB, <=16KiB,
+            // <=1MiB, >1MiB. Failed requests are included; frees are separate.
+            std::array<std::uint64_t, 6> requestedSizes{};
+        };
+        // Read only by the current Lua owner. These are logical allocator
+        // requests, not OS allocation sizes or per-script retained memory.
+        DiagnosticAllocations diagnosticAllocations() const { return mDiagnosticAllocations; }
+        bool diagnosticTrackingAllocator() const;
+
         static sol::protected_function_result throwIfError(sol::protected_function_result&&);
 
     private:
+        friend class ScriptsContainer;
+        friend struct PreparedScriptRootTestAccess;
         template <typename... Args>
         friend sol::protected_function_result call(const sol::protected_function& fn, Args&&... args);
         template <typename... Args>
         friend sol::protected_function_result call(
             ScriptId scriptId, const sol::protected_function& fn, Args&&... args);
 
-        sol::function loadScriptAndCache(const VFS::Path::Normalized& path);
+        sol::function loadScriptAndCache(const VFS::Path::Normalized& path, bool direct = false);
+        sol::function loadDirectScriptAndCache(const VFS::Path::Normalized& path);
+        void discardStalePreparedScriptRoots();
         static void countHook(lua_State* state, lua_Debug* ar);
         static void* trackingAllocator(void* ud, void* ptr, size_t osize, size_t nsize);
+        static void vmProfileCallback(void* data, lua_State*, int samples, int state);
 
         static LuaStatePtr createLuaRuntime(LuaState* luaState);
+
+        // Bounded summaries of an enclosing operation. Their wall envelopes
+        // are not allocator service time; only service_ns times free/realloc.
+        // No allocation emits a trace row or queries an OS thread CPU timer.
+        class DiagnosticAllocationScope
+        {
+        public:
+            explicit DiagnosticAllocationScope(LuaState* state, ScriptId scriptId = {});
+            ~DiagnosticAllocationScope();
+
+        private:
+            LuaState* mState;
+            DiagnosticAllocations mBefore;
+            DiagnosticVmSamples mVmBefore;
+            std::optional<Debug::HitchTrace::Scope> mService, mSmall, mLarge;
+            std::optional<Debug::HitchTrace::Scope> mVmStates, mVmExtra;
+        };
+        std::pair<std::string_view, std::string_view> diagnosticAllocationContext(ScriptId scriptId) const;
 
         struct AllocOwner
         {
@@ -224,6 +427,16 @@ namespace LuaUtil
         };
 
         const LuaStateSettings mSettings;
+        DiagnosticAllocations mDiagnosticAllocations;
+        bool mProtectedCallReuse = false;
+        int mProtectedCallReference = LUA_NOREF;
+        mutable ProtectedCallStats mProtectedCallStats;
+        InstructionStatisticsWork mInstructionStatisticsWork;
+        // Const statistics reads do not alter scripts. A separate relaxed
+        // diagnostic counter also avoids making concurrent readers race.
+        mutable std::atomic<std::uint64_t> mInstructionStatisticsReadDecaySteps{ 0 };
+        DiagnosticVmSamples mDiagnosticVmSamples;
+        void (*mVmProfileStop)(lua_State*) = nullptr;
 
         // Needed to track resource usage per script, must be initialized before mLuaHolder.
         std::vector<ScriptId> mActiveScriptIdStack;
@@ -234,6 +447,15 @@ namespace LuaUtil
         uint64_t mSmallAllocMemoryUsage = 0;
         std::vector<int64_t> mMemoryUsage;
 
+        // Allocator flags must exist before constructing mLuaState. Positive
+        // successful growth is charged without subtracting unrelated GC frees.
+        bool mPreparingScriptRoot = false;
+        bool mPreparedAllocationActive = false;
+        bool mPreparedAllocationMayDeny = false;
+        bool mPreparedAllocationDenied = false;
+        std::uint64_t mPreparedAllocationLimit = 0;
+        std::uint64_t mPreparedAllocationGrowth = 0;
+
         // Must be declared before mSol and all sol-related objects. Then on exit it will be destructed the last.
         LuaStatePtr mLuaState;
 
@@ -241,7 +463,28 @@ namespace LuaUtil
         const ScriptsConfiguration* mConf;
         sol::table mSandboxEnv;
         std::map<VFS::Path::Normalized, sol::bytecode> mCompiledScripts;
+        struct PreparedScriptRoot
+        {
+            const VFS::Path::Normalized* mPath = nullptr;
+            const sol::bytecode* mBytecode = nullptr;
+            std::uint64_t mCacheEpoch = 0, mVfsEpoch = 0, mPositiveBytes = 0;
+            std::optional<sol::function> mFunction;
+        };
+        // Fixed metadata: no per-token native map, path copy or container lease.
+        // These registry references are destroyed before the Lua VM/cache.
+        std::array<PreparedScriptRoot, sMaxPreparedScriptRoots> mPreparedScriptRoots;
+        PreparedScriptRootLimits mPreparedScriptRootLimits;
+        PreparedScriptRootStats mPreparedScriptRootStats;
+        std::uint64_t mScriptCacheEpoch = 1;
+        bool mPreparedScriptRootEpochExhausted = false;
         std::map<std::string, sol::object> mCommonPackages;
+        // Keys and values refer to stable nodes owned by mCommonPackages. Keys
+        // are never erased during a LuaState lifetime; registration invalidates
+        // classification and advances generation. No actor factory output lives
+        // here and no descriptor outlives this LuaState.
+        std::map<std::string_view, const sol::object*, std::less<>> mCommonFactoryDescriptors;
+        std::uint64_t mCommonPackageGeneration = 0;
+        bool mPackageDescriptorReuse = false;
         const VFS::Manager* mVFS;
         bool mPackagePrototypeReuse = false;
         std::vector<std::filesystem::path> mLibSearchPaths;
@@ -276,29 +519,47 @@ namespace LuaUtil
     template <typename... Args>
     sol::protected_function_result call(ScriptId scriptId, const sol::protected_function& fn, Args&&... args)
     {
+        Debug::HitchTrace::Scope diagnosticCall("lua.call", Debug::HitchTrace::CpuTiming::None);
         LuaState* luaState = nullptr;
-        if (LuaState::sProfilerEnabled && scriptId.mContainer)
+        if (LuaState::sProfilerEnabled && (scriptId.mContainer || Debug::HitchTrace::requested()))
         {
             (void)lua_getallocf(fn.lua_state(), reinterpret_cast<void**>(&luaState));
-            luaState->mActiveScriptIdStack.push_back(scriptId);
-            luaState->mWatchdogInstructionCounter = 0;
+            if (scriptId.mContainer)
+            {
+                luaState->mActiveScriptIdStack.push_back(scriptId);
+                luaState->mWatchdogInstructionCounter = 0;
+            }
         }
+        const bool diagnostic = Debug::HitchTrace::requested() && luaState;
+        LuaState::DiagnosticAllocationScope allocationDiagnostic(diagnostic ? luaState : nullptr, scriptId);
+        const auto before = diagnostic ? luaState->diagnosticAllocations() : LuaState::DiagnosticAllocations{};
+        auto finishDiagnostic = [&] {
+            if (!diagnostic) return;
+            const auto after = luaState->diagnosticAllocations();
+            diagnosticCall.setMetric(0, "alloc_calls", after.calls - before.calls);
+            diagnosticCall.setMetric(1, "alloc_growth_bytes", after.growthBytes - before.growthBytes);
+            diagnosticCall.setMetric(2, "alloc_shrink_bytes", after.shrinkBytes - before.shrinkBytes);
+            diagnosticCall.setMetric(3, "alloc_failures", after.failures - before.failures);
+        };
         try
         {
             auto res = LuaState::throwIfError(fn(std::forward<Args>(args)...));
-            if (luaState)
+            finishDiagnostic();
+            if (luaState && scriptId.mContainer)
                 luaState->mActiveScriptIdStack.pop_back();
             return res;
         }
         catch (std::exception&)
         {
-            if (luaState)
+            finishDiagnostic();
+            if (luaState && scriptId.mContainer)
                 luaState->mActiveScriptIdStack.pop_back();
             throw;
         }
         catch (...)
         {
-            if (luaState)
+            finishDiagnostic();
+            if (luaState && scriptId.mContainer)
                 luaState->mActiveScriptIdStack.pop_back();
             throw std::runtime_error("Unknown error");
         }

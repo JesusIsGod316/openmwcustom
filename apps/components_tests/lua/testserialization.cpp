@@ -193,6 +193,98 @@ namespace
         EXPECT_ERROR(lua.safe_script("ro_t.nested.x = 5"), "userdata value");
     }
 
+    TEST(LuaSerializationTest, DiagnosticShapeMatchesControlAndReadonly)
+    {
+        sol::state lua;
+        // Match LuaState's readonly length helper. A raw state otherwise has
+        // no __len handler for the userdata wrapper created by makeReadOnly.
+        lua.open_libraries(sol::lib::base);
+        lua.safe_script("function lenForReadOnly(v) return #getmetatable(v).t end");
+        sol::table table(lua, sol::create);
+        table["n"] = 7;
+        table["sub"] = sol::table(lua, sol::create);
+        table["sub"]["x"] = "abc";
+        table["empty"] = sol::table(lua, sol::create);
+        const std::string serialized = LuaUtil::serialize(table);
+
+        for (const bool readOnly : { false, true })
+        {
+            const sol::table control = LuaUtil::deserialize(lua, serialized, nullptr, readOnly);
+            LuaUtil::DeserializeMetrics metrics;
+            sol::table observed = LuaUtil::deserializeWithMetrics(lua, serialized, metrics, nullptr, readOnly);
+            EXPECT_EQ(observed.get<int>("n"), control.get<int>("n"));
+            EXPECT_EQ(observed.get<sol::table>("sub").get<std::string>("x"), "abc");
+            EXPECT_EQ(observed.get<sol::table>("empty").size(), 0);
+            EXPECT_EQ(control.get<sol::table>("empty").size(), 0);
+            EXPECT_EQ(metrics.values, 9);
+            EXPECT_EQ(metrics.tables, 3);
+            EXPECT_EQ(metrics.strings, 5);
+            EXPECT_EQ(metrics.stringBytes, 13); // n, sub, empty, x, abc; includes keys.
+            EXPECT_EQ(metrics.maxDepth, 3);
+            EXPECT_EQ(metrics.customValues, 0);
+            EXPECT_EQ(metrics.customBytes, 0);
+            lua["observed"] = observed;
+            lua["control"] = control;
+            if (readOnly)
+            {
+                EXPECT_ERROR(lua.safe_script("observed.sub.x = 'changed'"), "userdata value");
+                EXPECT_ERROR(lua.safe_script("control.sub.x = 'changed'"), "userdata value");
+            }
+            else
+            {
+                EXPECT_NO_THROW(lua.safe_script("observed.sub.x = 'changed'"));
+            }
+        }
+    }
+
+    TEST(LuaSerializationTest, DiagnosticShapeScalarsAndReset)
+    {
+        sol::state lua;
+        LuaUtil::DeserializeMetrics metrics;
+        for (const std::string text : { std::string{}, std::string("abc"), std::string(64, 'x') })
+        {
+            const auto serialized = LuaUtil::serialize(sol::make_object(lua, text));
+            const auto observed = LuaUtil::deserializeWithMetrics(lua, serialized, metrics);
+            ASSERT_TRUE(observed.is<std::string>());
+            EXPECT_EQ(observed.as<std::string>(), text);
+            EXPECT_EQ(metrics.values, 1);
+            EXPECT_EQ(metrics.strings, 1);
+            EXPECT_EQ(metrics.stringBytes, text.size());
+            EXPECT_EQ(metrics.tables, 0);
+            EXPECT_EQ(metrics.maxDepth, 1);
+        }
+        const auto number = LuaUtil::serialize(sol::make_object(lua, 3.14));
+        EXPECT_DOUBLE_EQ(LuaUtil::deserializeWithMetrics(lua, number, metrics).as<double>(), 3.14);
+        EXPECT_EQ(metrics.values, 1);
+        EXPECT_EQ(metrics.strings, 0);
+        EXPECT_EQ(metrics.stringBytes, 0);
+        EXPECT_EQ(LuaUtil::deserializeWithMetrics(lua, "", metrics), sol::nil);
+        EXPECT_EQ(metrics.values, 0);
+        EXPECT_EQ(metrics.maxDepth, 0);
+    }
+
+    TEST(LuaSerializationTest, DiagnosticShapeRetainsFailedDecodePrefix)
+    {
+        // Version, table start, short key "x", truncated number. Preserve the
+        // control exception and expose only the prefix visited before failure.
+        const std::string malformed{ char(0), char(3), char(0x21), 'x', char(0) };
+        sol::state control;
+        EXPECT_ERROR(LuaUtil::deserialize(control, malformed), "Unexpected end of serialized data.");
+        sol::state observed;
+        LuaUtil::DeserializeMetrics metrics;
+        EXPECT_ERROR(LuaUtil::deserializeWithMetrics(observed, malformed, metrics),
+            "Unexpected end of serialized data.");
+        EXPECT_EQ(metrics.values, 3);
+        EXPECT_EQ(metrics.tables, 1);
+        EXPECT_EQ(metrics.strings, 1);
+        EXPECT_EQ(metrics.stringBytes, 1);
+        EXPECT_EQ(metrics.maxDepth, 2);
+        EXPECT_ERROR(LuaUtil::deserializeWithMetrics(observed, std::string(1, char(1)), metrics),
+            "Incorrect version of Lua serialization format:");
+        EXPECT_EQ(metrics.values, 0);
+        EXPECT_EQ(metrics.maxDepth, 0);
+    }
+
     struct TestStruct1
     {
         double a, b;
@@ -274,6 +366,30 @@ namespace
         EXPECT_EQ(rx.b, 2.5);
         EXPECT_EQ(ry.a, 4);
         EXPECT_EQ(ry.b, 3);
+    }
+
+    TEST(LuaSerializationTest, DiagnosticShapeCustomSerializerMatchesControl)
+    {
+        sol::state lua;
+        sol::table table(lua, sol::create);
+        table["x"] = TestStruct1{ 1.5, 2.5 };
+        table["y"] = TestStruct2{ 4, 3 };
+        TestSerializer serializer;
+        const auto serialized = LuaUtil::serialize(table, &serializer);
+        const sol::table control = LuaUtil::deserialize(lua, serialized, &serializer);
+        LuaUtil::DeserializeMetrics metrics;
+        const sol::table observed = LuaUtil::deserializeWithMetrics(lua, serialized, metrics, &serializer);
+        EXPECT_EQ(observed.get<TestStruct1>("x").a, control.get<TestStruct1>("x").a);
+        EXPECT_EQ(observed.get<TestStruct1>("x").b, control.get<TestStruct1>("x").b);
+        EXPECT_EQ(observed.get<TestStruct2>("y").a, control.get<TestStruct2>("y").a);
+        EXPECT_EQ(observed.get<TestStruct2>("y").b, control.get<TestStruct2>("y").b);
+        EXPECT_EQ(metrics.values, 5);
+        EXPECT_EQ(metrics.tables, 1);
+        EXPECT_EQ(metrics.strings, 2);
+        EXPECT_EQ(metrics.stringBytes, 2);
+        EXPECT_EQ(metrics.maxDepth, 2);
+        EXPECT_EQ(metrics.customValues, 2);
+        EXPECT_EQ(metrics.customBytes, sizeof(TestStruct1) + sizeof(TestStruct2));
     }
 
 }

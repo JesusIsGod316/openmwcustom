@@ -12,6 +12,7 @@
 #include <components/misc/rng.hpp>
 
 #include <components/debug/debuglog.hpp>
+#include <components/resource/animationdependencies.hpp>
 #include <components/esm3/loadbody.hpp>
 #include <components/esm3/loadclas.hpp>
 #include <components/esm3/loadmgef.hpp>
@@ -59,6 +60,7 @@
 #include "../mwworld/worldmodel.hpp"
 
 #include "../mwrender/npcanimation.hpp"
+#include "../mwrender/actorutil.hpp"
 #include "../mwrender/objects.hpp"
 #include "../mwrender/renderinginterface.hpp"
 
@@ -451,6 +453,42 @@ namespace MWClass
             return Settings::models().mBaseanimkna.get();
 
         return Settings::models().mBaseanim.get();
+    }
+
+    void Npc::getAnimationSourcesToPreload(const MWWorld::ConstPtr& ptr, const VFS::Manager& vfs,
+        std::vector<VFS::Path::Normalized>& sources, std::size_t maximum)
+    {
+        if (sources.size() >= maximum) return;
+        const ESM::NPC& npc = *ptr.get<ESM::NPC>()->mBase;
+        const auto& store = *MWBase::Environment::get().getESMStore();
+        const ESM::Race* race = store.get<ESM::Race>().search(npc.mRace);
+        if (!race) return; // demand loading retains its original error behavior
+        const bool female = !npc.isMale();
+        const bool beast = (race->mData.mFlags & ESM::Race::Beast) != 0;
+        const auto* custom = ptr.getRefData().getCustomData();
+        const bool werewolf = custom && custom->asNpcCustomData().mNpcStats.isWerewolf();
+        const std::string_view base = werewolf ? std::string_view{} : Settings::models().mXbaseanim.get().value();
+        const std::string skeleton = Misc::ResourceHelpers::correctActorModelPath(
+            VFS::Path::toNormalized(MWRender::getActorSkeleton(false, female, beast, werewolf)), &vfs);
+        std::string model = skeleton;
+        bool customModel = false;
+        if (Resource::npcAnimationUsesCustomModel(false, werewolf, !npc.mModel.empty()))
+        {
+            const auto mesh = Misc::ResourceHelpers::correctMeshPath(npc.mModel.getNormalized());
+            customModel = !MWRender::isDefaultActorSkeleton(mesh);
+            model = Misc::ResourceHelpers::correctActorModelPath(mesh, &vfs);
+        }
+        Resource::visitNpcAnimationSources(base, skeleton, model, customModel,
+            Resource::npcAnimationUsesArgonianSwim(false, werewolf, beast, npc.mRace.contains("argonian")),
+            Settings::models().mXargonianswimkna.get().value(), [&](std::string_view source) {
+                if (sources.size() >= maximum) return false;
+                // Optional work ignores excessive paths; demand still accepts them.
+                if (source.size() > 4096) return true;
+                VFS::Path::Normalized normalized(source);
+                if (std::find(sources.begin(), sources.end(), normalized) == sources.end())
+                    sources.push_back(std::move(normalized));
+                return true;
+            });
     }
 
     void Npc::getModelsToPreload(const MWWorld::ConstPtr& ptr, std::vector<VFS::Path::NormalizedView>& models) const

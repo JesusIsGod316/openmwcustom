@@ -25,6 +25,11 @@ namespace MWRender
     {
     public:
         TransparentDepthBinCallback(Shader::ShaderManager& shaderManager, bool postPass);
+        // The caller supplies a compiled state that stays immutable for the
+        // callback lifetime; also permits isolated production GL validation.
+        TransparentDepthBinCallback(osg::StateSet* immutableState, bool postPass);
+        ~TransparentDepthBinCallback() override;
+        osg::ref_ptr<TransparentDepthBinCallback> ownedFrame(unsigned frameId) const;
 
         void drawImplementation(
             osgUtil::RenderBin* bin, osg::RenderInfo& renderInfo, osgUtil::RenderLeaf*& previous) override;
@@ -36,6 +41,7 @@ namespace MWRender
         std::array<std::unique_ptr<Stereo::MultiviewFramebufferResolve>, 2> mMultiviewResolve;
 
     private:
+        explicit TransparentDepthBinCallback(const TransparentDepthBinCallback& source, unsigned frameId);
         osg::ref_ptr<osg::StateSet> mStateSet;
         bool mPostPass;
     };

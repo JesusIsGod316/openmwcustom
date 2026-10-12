@@ -1,0 +1,153 @@
+OptimizedMW route recorder - guided setup only
+
+Start START-OptimizedMW-RecordRoute.bat. Choose 1 for the Seyda Neen route,
+2 for Balmora, or 0 to exit. Only this launcher adds the recorder scripts.
+Each launch copies the locked SaintJs profile and selected route save into its own
+private writable TestSessions/FrozenConfig_<id> directory. Regular gameplay
+configurations, saves, persistent Lua state, and input bindings stay separate.
+
+The existing route uses Configuration/Benchmark-SaintJs and the original copied
+Gallus Darkwind Wake up slot. Balmora uses Configuration/Benchmark-SaintJs-Balmora
+and the separate '_zZz__Wake_up - 1.omwsave' slot saved in Caius Cosades' House.
+The normal Balmora recorder loads that saved position directly. It never uses
+COC to move the selected starting point. For BOTH routes, walk outside BEFORE F6;
+Seyda Neen starts inside the Census office and Balmora inside Caius House.
+Choose an outdoor first-person view, keep collision enabled,
+let the loaded scene settle, then choose your exact view before pressing F6.
+The host rejects a missing/mismatched Balmora save binding. Developer smoke
+checks may use COC setup, clearly labelled as diagnostic rather than saved-location
+validation; those checks are not normal guided route recordings.
+
+The historical copied Wake up save may display an initial compatibility warning
+for two old OMW_lanterns content entries. This is a warning about that copied
+save's earlier content list; acknowledge it once to load the private test world.
+The recorder-generated Start.omwsave captures the current private content list.
+No warning suppression or original-save modification is performed.
+
+The recorder uses F6, F9, F10 and F11 alone. Do not hold Ctrl or Shift: those
+remain the normal sneak/run modifiers and are not required by the recorder.
+
+F6 - Begin acquisition. You must be OUTSIDE first, in first person.
+The recorder refuses an indoor/third-person start and remains ready while you
+correct it. It also waits for collision and hostile-policy readiness with no
+pending suppression or observed combat. Stand still, release movement keys, close menus and
+choose the exact starting view, then press F6 once. The recorder briefly holds
+movement/camera only during setup while creating a NEW PRIVATE world save of
+your chosen position, view, actors and world state. Wait for the Recording
+message before moving. Start.omwsave is hash-checked against that new private
+save and kept beside the route; the original Wake up save is not overwritten.
+Once Recording appears, hold the usual fixed view for 45 seconds.
+
+F9 - Add a numbered stage marker. Press F9 when beginning your walk after the
+fixed view, then use further markers for route sections if useful. F9 does not
+start recording. If you press it while ready, the recorder reminds you to press
+F6 first and keeps the game open so you can start correctly. F9 does not
+quicksave, pause, load, restart the recording or reset its clock. Walk the route
+without doors, menus, jump or combat. Autorun and run/sneak toggles are captured
+through their resolved movement/gait states; toggles themselves are not reissued
+during playback. Walking between outdoor
+cells is supported. Unsupported actions invalidate the capture immediately.
+The recorder does not force the 45-second hold or
+manufacture missing route steps.
+
+F10 - Finish normally. This closes the acquisition interval, drains pending
+observer/policy acknowledgments, exports the buffered records, then quits the
+private game naturally. Leave the game open until export completes. Successful
+export still requires replay validation before performance comparisons.
+
+F11 - Abort. This closes the recording as INCOMPLETE, exports available evidence,
+and quits naturally. It is never counted as an accepted route. Missing or
+failed observation, unexpected combat or an abnormal exit also remain invalid.
+
+Movement, look, activation and combat controls are observed during acquisition,
+not replaced by automatic playback. Apart from the brief starting-save setup
+hold, the recorder does not drive movement or the camera. The four recording
+keys are reserved only in this private profile; regular gameplay keeps its
+original key bindings and Lua state.
+
+Before Ready, the private recorder disables automatic idle Vanity orbit and
+checks that control switch. The fixed-view hold therefore keeps ordinary
+movement/look/view controls without the automatic idle orbit. This private
+setup change is recorded; it does not change regular gameplay. Exact view
+replay still needs separate validation before performance comparisons.
+Cell changes and resolved movement/look inputs are recorded. Menus, doors and
+activation are outside the current playback contract. Console
+movement or teleportation during the route must not be used for a comparison.
+The copied native F6/F9/F10/F11 bindings are parked on unused F21-F24 keys in
+the private profile to prevent accidental quickload, debug or HUD changes.
+Keeping explicit parked bindings prevents the native loader restoring defaults.
+Original bindings are preserved. Preparation refuses occupied parking keys.
+F8 remains unchanged because a mod uses Shift+F8 for music.
+
+New outdoor recordings explicitly capture mod camera layers using the
+recorded_additive_first_person_v1 contract. Fatigue breathing, head bobbing and
+other finite extra yaw/pitch/roll and first-person offsets may remain active.
+All five public getter/setter pairs are checked before Ready. Recording reads
+those values without writing them or changing mod settings. Angles must stay
+within +/- pi radians; each offset axis must stay within +/- 1024 world units.
+Invalid values or unavailable APIs still stop the capture. SUMMARY.json gives
+finish_reason and camera_guard with the exact offending channel and safe snapshot.
+Normal first-person/exterior, collision, combat and duration guards still apply.
+The matching cohort is recorded in SESSION and READY/START/FINISH metadata.
+Historical recordings without it remain legacy controls and are not upgraded.
+
+The private combat policy uses RouteRecorder/encounter-policy.json to explicitly
+disable 32 creature records from the checked effective encounter-list closure.
+That includes rats, kwama foragers, scribs, parasol spiders, netches and their
+listed variants, rather than assuming the observed rat always spawns. The list
+bypasses Fight discovery and is tied to the exact frozen openmw.cfg hash plus
+the hashes of 137 audited content files; changing those files requires a new
+encounter audit. Physical Maps, Clocks and Compass, and Hip Lanterns from Belt
+Lanterns are user development exceptions: their current entry-point hashes are
+recorded at preparation, but editing their versions does not block the recorder.
+They remain enabled. Those observations do not re-audit future actor/cell changes.
+Both route profiles
+use it. These listed creature species are suppressed throughout the private
+world, even if an individual is passive. Ordinary townspeople and their AI stay
+present. This covers the checked encounter group, not every possible scripted
+enemy or neighboring active cell. Other discovered creatures with current
+modified Fight of 90 or above are also suppressed. Exact references are recorded.
+Fight is a bounded heuristic, not a complete classification of all scripted/modded enemies or
+hostile NPCs; identified references can be added later. Unexpected combat
+invalidates the route. Mercy Combat AI stays installed. Gameplay profiles are
+unaffected by these private calibration changes. This does not create a combat
+performance benchmark or freeze every town actor's later AI movement.
+Disabling is queued and must be confirmed in a later update; the explicit record
+list does not prove that every mod callback or combat start was preempted.
+Observed combat and suppressions still pending at export are reported separately.
+Earlier INCOMPLETE captures keep their original qualification and evidence.
+
+Fresh outdoor recordings use a private [Game] player movement ignores animation
+= true setting, matching default playback. Visual animations remain enabled;
+ordinary physics and collision determine displacement. This overrides only the
+derived private profile, never the frozen baseline or normal gameplay settings.
+The movement cohort and read-only scope checks are recorded. The optional
+-AnimationMovement developer control explicitly sets that private value false
+and is not admitted as a fresh Seyda native replay recording. Legacy generic
+constructor and startup smoke paths remain separate.
+
+Fresh route acquisition is bounded to 180 simulation seconds TOTAL, including
+the 45-second fixed view, and 60,000 records / 16 MiB. Finish with F10 before
+the duration limit; advance warnings do not extend it. A separate 300-second
+wall-clock guard bounds stalls; it does not extend the 180-second route timeline.
+Buffer
+overflow, missing samples or finish marker, unexpected combat, invalid clocks,
+or abnormal game exit leave an INCOMPLETE report. A recording that exports
+successfully is RECORDED_NOT_REPLAY_VALIDATED. Automatic replay, testing
+matrices, route fidelity, and performance acceptance are separate later work.
+
+Outputs are Benchmarks/Routes/<existing|balmora>_<id>/SESSION.json,
+route.jsonl, SUMMARY.json and game stdout/stderr. The summary hashes the route
+and records exact copied save/configuration/recorder/executable identities.
+These route-setup measurements are not benchmark frame-time measurements.
+
+The frozen installed SaintJs assets are referenced, not duplicated. Keep their
+asset folders installed. Default checks cover path and length, not same-size
+edits or added files. The fixed Windows renderer cache remains shared.
+
+Developer checks: -PrepareOnly creates and validates the private profile but
+does not launch a game. -Smoke -Route existing|balmora records a short bounded
+startup check and quits naturally. A smoke is not a recorded user route. The
+host never force-kills OpenMW; a timeout preserves the private game/session.
+-ValidationWindow uses windowed 1280x720 for startup inspection only, explicitly
+recorded in the manifest. It is not a performance-comparison configuration.

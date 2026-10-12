@@ -218,6 +218,8 @@ namespace MWLua
         bool mRunningSynchronizedUpdates = false;
         LuaUtil::ScriptsConfiguration mConfiguration;
         LuaUtil::LuaState mLua;
+        std::uint64_t mProtectedWorkRows = 0;
+        std::uint64_t mVmWorkRows = 0;
         std::unique_ptr<V320LuaProfilerRecorder> mV320LuaProfilerRecorder;
         LuaUi::ResourceManager mUiResourceManager;
         std::map<std::string, sol::object> mLocalPackages;

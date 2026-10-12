@@ -9,6 +9,35 @@ namespace
 {
     using namespace testing;
 
+    TEST(LuaUtilStorageTest, LargeCopiesPreserveReadonlyAndValueSemantics)
+    {
+        LuaUtil::LuaState luaState{ nullptr, nullptr };
+        luaState.protectedCall([](LuaUtil::LuaView& view) {
+            sol::state_view& lua = view.sol();
+            LuaUtil::LuaStorage::initLuaBindings(view);
+            LuaUtil::LuaStorage storage;
+            storage.setActive(true);
+            lua["large"] = storage.getMutableSection(lua, "large-api-fixture");
+            // Large enough to exercise actual encode/decode and copy service,
+            // rather than merely inspecting a source-instrumentation pattern.
+            lua.safe_script(R"(
+                local payload = string.rep('x', 16 * 1024 * 1024)
+                large:set('payload', {value=payload, count=17})
+                local ro = large:get('payload')
+                assert(ro.value == payload and ro.count == 17)
+                local copy = large:getCopy('payload')
+                copy.count = 99
+                assert(large:get('payload').count == 17)
+                local all = large:asTable()
+                assert(all.payload.value == payload and all.payload.count == 17)
+                all.payload.count = -1
+                assert(large:get('payload').count == 17)
+                large:reset({payload={value=payload, count=23}})
+                assert(large:get('payload').count == 23)
+            )");
+        });
+    }
+
     template <typename T>
     T get(sol::state_view& lua, std::string luaCode)
     {

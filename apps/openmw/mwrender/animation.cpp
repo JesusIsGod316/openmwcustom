@@ -1,4 +1,6 @@
+#include <components/debug/hitchtrace.hpp>
 #include "animation.hpp"
+#include <components/resource/animationdependencies.hpp>
 #include "hybridanimationtimemap.hpp"
 #ifdef OPENMW_ENABLE_V4_VULKAN_RUNTIME
 #include "v4persistentobject.hpp"
@@ -691,6 +693,26 @@ namespace MWRender
     void Animation::loadAdditionalAnimations(
         VFS::Path::NormalizedView model, const std::string& baseModel, bool hybridVisual)
     {
+        Debug::HitchTrace::Scope discover("animation.additional_sources", {}, model.value());
+        if (Resource::animationDependencyPreloadEnabled() || Resource::animationSourcePlanEnabled())
+        {
+            std::uint64_t sources = 0;
+            std::uint64_t scanned = 0;
+            discover.retain();
+            discover.setMetric(0, "sources", 0);
+            discover.setMetric(1, "scanned", 0);
+            discover.setMetric(2, "candidate_discovery", 1);
+            mResourceSystem->getKeyframeManager()->visitAdditionalSources(model,
+                [&](VFS::Path::NormalizedView name) {
+                    discover.setMetric(0, "sources", ++sources);
+                    addSingleAnimSource(name, baseModel, hybridVisual);
+                    return true;
+                }, [&] {
+                    discover.setMetric(1, "scanned", ++scanned);
+                    return true;
+                }, [&] { return Resource::ResourceSystem::speculativeSample(mResourceSystem); });
+            return;
+        }
         constexpr VFS::Path::NormalizedView meshes("meshes/");
         if (!model.value().starts_with(meshes.value()))
             return;
@@ -714,6 +736,7 @@ namespace MWRender
 
     void Animation::flushV325PendingControllerClones()
     {
+        Debug::HitchTrace::Scope batch("animation.clone_batch", Debug::HitchTrace::CpuTiming::Scoped);
         if (mV325PendingControllerClones.empty())
             return;
 
@@ -730,7 +753,9 @@ namespace MWRender
         bool parallelPrepared = false;
         if (pending.size() >= minParallelControllers)
         {
+            const unsigned traceFrame = Debug::V3HitchTelemetry::currentFrame();
             auto cloneRange = [&](std::size_t begin, std::size_t end) {
+                Debug::HitchTrace::Scope chunk("animation.clone_chunk", {}, {}, traceFrame);
                 for (std::size_t i = begin; i < end; ++i)
                 {
                     osg::ref_ptr<SceneUtil::KeyframeController> cloned
@@ -757,9 +782,13 @@ namespace MWRender
         }
 
         // Main-thread deterministic publication in exact discovery/source order.
-        for (std::size_t i = 0; i < pending.size(); ++i)
-            pending[i].mAnimSource->mControllerMap[pending[i].mBlendMask].insert(
-                std::make_pair(pending[i].mBoneName, prepared[i]));
+        {
+            Debug::HitchTrace::Scope detail("animation.clone_publication");
+            for (std::size_t i = 0; i < pending.size(); ++i)
+                pending[i].mAnimSource->mControllerMap[pending[i].mBlendMask].insert(
+                    std::make_pair(pending[i].mBoneName, prepared[i]));
+        }
+
     }
 
     void Animation::beginAnimSourceBatch()
@@ -780,25 +809,30 @@ namespace MWRender
         if (mAnimSourceBatchDepth != 0)
             return;
 
-        // Publish all deferred controller clones before the final actor-wide source
-        // assignment visitor. This preserves the historical fully-built state at batch exit.
-        flushV325PendingControllerClones();
-
-        if (!mAnimSourceBatchNeedsControllerAssignment)
-            return;
-
-        mAnimSourceBatchNeedsControllerAssignment = false;
-        if (mObjectRoot)
         {
-            SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);
-            mObjectRoot->accept(assignVisitor);
+            Debug::HitchTrace::Scope detail("animation.batch_finalize", Debug::HitchTrace::CpuTiming::Scoped);
+            // Publish all deferred controller clones before the final actor-wide source
+            // assignment visitor. This preserves the historical fully-built state at batch exit.
+            flushV325PendingControllerClones();
+
+            if (!mAnimSourceBatchNeedsControllerAssignment)
+                return;
+
+            mAnimSourceBatchNeedsControllerAssignment = false;
+            if (mObjectRoot)
+            {
+                SceneUtil::AssignControllerSourcesVisitor assignVisitor(mAnimationTimePtr[0]);
+                mObjectRoot->accept(assignVisitor);
+            }
         }
+
     }
 
     void Animation::addAnimSource(std::string_view model, const std::string& baseModel)
     {
         Debug::V324DeepTelemetry::Scope v324DeepScope("animation", "add_anim_source");
 
+        Debug::HitchTrace::Scope hitchControllers("animation.controller_setup", {}, model);
         Debug::V32RendererProfiling::ScopedPhase v32ControllerTimer(
             Debug::V32RendererProfiling::Phase::ControllerSetup);
         constexpr VFS::Path::ExtensionView kf("kf");
@@ -806,7 +840,9 @@ namespace MWRender
 
         VFS::Path::Normalized kfname(model);
 
-        if (kfname.extension() == nif)
+        if (Resource::animationDependencyPreloadEnabled())
+            kfname = Resource::animationKeyframePath(kfname);
+        else if (kfname.extension() == nif)
             kfname.changeExtension(kf);
 
         addSingleAnimSource(kfname, baseModel);
@@ -838,6 +874,7 @@ namespace MWRender
     {
         Debug::V324DeepTelemetry::Scope v324DeepScope("animation", "add_single_anim_source");
 
+        Debug::HitchTrace::Scope single("animation.single_source", {}, kfname.value());
         Debug::V36ControllerTrace::Scope v36ControllerTrace(kfname.value(), baseModel);
         if (!mResourceSystem->getVFS()->exists(kfname))
             return nullptr;
@@ -859,6 +896,7 @@ namespace MWRender
 
         const NodeMap* nodeMapPtr = nullptr;
         {
+            Debug::HitchTrace::Scope nodes("animation.node_map", Debug::HitchTrace::CpuTiming::Scoped);
             Debug::V36ControllerTrace::PhaseScope v36NodeMap(
                 v36ControllerTrace, Debug::V36ControllerTrace::Phase::NodeMap);
             nodeMapPtr = &getNodeMap();
@@ -866,6 +904,7 @@ namespace MWRender
         const NodeMap& nodeMap = *nodeMapPtr;
         const auto& controllerMap = animsrc->mKeyframes->mKeyframeControllers;
         {
+            Debug::HitchTrace::Scope bind("animation.clone_bind", Debug::HitchTrace::CpuTiming::Scoped);
             Debug::V36ControllerTrace::PhaseScope v36ControllerClone(
                 v36ControllerTrace, Debug::V36ControllerTrace::Phase::ControllerClone);
 
@@ -991,6 +1030,7 @@ namespace MWRender
 
         if (!hybridVisual)
         {
+            Debug::HitchTrace::Scope assign("animation.source_assign");
             Debug::V36ControllerTrace::PhaseScope v36SourceAssign(
                 v36ControllerTrace, Debug::V36ControllerTrace::Phase::SourceAssign);
             if (mAnimSourceBatchDepth != 0)
@@ -1030,6 +1070,7 @@ namespace MWRender
         // Get the blending rules
         if (!hybridVisual && Settings::game().mSmoothAnimTransitions)
         {
+            Debug::HitchTrace::Scope blend("animation.blend_rules", Debug::HitchTrace::CpuTiming::Scoped);
             constexpr VFS::Path::ExtensionView yaml("yaml");
 
             // Note, even if the actual config is .json - we should send a .yaml path to AnimBlendRulesManager, the

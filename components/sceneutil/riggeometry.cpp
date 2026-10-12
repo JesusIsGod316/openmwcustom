@@ -1,5 +1,7 @@
 #include "riggeometry.hpp"
+#include "temporalmotionidentity.hpp"
 #include "dynamicstream.hpp"
+#include "frozenrigdeformation.hpp"
 
 #include <osg/MatrixTransform>
 
@@ -38,6 +40,8 @@ namespace SceneUtil
 
         mSourceGeometry = sourceGeometry;
         mGeometryEvaluated = false;
+        osg::ref_ptr<TemporalMotionIdentity> motionIdentity = temporalDynamicMotionEnabled()
+            ? new TemporalMotionIdentity : nullptr;
 
         for (unsigned int i = 0; i < 2; ++i)
         {
@@ -50,6 +54,7 @@ namespace SceneUtil
             // - Arrays that we add or replace in the cloned geometry must be explicitely forbidden from reusing
             // BufferObjects of the original geometry. (ensured by vbo below)
             mGeometry[i] = new osg::Geometry(from, osg::CopyOp::SHALLOW_COPY);
+            if (motionIdentity) installTemporalMotionIdentity(*mGeometry[i], motionIdentity);
             mGeometry[i]->getOrCreateUserDataContainer()->addUserObject(new Resource::TemplateRef(mSourceGeometry));
 
             osg::Geometry& to = *mGeometry[i];
@@ -195,6 +200,19 @@ namespace SceneUtil
         else
             transform = mData->mTransform;
 
+        // Optional coarse native kernel. Existing double-buffered CPU geometry
+        // and the renderer completion barrier remain the publication owners.
+        // Only matrices and immutable index ranges are lent to reserved workers;
+        // they never read live bones, skeletons, controllers or scene graph state.
+        std::vector<FrozenRigDeformation::Range> frozenRanges;
+        bool freeze = FrozenRigDeformation::enabled() && positionSrc->size() >= 2048
+            && positionSrc->size() <= 65536 && mData->mInfluences.size() <= 512;
+        if (freeze)
+        {
+            try { frozenRanges.reserve(mData->mInfluences.size()); }
+            catch (const std::bad_alloc&) { freeze = false; }
+        }
+
         for (const auto& [influences, vertices] : mData->mInfluences)
         {
             osg::Matrixf resultMat(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1);
@@ -212,6 +230,12 @@ namespace SceneUtil
 
             resultMat *= transform;
 
+            if (freeze)
+            {
+                frozenRanges.push_back(FrozenRigDeformation::Range{ resultMat, vertices });
+                continue;
+            }
+
             for (unsigned short vertex : vertices)
             {
                 (*positionDst)[vertex] = resultMat.preMult((*positionSrc)[vertex]);
@@ -226,6 +250,17 @@ namespace SceneUtil
                     (*tangentDst)[vertex] = osg::Vec4f(transformedTangent, srcTangent.w());
                 }
             }
+        }
+
+        if (freeze)
+        {
+            const FrozenRigDeformation::Output output{
+                *positionSrc, normalSrc, tangentSrc, *positionDst, normalDst, tangentDst };
+            Debug::HitchTrace::Scope detail("deformation.frozen_rig_kernel", Debug::HitchTrace::CpuTiming::Scoped);
+            if (!FrozenRigDeformation::run(frozenRanges, output))
+                for (const auto& range : frozenRanges)
+                    for (const auto vertex : range.vertices)
+                        FrozenRigDeformation::evaluateVertex(range, vertex, output);
         }
 
         positionDst->dirty();
@@ -322,7 +357,11 @@ namespace SceneUtil
         }
         else
             skinRoot++;
-        for (auto it = skeletonRoot; it != skinRoot; ++it)
+        // A direct skeleton child can have the same (including empty) name
+        // as its parent. The fallback skinRoot then precedes skeletonRoot;
+        // there are no intervening transforms, rather than a range extending
+        // past nodePath.end(). evaluateGeometry supports direct children.
+        for (auto it = skeletonRoot; it < skinRoot; ++it)
         {
             const osg::Node* node = *it;
             if (const osg::Transform* trans = node->asTransform())

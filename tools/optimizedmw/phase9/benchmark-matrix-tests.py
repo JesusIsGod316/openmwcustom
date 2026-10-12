@@ -1,0 +1,558 @@
+"""Clock, context and pacing checks independent of game timing noise."""
+import importlib.util
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+ROOT=Path(__file__).parent
+spec=importlib.util.spec_from_file_location('matrix',ROOT/'benchmark_matrix.py')
+matrix=importlib.util.module_from_spec(spec);spec.loader.exec_module(matrix)
+
+
+def runtime_fixture(game):
+    fixture_spec=importlib.util.spec_from_file_location('runtime_fixture',ROOT/'runtime-dependencies-tests.py')
+    fixture=importlib.util.module_from_spec(fixture_spec);fixture_spec.loader.exec_module(fixture)
+    # Valid metadata only; the mocked launcher never executes these fixtures.
+    (game/'openmw.exe').write_bytes(fixture.pe())
+    plugins=game/'osgPlugins-fixture';plugins.mkdir()
+    (plugins/'osgdb_dds.dll').write_bytes(fixture.pe())
+
+
+class Benchmarks(unittest.TestCase):
+    def test_visual_handoff_requires_exact_terminal_bounded_retirement(self):
+        line=('OptimizedMW unused visual handoff: enabled=1 queued=3 completed=2 skipped=1 errors=0 '
+              'enqueue_errors=0 templates=1 shared_states=2 images=1 scanned=64 '
+              'scope=cache_only_owner_counts_not_process_RAM_savings\n')
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            (root/'openmw.log').write_text(line)
+            self.assertTrue(matrix.engagement(root,{'visual cache handoff':'true'})['all_requested_positive'])
+            for bad in ('',line+line,line.replace('scanned=64','scanned=769'),line.replace('templates=1','templates=9'),
+                        line.replace('queued=3','queued=4'),line.replace('shared_states=2','shared_states=unknown')):
+                (root/'openmw.log').write_text(bad)
+                with self.assertRaises(ValueError):matrix.engagement(root,{'visual cache handoff':'true'})
+            for old,new in (('enabled=1','enabled=0'),('enqueue_errors=0','enqueue_errors=1')):
+                (root/'openmw.log').write_text(line.replace(old,new))
+                self.assertFalse(matrix.engagement(root,{'visual cache handoff':'true'})['all_requested_positive'])
+            (root/'openmw.log').write_text(line.replace('templates=1 shared_states=2 images=1','templates=0 shared_states=0 images=0'))
+            self.assertFalse(matrix.engagement(root,{'visual cache handoff':'true'})['all_requested_positive'])
+    def test_loading_nif_gate_requires_real_retirement_and_clean_owned_completion(self):
+        line = ('OptimizedMW loading NIF maintenance: enabled=1 requests=10 queued=3 completed=2 skipped=1 '
+                'errors=0 scanned=8 removed=1 released_charge_bytes=64 '
+                'enqueue_diagnostic_failures_all_queues=0 scope=parsed_cache_only_not_process_RAM\n')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for old, new in (('enabled=1', 'enabled=0'), ('removed=1', 'removed=0'),
+                             ('errors=0', 'errors=1'), ('queues=0', 'queues=1')):
+                (root/'openmw.log').write_text(line.replace(old, new))
+                self.assertFalse(matrix.engagement(root, {'loading nif maintenance':'true'})['all_requested_positive'])
+            (root/'openmw.log').write_text(line)
+            result = matrix.engagement(root, {'loading nif maintenance':'true'})
+            self.assertTrue(result['all_requested_positive'])
+            self.assertEqual(result['loading_nif_lifetime_work']['counts']['removed'], 1)
+            self.assertIn('logical charges', result['loading_nif_lifetime_work']['limit'])
+            for bad in ('', line+line, line.replace('removed=1', 'removed=unknown'),
+                        line.replace('scanned=8', 'scanned=257'), line.replace('removed=1', 'removed=17'),
+                        line.replace('queued=3', 'queued=1'), line.replace('requests=10', 'requests=2'),
+                        line.replace('removed=1', 'removed=18446744073709551616')):
+                (root/'openmw.log').write_text(bad)
+                with self.assertRaises(ValueError):
+                    matrix.engagement(root, {'loading nif maintenance':'true'})
+
+    def test_memory_diagnostics_are_explicit_and_typed(self):
+        self.assertEqual(matrix.memory_diagnostic_arguments({}),[])
+        self.assertEqual(matrix.memory_diagnostic_arguments({'memory_diagnostics':False}),[])
+        self.assertEqual(matrix.memory_diagnostic_arguments({'memory_diagnostics':True}),['-MemoryDiagnostics'])
+        for value in ('false','true',None,1):
+            with self.assertRaisesRegex(ValueError,'JSON boolean'):
+                matrix.memory_diagnostic_arguments({'memory_diagnostics':value})
+        self.assertEqual(matrix.memory_diagnostic_arguments({'memory_diagnostics':True,'memory_guard':True}),['-MemoryDiagnostics','-MemoryGuard'])
+        for case in ({'memory_guard':True},{'memory_diagnostics':True,'memory_guard':'true'}):
+            with self.assertRaisesRegex(ValueError,'memory_guard'):
+                matrix.memory_diagnostic_arguments(case)
+
+    def test_build_c_flags_require_real_measured_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root/'openmw.log').write_text('startup installed=99 protected_reuses=99\n')
+            requested = {'paged static vertex arrays':'true', 'protected call reuse':'true'}
+            self.assertFalse(matrix.engagement(root, requested)['all_requested_positive'])
+            vao = {'phases': {'moving': {'counts': {'static_vao_draws':10, 'static_vao_layout_reuses':0}}}}
+            lua = {'enabled':True, 'phases': {'moving': {'counts': {'reused_total':10}}}}
+            self.assertFalse(matrix.engagement(root, requested, work=vao, lua_work=lua)['all_requested_positive'])
+            vao['phases']['moving']['counts']['static_vao_layout_reuses'] = 1
+            self.assertTrue(matrix.engagement(root, requested, work=vao, lua_work=lua)['all_requested_positive'])
+            lua['enabled'] = False
+            self.assertFalse(matrix.engagement(root, requested, work=vao, lua_work=lua)['all_requested_positive'])
+
+    def test_image_publication_requires_actual_decoded_loser_release(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            policy = 'OptimizedMW canonical image publication policy: enabled=1 scope=completed_immutable_exact_source_publication_only\n'
+            supplemental = 'OptimizedMW canonical image publication: enabled=1; concurrent decoded owners only, not a whole-process RAM ceiling\n'
+            final = ('OptimizedMW canonical image publication: ordinary_enabled=1 publications=7 winners={images} '
+                     'discarded_images={images} discarded_payload_bytes_cumulative={payload} revision_declines=0 '
+                     'epoch_declines=0 ineligible=0 lookup_revision_misses=0 '
+                     'scope=completed_decoder_losers_not_resident_RAM_savings\n')
+            (root/'openmw.log').write_text(policy+supplemental+final.format(images=0,payload=0))
+            self.assertFalse(matrix.engagement(root, {'canonical image publication':'true'})['all_requested_positive'])
+            (root/'openmw.log').write_text(policy+supplemental+final.format(images=3,payload=64))
+            result=matrix.engagement(root, {'canonical image publication':'true'})
+            self.assertTrue(result['all_requested_positive'])
+            self.assertEqual(result['image_publication_lifetime_work']['scope'],'game_lifetime_completed_decoder_losers')
+            (root/'openmw.log').write_text(policy+supplemental)
+            with self.assertRaises(ValueError):
+                matrix.engagement(root, {'canonical image publication':'true'})
+
+    def test_temporal_input_modes_do_not_silently_fall_back_to_control(self):
+        self.assertEqual(matrix.temporal_arguments({}), [])
+        self.assertEqual(matrix.temporal_arguments({'temporal_mode':'Off'}), [])
+        for mode in ('Camera', 'Dynamic'):
+            self.assertEqual(matrix.temporal_arguments({'temporal_mode':mode}), ['-AutomatedTemporalMode',mode])
+        for mode in ('DLSS', True, None, 'dynamic'):
+            with self.assertRaisesRegex(ValueError, 'Unknown automatic temporal'):
+                matrix.temporal_arguments({'temporal_mode':mode})
+
+    def test_private_timeout_without_run_receipt_keeps_actual_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            (path/'Desktop').mkdir()
+            (path/'Desktop'/'DESKTOP-RECEIPT.json').write_text(json.dumps({
+                'timed_out':True, 'exit_code':124, 'elapsed_seconds':600.6375}))
+            with self.assertRaisesRegex(ValueError, 'timed out after 600.6375 seconds'):
+                matrix.completed_run_receipts(path, 124)
+            # A partial receipt must never override a timeout or become timing evidence.
+            (path/'RUN.json').write_text(json.dumps({'exit_code':0, 'launch_failure':None}))
+            with self.assertRaisesRegex(ValueError, 'exists but is not qualified'):
+                matrix.completed_run_receipts(path, 124)
+
+    def test_private_failure_and_missing_success_receipts_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            (path/'Desktop').mkdir()
+            desktop = path/'Desktop'/'DESKTOP-RECEIPT.json'
+            desktop.write_text(json.dumps({'timed_out':False, 'exit_code':2}))
+            with self.assertRaisesRegex(ValueError, 'Private launcher failed with exit code 2'):
+                matrix.completed_run_receipts(path, 2)
+            desktop.write_text(json.dumps({'timed_out':False, 'exit_code':0}))
+            with self.assertRaisesRegex(ValueError, 'without an automatic run receipt'):
+                matrix.completed_run_receipts(path, 0)
+            receipt = path/'RUN.json'
+            receipt.write_text(json.dumps({'exit_code':1, 'launch_failure':'route failed'}))
+            with self.assertRaisesRegex(ValueError, 'game exit code 1; launcher error route failed'):
+                matrix.completed_run_receipts(path, 0)
+            receipt.write_text(json.dumps({'exit_code':0, 'launch_failure':None}))
+            returned, _ = matrix.completed_run_receipts(path, 0)
+            self.assertEqual(returned['exit_code'], 0)
+
+    def test_matrix_preserves_timeout_case_without_starting_game(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            game = root/'game'; game.mkdir()
+            for name in ('openmw.exe', 'BUILD-IDENTITY.json', 'symbols.pdb'):
+                (game/name).write_bytes(b'offline test input; never executed')
+            runtime_fixture(game)
+            catalog = root/'catalog.json'
+            catalog.write_text(json.dumps({'routes':[{'id':'Balmora', 'inputs':[],
+                'pinned_acquisition':str(root/'unused_route')}]}))
+            plan = root/'plan.json'
+            plan.write_text(json.dumps({'game_directory':str(game), 'route_catalog':str(catalog),
+                'symbols':str(game/'symbols.pdb'), 'powershell':'not-executed',
+                'cases':[{'id':'TimeoutCase', 'route':'Balmora'}]}))
+            output = root/'output'
+
+            def timeout_launcher(executable, arguments, working, desktop_path, deadline):
+                self.assertEqual(executable, 'not-executed')
+                desktop_path.mkdir()
+                matrix.benchmark_desktop.save(desktop_path/'DESKTOP-RECEIPT.json', {
+                    'timed_out':True, 'exit_code':124, 'elapsed_seconds':600.6375})
+                return 124
+
+            with patch.object(matrix.benchmark_desktop, 'launch', side_effect=timeout_launcher) as launch:
+                with self.assertRaisesRegex(ValueError, 'Private launcher timed out'):
+                    matrix.run_matrix(plan, output)
+                launch.assert_called_once()
+            state = matrix.read_json(output/'MATRIX.json')
+            self.assertEqual(state['state'], 'failed')
+            self.assertEqual(state['runs'], [])
+            failure = matrix.read_json(output/'01_TimeoutCase'/'FAILED-RUN.json')
+            self.assertEqual(failure, state['failed_run'])
+            self.assertEqual(failure['state'], 'FAILED_NOT_QUALIFIED')
+            self.assertFalse(failure['receipt_exists'])
+            self.assertTrue(failure['desktop_receipt_exists'])
+            self.assertNotIn('No such file', failure['error'])
+
+    def test_low_ms_jitter_and_local_spikes(self):
+        stable=matrix.pacing([5.]*100)
+        jitter=matrix.pacing([4.,6.]*50)
+        self.assertEqual(jitter['over_16_67'],0)
+        self.assertGreater(jitter['adjacent_change_p95_ms'],stable['adjacent_change_p95_ms'])
+        self.assertGreater(jitter['mad_ms'],stable['mad_ms'])
+        spike=matrix.pacing([5.]*50+[9.]+[5.]*49)
+        self.assertEqual(spike['relative_spikes'],1)
+        self.assertEqual(spike['relative_excess_ms'],4)
+
+    def test_matrix_requires_requested_indirect_work_across_settings_categories(self):
+        for avoided in (0, 11):
+            with self.subTest(avoided=avoided), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); game = root/'game'; game.mkdir()
+                for name in ('openmw.exe', 'BUILD-IDENTITY.json', 'symbols.pdb'):
+                    (game/name).write_bytes(b'offline test input; never executed')
+                runtime_fixture(game)
+                catalog = root/'catalog.json'
+                catalog.write_text(json.dumps({'routes':[{'id':'Balmora', 'inputs':[],
+                    'pinned_acquisition':str(root/'unused_route')}]}))
+                plan = root/'plan.json'
+                plan.write_text(json.dumps({'game_directory':str(game), 'route_catalog':str(catalog),
+                    'symbols':str(game/'symbols.pdb'), 'powershell':'not-executed',
+                    'cases':[{'id':'IndirectReuse', 'route':'Balmora', 'architecture_mask':20,
+                        'settings':[{'section':'Optimizations', 'key':'indirect command reuse', 'value':'true'}]}]}))
+                profile = root/'profile'; profile.mkdir()
+                (profile/'openmw.log').write_text('OptimizedMW automatic benchmark: master_volume=0\n'
+                    'OptimizedMW opaque indirect pipeline: built=1 draws=12 commands=24 dispatches=0 nested_built=1\n'
+                    f'OptimizedMW indirect command reuse: uploads=1 uploaded_bytes=60 command_uploads_avoided={avoided}\n')
+                archive = root/'capture.zip'; archive.write_bytes(b'fixture evidence; not a real game capture')
+                output = root/'output'
+
+                def fixture_launcher(executable, arguments, working, desktop_path, deadline):
+                    self.assertEqual(executable, 'not-executed')
+                    desktop_path.mkdir()
+                    matrix.benchmark_desktop.save(desktop_path/'DESKTOP-RECEIPT.json', {
+                        'timed_out':False, 'exit_code':0, 'owned_render_window_observed':True,
+                        'input_desktop_unchanged':True, 'input_desktop_owned_visible_windows':[]})
+                    matrix.benchmark_desktop.save(desktop_path.parent/'RUN.json', {
+                        'exit_code':0, 'launch_failure':None, 'settings_restore_verified':True,
+                        'environment_restore_verified':True, 'profile_directory':str(profile),
+                        'playback':{'protected_inputs_unchanged':True},
+                        'zip':matrix.identity(archive)})
+                    return 0
+
+                with patch.object(matrix.benchmark_desktop, 'launch', side_effect=fixture_launcher) as launch, \
+                        patch.object(matrix, 'route_quality', return_value={'fixture_only':True}), \
+                        patch.object(matrix, 'analyze', return_value={'fixture_only':True}):
+                    if avoided:
+                        matrix.run_matrix(plan, output)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'Candidate was inert'):
+                            matrix.run_matrix(plan, output)
+                    launch.assert_called_once()
+                state = matrix.read_json(output/'MATRIX.json')
+                positive = state['runs'][0]['engagement']['positive_work']
+                self.assertEqual(positive, {'indirect_draws':True,'indirect_command_reuse':bool(avoided)})
+                self.assertEqual(state['state'], 'completed' if avoided else 'failed')
+
+    def test_external_storage_receipt_keeps_raw_mutations_and_requires_approval(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = str(Path(temporary)/'global_storage.bin')
+            review = {'policy':'allow_external_regular_lua_storage_updates', 'accepted':True,
+                'unchanged':False, 'allow_external_lua_storage_changes':True,
+                'isolated_private_profile':True, 'blocked_change_count':0, 'changes':[{
+                    'before':{'path':path, 'exists':True, 'sha256':'a'*64, 'bytes':1},
+                    'after':{'path':path, 'exists':True, 'sha256':'b'*64, 'bytes':1},
+                    'accepted':True, 'reason':'approved_external_lua_storage_update'}]}
+            receipt = {'playback':{'protected_inputs_unchanged':False,
+                'protected_inputs_accepted':True, 'protected_input_review':review}}
+            with self.assertRaisesRegex(ValueError, 'without explicit'):
+                matrix.protected_input_qualification(receipt)
+            self.assertIs(matrix.protected_input_qualification(receipt, True), review)
+            self.assertFalse(receipt['playback']['protected_inputs_unchanged'])
+            review['isolated_private_profile'] = False
+            with self.assertRaisesRegex(ValueError, 'isolated-profile review'):
+                matrix.protected_input_qualification(receipt, True)
+            review['isolated_private_profile'] = True
+            review['changes'][0]['before']['path'] = str(Path(temporary)/'settings.cfg')
+            review['changes'][0]['after']['path'] = review['changes'][0]['before']['path']
+            with self.assertRaisesRegex(ValueError, 'unapproved change'):
+                matrix.protected_input_qualification(receipt, True)
+            review['changes'] = []
+            with self.assertRaisesRegex(ValueError, 'exact changed identities'):
+                matrix.protected_input_qualification(receipt, True)
+
+    def test_matrix_forwards_storage_approval_only_when_explicit(self):
+        for allowed in (False, True, 'false'):
+            with self.subTest(allowed=allowed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary); game = root/'game'; game.mkdir()
+                for name in ('openmw.exe', 'BUILD-IDENTITY.json', 'symbols.pdb'):
+                    (game/name).write_bytes(b'offline input; never executed')
+                runtime_fixture(game)
+                catalog = root/'catalog.json'
+                catalog.write_text(json.dumps({'routes':[{'id':'Balmora', 'inputs':[], 'pinned_acquisition':'unused'}]}))
+                plan = root/'plan.json'
+                plan.write_text(json.dumps({'game_directory':str(game), 'route_catalog':str(catalog),
+                    'symbols':str(game/'symbols.pdb'), 'powershell':'never-executed',
+                    'cases':[{'id':'ApprovalCase', 'route':'Balmora', 'allow_external_lua_storage_changes':allowed}]}))
+
+                def stop_before_game(executable, arguments, working, desktop_path, deadline):
+                    self.assertEqual('-AllowExternalLuaStorageChanges' in arguments, allowed)
+                    raise ValueError('offline launch boundary reached')
+
+                with patch.object(matrix.benchmark_desktop, 'launch', side_effect=stop_before_game) as launch:
+                    message = 'must be a JSON boolean' if isinstance(allowed, str) else 'offline launch boundary'
+                    with self.assertRaisesRegex(ValueError, message):
+                        matrix.run_matrix(plan, root/'output')
+                    self.assertEqual(launch.call_count, 0 if isinstance(allowed, str) else 1)
+
+    def test_pins_detect_same_length_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)/'input';path.write_bytes(b'ab')
+            pins=[matrix.identity(path)];matrix.verify(pins)
+            path.write_bytes(b'cd')
+            with self.assertRaises(ValueError):matrix.verify(pins)
+
+    def test_wall_clock_midnight_and_context_exclusion(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)
+            # Derive the launch UTC from the local log date; both clocks are
+            # separate from Lua's boot-relative timer.
+            from datetime import datetime
+            launch=datetime(2026,10,10,23,59,55).astimezone().isoformat()
+            (path/'RUN-MANIFEST.json').write_text(json.dumps({'process':{'launch_utc':launch}}))
+            rows=[('23:59:58.000',{'event':'start'}),
+                  ('00:00:02.000',{'event':'check','guidance_command':{'nominal_movement':1}}),
+                  ('00:00:06.000',{'event':'finish'})]
+            (path/'playback-stdout.log').write_text('\n'.join(f'[{t} I] OMWPLAY|'+json.dumps(r) for t,r in rows))
+            clock=matrix.route_windows(path,launch)
+            self.assertEqual(clock['finish']-clock['start'],8000)
+            (path/'benchmark-context.csv').write_text('frame,viewer_end_frame,begin_flags,end_flags,observed_flags\n1,1,0,0,0\n2,2,0,1,1\n3,3,0,0,0\n')
+            (path/'v3-frame.csv').write_text('frame,epoch_ms,wall_ms\n'+
+                f'1,{clock["start"]+2000},5\n2,{clock["start"]+3000},100\n3,{clock["finish"]-2000},6\n')
+            result=matrix.analyze(path)
+            self.assertEqual(result['excluded_context_frames'],1)
+            self.assertEqual(result['metrics']['route']['frames'],2)
+            self.assertEqual(result['metrics']['route']['maximum_ms'],6)
+            self.assertEqual(result['metrics']['route_all_frames']['maximum_ms'],100)
+            self.assertEqual(result['metrics']['fixed_view']['frames'],1)
+            self.assertEqual(result['metrics']['moving']['frames'],1)
+
+    def test_incomplete_actor_policy_rejected(self):
+        with self.assertRaises(ValueError):
+            matrix.route_quality({'playback':{'playback_complete':True,'errors':[],
+                'finish':{'policy':{'qualified':True,'combat_during_recording':1}}}})
+
+    def test_bounded_exterior_crossing_and_wrong_itinerary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)
+            rows=[{'event':'check','seq':1,'t_wall':1.,'cell_matches':True,
+                   'actual_cell':'Esm3ExteriorCell:-3:-3','expected_cell':'Esm3ExteriorCell:-3:-3',
+                   'actual_position':{'x':-20030,'y':-16410,'z':289},
+                   'expected_position':{'x':-20030,'y':-16410,'z':289}},
+                  {'event':'check','seq':2,'t_wall':1.2,'cell_matches':False,
+                   'actual_cell':'Esm3ExteriorCell:-3:-2','expected_cell':'Esm3ExteriorCell:-3:-3',
+                   'actual_position':{'x':-20032,'y':-16375,'z':289},
+                   'expected_position':{'x':-20005,'y':-16389,'z':289}},
+                  {'event':'check','seq':3,'t_wall':1.4,'cell_matches':True,
+                   'actual_cell':'Esm3ExteriorCell:-3:-2','expected_cell':'Esm3ExteriorCell:-3:-2',
+                   'actual_position':{'x':-20110,'y':-16280,'z':289},
+                   'expected_position':{'x':-20110,'y':-16280,'z':289}}]
+            def save():
+                (path/'playback.jsonl').write_text('\n'.join(map(json.dumps,rows)))
+            save()
+            result=matrix.cell_crossings(path,1)
+            self.assertEqual(result['qualification'],'BOUNDED_EXTERIOR_BOUNDARY_SKEW')
+            self.assertEqual(result['mismatch_checks'],1)
+            # The actual 0.2-second acquisition cadence and an ordinary frame
+            # overshoot can put two MATCHING endpoints more than half a second
+            # apart. Preserve that uncertainty without calling it a sustained
+            # mismatch or permitting an undersampled crossing.
+            rows[-1]['t_wall']=1.535; save()
+            result=matrix.cell_crossings(path,1)
+            window=result['windows'][0]
+            self.assertAlmostEqual(window['observed_mismatch_seconds'],0)
+            self.assertAlmostEqual(window['surrounding_sample_seconds'],.535)
+            self.assertAlmostEqual(window['after_sample_gap_seconds'],.335)
+            rows[-1]['t_wall']=1.4; save()
+            # Position interpolates across a boundary before the reference's
+            # earlier sampled cell label changes. It must remain explicitly
+            # reported and confined to the recorded sample's travel distance.
+            rows[1]['sample_interval']=.05
+            rows[1]['guidance_command']={'speed':300}
+            rows[1]['expected_position']['y']=-16383; save()
+            self.assertEqual(matrix.cell_crossings(path,1)['reference_interpolation_skew_checks'],1)
+            rows[1]['expected_position']['y']=-16350; save()
+            with self.assertRaises(ValueError):matrix.cell_crossings(path,1)
+            rows[1]['expected_position']['y']=-16389
+            rows[-1]['t_wall']=2.; save()
+            with self.assertRaises(ValueError):matrix.cell_crossings(path,1)
+            rows[-1]['t_wall']=1.4
+            rows[1]['actual_position']['x']-=100; save()
+            with self.assertRaises(ValueError):matrix.cell_crossings(path,1)
+            rows[1]['actual_position']['x']+=100
+            rows[1]['actual_cell']='Esm3ExteriorCell:-4:-2';save()
+            with self.assertRaises(ValueError):matrix.cell_crossings(path,1)
+
+    def test_observed_sustained_cell_mismatch_still_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)
+            rows=[]
+            for seq,when,mismatch in ((1,1.,False),(2,1.2,True),
+                    (3,1.4,True),(4,1.6,True),(5,1.8,True),(6,2.,False)):
+                actual='Esm3ExteriorCell:-3:-3' if seq==1 else 'Esm3ExteriorCell:-3:-2'
+                expected='Esm3ExteriorCell:-3:-2' if seq==6 else 'Esm3ExteriorCell:-3:-3'
+                rows.append({'event':'check','seq':seq,'t_wall':when,'cell_matches':not mismatch,
+                    'actual_cell':actual,'expected_cell':expected,
+                    'actual_position':{'x':-20030,'y':-16410 if seq==1 else -16375,'z':289},
+                    'expected_position':{'x':-20005,'y':-16389 if seq!=6 else -16280,'z':289}})
+            (path/'playback.jsonl').write_text('\n'.join(map(json.dumps,rows)))
+            with self.assertRaisesRegex(ValueError,'mismatch span'):
+                matrix.cell_crossings(path,4)
+
+    def test_cache_engagement_does_not_prove_visible_lod(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)
+            (path/'openmw.log').write_text('active_consumed_draws=0 cache_fast_hits=5\n')
+            result=matrix.engagement(path,{'lod cache hit admission':'true'},1)
+            self.assertTrue(result['positive_work']['lod_cache_hit'])
+            self.assertFalse(result['all_requested_positive'])
+            (path/'openmw.log').write_text('active_consumed_draws=10 cache_fast_hits=5\n')
+            self.assertTrue(matrix.engagement(path,{'lod cache hit admission':'true'},1)['all_requested_positive'])
+            (path/'openmw.log').write_text('OptimizedMW persistent opaque packets: submitted=1d169f ordinary_branches=1693\n')
+            self.assertFalse(matrix.engagement(path,{'ordinary opaque packets':'true'})['all_requested_positive'])
+            (path/'openmw.log').write_text('active_consumed_draws=0 primitive_clone_bytes_avoided=1024\n')
+            self.assertFalse(matrix.engagement(path,{'lod retain source indices':'true'},1)['all_requested_positive'])
+            (path/'openmw.log').write_text('active_consumed_draws=10 primitive_clone_bytes_avoided=1024\n')
+            self.assertTrue(matrix.engagement(path,{'lod retain source indices':'true'},1)['all_requested_positive'])
+            (path/'openmw.log').write_text('command_uploads_avoided=0\n')
+            self.assertFalse(matrix.engagement(path,{'indirect command reuse':'true'})['all_requested_positive'])
+            (path/'openmw.log').write_text('command_uploads_avoided=25\n')
+            self.assertTrue(matrix.engagement(path,{'indirect command reuse':'true'})['all_requested_positive'])
+
+    def test_new_draw_controls_require_measured_interval_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            (path/'openmw.log').write_text('OptimizedMW opaque indirect pipeline: built=1 draws=12 commands=24 dispatches=12\n'
+                'OptimizedMW indirect context capability reuse: draws=12 snapshots=1 gpu_function_resolutions_avoided=22\n'
+                'OptimizedMW gpu visibility opportunity: original_draws=12 requested_dispatches_avoided=12\n')
+            requested = {'indirect context capability reuse':'true', 'gpu visibility opportunity filter':'true'}
+            self.assertFalse(matrix.engagement(path, requested, 0, 48)['all_requested_positive'])
+            fields = dict.fromkeys(matrix.indirect_work.COUNTERS, 0)
+            work = {'phases': {'moving': {'counts': fields}}}
+            self.assertFalse(matrix.engagement(path, requested, 0, 48, work)['all_requested_positive'])
+            for key in ('indirect_draws', 'gpu_dispatches', 'capability_draws', 'opportunity_original_draws'):
+                fields[key] = 1
+            self.assertTrue(matrix.engagement(path, requested, 0, 48, work)['all_requested_positive'])
+
+    def test_consumption_and_paging_flags_require_each_measured_counter(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            (path/'openmw.log').write_text(
+                'OptimizedMW indirect projection proof reuse: reuses=99 scope=same_draw\n'
+                'OptimizedMW indirect early admission fallback: new_owner_refusals=99 contended_inspections=0\n'
+                'OptimizedMW paging score value reuse: runs=4 pow_reuses=99 pow_computations=12\n')
+            requested = {'indirect projection proof reuse':'true', 'indirect early admission fallback':'true',
+                         'paging score value reuse':'true'}
+            self.assertFalse(matrix.engagement(path, requested)['all_requested_positive'])
+            fields = dict.fromkeys(matrix.indirect_work.EXTENDED_COUNTERS, 0)
+            work = {'phases': {'moving': {'counts': fields}}}
+            self.assertFalse(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            fields['projection_proof_reuses'] = 1
+            result = matrix.engagement(path, requested, work=work)
+            self.assertTrue(result['positive_work']['indirect_projection_proof_reuse'])
+            self.assertFalse(result['all_requested_positive'])
+            fields['early_admission_fallbacks'] = fields['paging_pow_reuses'] = 1
+            self.assertTrue(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            legacy = {'phases': {'moving': {'counts': dict.fromkeys(matrix.indirect_work.COUNTERS, 999)}}}
+            self.assertFalse(matrix.engagement(path, requested, work=legacy)['all_requested_positive'])
+
+    def test_preload_priority_needs_new_admission_and_actual_interval_start(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            (path/'openmw.log').write_text('OptimizedMW preload priority promotion: submitted=9 promoted=9 started=9 fairness=0\n')
+            requested = {'preload priority promotion':'true'}
+            self.assertFalse(matrix.engagement(path, requested)['all_requested_positive'])
+            fields = dict.fromkeys(matrix.indirect_work.PREPARATION_EXTENDED_COUNTERS, 0)
+            work = {'phases': {'moving': {'counts': fields}}}
+            fields['preload_priority_promoted'] = 1
+            self.assertFalse(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            fields['preload_priority_started'] = 1
+            self.assertTrue(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            fields['preload_priority_promoted'] = 0
+            self.assertFalse(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            fields['preload_priority_submitted'] = 1
+            self.assertTrue(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+
+    def test_owned_cull_transform_template_and_temporal_need_interval_consumption(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            (path/'openmw.log').write_text('OptimizedMW owned cell cull: publications=999 bounds_avoided=999\n')
+            requested = {'owned cell cull snapshots':'true', 'unchanged transform bounds':'true',
+                         'scene template coalescing':'true', 'temporal history lookup':'true'}
+            self.assertFalse(matrix.engagement(path, requested)['all_requested_positive'])
+            fields = dict.fromkeys(matrix.indirect_work.OWNERSHIP_EXTENDED_COUNTERS, 0)
+            work = {'phases': {'moving': {'counts': fields}}}
+            fields['cull_snapshot_publications'] = fields['template_canonical_publications'] = 999
+            fields['transform_changed_inputs'] = fields['temporal_history_compatibility_comparisons'] = 999
+            self.assertFalse(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            for key in ('cull_bound_reads_avoided', 'cull_classification_visits_avoided',
+                        'transform_dirty_calls_avoided', 'template_after_load_reuses',
+                        'temporal_history_indexed_lookups'):
+                fields[key] = 1
+            self.assertTrue(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            fields['template_after_load_reuses'] = 0
+            self.assertFalse(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            fields['template_publication_reuses'] = 1
+            self.assertTrue(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            fields['cull_classification_visits_avoided'] = 0
+            self.assertFalse(matrix.engagement(path, requested, work=work)['all_requested_positive'])
+            legacy = {'phases': {'moving': {'counts': dict.fromkeys(matrix.indirect_work.COUNTERS, 999)}}}
+            self.assertFalse(matrix.engagement(path, requested, work=legacy)['all_requested_positive'])
+
+    def test_ordinary_packet_submission_cannot_qualify_inert_indirect_or_gpu_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            ordinary = 'OptimizedMW persistent opaque packets: submitted=1000 ordinary_branches=8\n'
+            requested = {'ordinary opaque packets':'true'}
+            for draws, dispatches, nested, qualified in ((0,0,86,False),(13,0,86,False),
+                    (13,13,0,False),(13,13,86,True)):
+                with self.subTest(draws=draws,dispatches=dispatches,nested=nested):
+                    (path/'openmw.log').write_text(ordinary+'OptimizedMW opaque indirect pipeline: '
+                        f'built=86 draws={draws} commands=26 dispatches={dispatches} nested_built={nested}\n')
+                    result = matrix.engagement(path,requested,0,52)
+                    self.assertTrue(result['positive_work']['ordinary_packets'])
+                    self.assertEqual(result['all_requested_positive'],qualified)
+            (path/'openmw.log').write_text(ordinary+'OptimizedMW opaque indirect pipeline: '
+                'built=86 draws=13 commands=26 dispatches=0 nested_built=86\n')
+            self.assertTrue(matrix.engagement(path,requested,0,20)['all_requested_positive'])
+
+
+    def test_atomic_receipt_survives_a_real_windows_reader_lock(self):
+        if matrix.benchmark_desktop.os.name!='nt':
+            self.skipTest('Windows delete-sharing behavior')
+        import threading, time
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)/'receipt.json'
+            matrix.benchmark_desktop.save(path,{'generation':1})
+            locked=threading.Event()
+            def reader():
+                with path.open('rb') as stream:
+                    self.assertEqual(json.load(stream)['generation'],1)
+                    locked.set(); time.sleep(.15)
+            thread=threading.Thread(target=reader)
+            thread.start(); self.assertTrue(locked.wait(1))
+            matrix.benchmark_desktop.save(path,{'generation':2})
+            thread.join()
+            self.assertEqual(matrix.read_json(path)['generation'],2)
+            self.assertFalse(path.with_suffix('.json.writing').exists())
+
+    def test_private_window_lifetime_witness_survives_hide_before_exit(self):
+        if matrix.benchmark_desktop.os.name != 'nt':
+            self.skipTest('Windows owned private desktop lifecycle')
+        import sys
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'private-lifecycle'
+            code = matrix.benchmark_desktop.launch(sys.executable,
+                [str(ROOT / 'benchmark-window-probe.py')], ROOT, output, 15)
+            self.assertEqual(code, 0)
+            receipt = matrix.read_json(output / 'DESKTOP-RECEIPT.json')
+            self.assertTrue(receipt['owned_render_window_observed'])
+            self.assertFalse(receipt['latest_private_windows_visible'])
+            self.assertFalse(receipt['input_desktop_owned_visible_windows'])
+            self.assertTrue(receipt['input_desktop_unchanged'])
+            self.assertFalse(receipt['desktop_switched'])
+            probe = json.loads((output / 'stdout.log').read_text().strip())
+            self.assertEqual(probe['console_window'], 0)
+            self.assertTrue(probe['visible_then_hidden_before_exit'])
+
+
+if __name__=='__main__':unittest.main()

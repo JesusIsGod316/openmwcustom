@@ -15,6 +15,7 @@
 
 // resource
 #include <components/debug/debuglog.hpp>
+#include <components/debug/hitchtrace.hpp>
 #include <components/misc/constants.hpp>
 #include <components/misc/osguservalues.hpp>
 #include <components/misc/resourcehelpers.hpp>
@@ -318,6 +319,18 @@ namespace NifOsg
         unsigned int mVersion, mUserVersion, mBethVersion;
         Resource::BgsmFileManager* mMaterialManager{ nullptr };
         Resource::ImageManager* mImageManager{ nullptr };
+        // Logical conversion workload, collected during the original traversal.
+        // These are not allocator, resident-memory or driver byte counters.
+        const bool mMeasure = Debug::HitchTrace::requested();
+        std::uint64_t mNodes = 0, mGeometries = 0, mVertices = 0, mIndices = 0;
+
+        void measureGeometry(const osg::Geometry& geometry)
+        {
+            if (!mMeasure) return;
+            ++mGeometries;
+            if (geometry.getVertexArray()) mVertices += geometry.getVertexArray()->getNumElements();
+            for (const auto& primitive : geometry.getPrimitiveSetList()) mIndices += primitive->getNumIndices();
+        }
 
         size_t mFirstRootTextureIndex{ ~0u };
         bool mFoundFirstRootTexturingProperty = false;
@@ -429,6 +442,8 @@ namespace NifOsg
 
         osg::ref_ptr<osg::Node> load(Nif::FileView nif)
         {
+            Debug::HitchTrace::Scope conversion("resource.model_convert",
+                Debug::HitchTrace::CpuTiming::WallEnvelope, {}, mFilename.value());
             const size_t numRoots = nif.numRoots();
             std::vector<const Nif::NiAVObject*> roots;
             for (size_t i = 0; i < numRoots; ++i)
@@ -447,11 +462,18 @@ namespace NifOsg
 
             osg::ref_ptr<osg::Group> created(new osg::Group);
             created->setDataVariance(osg::Object::STATIC);
-            for (const Nif::NiAVObject* root : roots)
             {
-                auto node = handleNode(
-                    root, nullptr, nullptr, { .mNifVersion = nif.getVersion(), .mTextKeys = &textkeys->mTextKeys });
-                created->addChild(node);
+                Debug::HitchTrace::Scope graph("resource.model_graph", {}, mFilename.value());
+                for (const Nif::NiAVObject* root : roots)
+                {
+                    auto node = handleNode(
+                        root, nullptr, nullptr, { .mNifVersion = nif.getVersion(), .mTextKeys = &textkeys->mTextKeys });
+                    created->addChild(node);
+                }
+                graph.setMetric(0, "nodes", mNodes);
+                graph.setMetric(1, "geometries", mGeometries);
+                graph.setMetric(2, "vertices", mVertices);
+                graph.setMetric(3, "indices", mIndices);
             }
             if (mHasNightDayLabel)
                 created->getOrCreateUserDataContainer()->addDescription(Constants::NightDayLabel);
@@ -459,16 +481,23 @@ namespace NifOsg
                 created->getOrCreateUserDataContainer()->addDescription(Constants::HerbalismLabel);
 
             // Attach particle emitters to their nodes which should all be loaded by now.
-            handleQueuedParticleEmitters(created, nif);
+            { Debug::HitchTrace::Scope particles("resource.model_particles", {}, mFilename.value());
+              particles.setMetric(0, "queued_emitters", mEmitterQueue.size());
+              handleQueuedParticleEmitters(created, nif); }
 
             // Resolve look-at controller targets now that all nodes are loaded.
-            handleQueuedLookAtControllers(created, nif);
+            { Debug::HitchTrace::Scope targets("resource.model_controller_targets", {}, mFilename.value());
+              targets.setMetric(0, "queued_targets", mLookAtQueue.size());
+              handleQueuedLookAtControllers(created, nif); }
 
-            RemoveLodOverlapVisitor removeLodOverlaps;
-            created->accept(removeLodOverlaps);
+            { Debug::HitchTrace::Scope lod("resource.model_lod_cleanup", {}, mFilename.value());
+              RemoveLodOverlapVisitor removeLodOverlaps;
+              created->accept(removeLodOverlaps); }
 
             if (nif.getUseSkinning())
             {
+                Debug::HitchTrace::Scope skeleton("resource.model_skeleton", {}, mFilename.value());
+                skeleton.setMetric(0, "children", created->getNumChildren());
                 osg::ref_ptr<SceneUtil::Skeleton> skel = new SceneUtil::Skeleton;
                 skel->setStateSet(created->getStateSet());
                 skel->setName(created->getName());
@@ -483,6 +512,10 @@ namespace NifOsg
                 created->getOrCreateUserDataContainer()->addUserObject(textkeys);
 
             created->setUserValue(Misc::OsgUserValues::sFileHash, nif.getHash());
+            conversion.setMetric(0, "nodes", mNodes);
+            conversion.setMetric(1, "geometries", mGeometries);
+            conversion.setMetric(2, "vertices", mVertices);
+            conversion.setMetric(3, "indices", mIndices);
 
             return created;
         }
@@ -711,6 +744,7 @@ namespace NifOsg
                 return nullptr;
 
             osg::ref_ptr<osg::Group> node = createNode(nifNode);
+            if (mMeasure) ++mNodes;
 
             node->setName(nifNode->mName);
 
@@ -1682,22 +1716,28 @@ namespace NifOsg
             assert(isTypeNiGeometry(nifNode->mRecordType));
 
             osg::ref_ptr<osg::Geometry> geom(new osg::Geometry);
-            handleNiGeometryData(nifNode, parent, geom, parentNode, composite, boundTextures, animflags);
+            { Debug::HitchTrace::Scope geometry("resource.model_geometry_data", {}, mFilename.value());
+              handleNiGeometryData(nifNode, parent, geom, parentNode, composite, boundTextures, animflags); }
             // If the record had no valid geometry data in it, early-out
             if (geom->empty() || geom->getVertexArray() == nullptr)
                 return;
+
+            measureGeometry(*geom);
 
             osg::ref_ptr<osg::Drawable> drawable = geom;
 
             auto niGeometry = static_cast<const Nif::NiGeometry*>(nifNode);
             if (!niGeometry->mSkin.empty())
             {
+                Debug::HitchTrace::Scope skinWork("resource.model_skin_weights", {}, mFilename.value());
                 osg::ref_ptr<SceneUtil::RigGeometry> rig(new SceneUtil::RigGeometry);
                 rig->setSourceGeometry(geom);
 
                 const Nif::NiSkinInstance* skin = niGeometry->mSkin.getPtr();
                 const Nif::NiSkinData* data = skin->mData.getPtr();
                 const Nif::NiAVObjectList& bones = skin->mBones;
+                skinWork.setMetric(0, "bones", bones.size());
+                skinWork.setMetric(1, "vertices", geom->getVertexArray()->getNumElements());
 
                 // Assign bone weights
                 std::vector<SceneUtil::RigGeometry::BoneInfo> boneInfo(bones.size());
@@ -1768,6 +1808,10 @@ namespace NifOsg
             const std::vector<unsigned short>& triangles = bsTriShape->mTriangles;
             if (triangles.empty())
                 return;
+
+            Debug::HitchTrace::Scope geometryWork("resource.model_bs_geometry", {}, mFilename.value());
+            geometryWork.setMetric(0, "source_vertices", bsTriShape->mVertData.size());
+            geometryWork.setMetric(1, "indices", triangles.size());
 
             osg::ref_ptr<osg::Geometry> geometry(new osg::Geometry);
             geometry->addPrimitiveSet(new osg::DrawElementsUShort(
@@ -1846,6 +1890,8 @@ namespace NifOsg
             if (!uvlist.empty())
                 geometry->setTexCoordArray(0, new osg::Vec2Array(static_cast<unsigned>(uvlist.size()), uvlist.data()),
                     osg::Array::BIND_PER_VERTEX);
+
+            measureGeometry(*geometry);
 
             // This is the skinning data Fallout 4 provides
             // TODO: support Skyrim SE skinning data

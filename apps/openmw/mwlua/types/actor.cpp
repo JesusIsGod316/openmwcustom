@@ -315,6 +315,7 @@ namespace MWLua
         actor["inventory"] = sol::overload([](const LObject& o) { return Inventory<LObject>{ o }; },
             [](const GObject& o) { return Inventory<GObject>{ o }; });
         auto getAllEquipment = [](sol::this_state thisState, const Object& o) {
+            Debug::HitchTrace::Scope query("lua.api.actor.equipment_all", Debug::HitchTrace::CpuTiming::WallEnvelope);
             const MWWorld::Ptr& ptr = o.ptr();
             sol::table equipment(thisState, sol::create);
             if (!ptr.getClass().hasInventoryStore(ptr))
@@ -335,6 +336,8 @@ namespace MWLua
             return equipment;
         };
         auto getEquipmentFromSlot = [](sol::this_state thisState, const Object& o, int slot) -> sol::object {
+            Debug::HitchTrace::Scope query("lua.api.actor.equipment_slot", Debug::HitchTrace::CpuTiming::WallEnvelope);
+            query.setMetric(0, "slot", static_cast<unsigned>(slot));
             const MWWorld::Ptr& ptr = o.ptr();
             if (!ptr.getClass().hasInventoryStore(ptr))
                 return sol::nil;

@@ -1,7 +1,11 @@
 #ifndef OPENMW_SCENEUTIL_GLCALLTRACE_H
 #define OPENMW_SCENEUTIL_GLCALLTRACE_H
 
+#include <components/debug/hitchtrace.hpp>
 #include <osg/GLExtensions>
+#include <osg/State>
+#include <osg/FrameStamp>
+#include <osg/Texture2D>
 #include <array>
 #include <algorithm>
 #include <string>
@@ -17,9 +21,11 @@ namespace SceneUtil::GLCallTrace
 {
     // Diagnostic CPU envelopes only. Direct core GL calls and driver internals
     // are NOT intercepted. No query, flush, error polling or wait is inserted.
-    enum Phase : unsigned { Outside, RendererDraw, Matrices, State, Drawable, Retire, CullDraw, Compile };
-    struct Location { unsigned context=0, frame=0, phase=Outside; std::uintptr_t drawable=0; };
+    enum Phase : unsigned { Outside, RendererDraw, Matrices, State, Drawable, Retire, CullDraw, Compile, TextureApply };
+    struct Location { unsigned context=0, frame=0, phase=Outside; std::uintptr_t drawable=0;
+        osg::State* state=nullptr; std::uintptr_t camera=0; };
     inline thread_local Location location;
+    inline thread_local const osg::Texture* applyingTexture = nullptr;
     struct Scope
     {
         Location previous;
@@ -31,21 +37,28 @@ namespace SceneUtil::GLCallTrace
         BufferData, BufferSubData, MapBufferRange, UnmapBuffer, UseProgram, LinkProgram,
         CompileShader, GetProgramiv, GetShaderiv, CompressedTexImage2D, CompressedTexSubImage2D,
         DrawElementsInstanced, DrawArraysInstanced, DrawRangeElements,
-        GetQueryObjectiv, GetQueryObjectuiv, GetQueryObjectui64v, Count
+        GetQueryObjectiv, GetQueryObjectuiv, GetQueryObjectui64v, BindFramebuffer, FramebufferTexture2D,
+        CheckFramebufferStatus, GenerateMipmap, BindBuffer, BindBufferBase, Count
     };
     inline constexpr std::array<const char*,Count> names={
         "glBufferData","glBufferSubData","glMapBufferRange","glUnmapBuffer","glUseProgram","glLinkProgram",
         "glCompileShader","glGetProgramiv","glGetShaderiv","glCompressedTexImage2D","glCompressedTexSubImage2D",
         "glDrawElementsInstanced","glDrawArraysInstanced","glDrawRangeElements",
-        "glGetQueryObjectiv","glGetQueryObjectuiv","glGetQueryObjectui64v"};
+        "glGetQueryObjectiv","glGetQueryObjectuiv","glGetQueryObjectui64v",
+        "glBindFramebuffer","glFramebufferTexture2D","glCheckFramebufferStatus","glGenerateMipmap",
+        "glBindBuffer","glBindBufferBase"};
     using Clock=std::chrono::steady_clock;
     struct Row
     {
         Location where;
         unsigned api = 0;
+        std::uint64_t nativeThread = 0;
         std::array<std::uint64_t, 8> args{};
         double ms = 0;
         std::int64_t startNs = 0;
+        std::uintptr_t texture=0, textureObject=0, image=0;
+        unsigned textureUnit=0, glName=0, imageRevision=0;
+        bool allocated=false, dirty=false, firstUse=false;
     };
     struct Breadcrumb
     {
@@ -59,6 +72,7 @@ namespace SceneUtil::GLCallTrace
     {
     public:
         static Capture& instance() { static Capture value; return value; }
+        bool enabled() const { return bool(mRows); }
         void enable(const std::string& path)
         {
             if (!mRows) { mPath=path; mRows=std::make_unique<std::array<Row,32768>>();
@@ -104,14 +118,16 @@ namespace SceneUtil::GLCallTrace
             try
             {
                 std::ofstream out(mPath+".gl.csv");
-                out << "frame,context,phase,drawable,api,arg0,arg1,arg2,arg3,arg4,arg5,arg6,arg7,cpu_ms,start_ns\n";
+                out << "frame,context,phase,drawable,api,arg0,arg1,arg2,arg3,arg4,arg5,arg6,arg7,cpu_ms,start_ns,camera,texture,texture_object,gl_name,image,image_revision,texture_unit,allocated,dirty,first_use,thread\n";
                 for(std::size_t i=0;i<(std::min)(mNext.load(),mRows->size());++i)
                 {
                     const auto& a=(*mRows)[i];
                     out<<a.where.frame<<','<<a.where.context<<','<<a.where.phase<<','<<a.where.drawable<<','
                         <<names[a.api];
                     for (std::uint64_t arg : a.args) out << ',' << arg;
-                    out<<','<<a.ms<<','<<a.startNs<<'\n';
+                    out<<','<<a.ms<<','<<a.startNs<<','<<a.where.camera<<','<<a.texture<<','<<a.textureObject
+                        <<','<<a.glName<<','<<a.image<<','<<a.imageRevision<<','<<a.textureUnit<<','<<a.allocated
+                        <<','<<a.dirty<<','<<a.firstUse<<','<<a.nativeThread<<'\n';
                 }
                 std::ofstream totals(mPath+".gl-totals.csv");
                 totals<<"context,api,calls,cpu_ms,max_ms\n";
@@ -127,7 +143,7 @@ namespace SceneUtil::GLCallTrace
                 { const auto& f=(*mFrameRows)[i];for(unsigned a=0;a<Count;++a) {
                     const auto& t=f.totals[a];if(t.calls)frames<<f.frame<<','<<f.context<<','<<names[a]<<','<<t.calls<<','<<t.ms<<','<<t.maximum<<'\n'; } }
                 std::ofstream last(mPath+".gl-last.csv");
-                last << "context,sequence,active,frame,phase,drawable,api,arg0,arg1,arg2,arg3,arg4,arg5,arg6,arg7,start_ns\n";
+                last << "context,sequence,active,frame,phase,drawable,api,arg0,arg1,arg2,arg3,arg4,arg5,arg6,arg7,start_ns,camera,texture,texture_object,gl_name,image,image_revision,texture_unit,allocated,dirty,first_use,thread\n";
                 for (unsigned context = 0; context < mBreadcrumbs.size(); ++context)
                 {
                     const auto& breadcrumb = mBreadcrumbs[context];
@@ -137,13 +153,16 @@ namespace SceneUtil::GLCallTrace
                         << row.where.frame << ',' << row.where.phase << ',' << row.where.drawable << ','
                         << (row.api < Count ? names[row.api] : "unknown");
                     for (std::uint64_t arg : row.args) last << ',' << arg;
-                    last << ',' << row.startNs << '\n';
+                    last << ',' << row.startNs << ',' << row.where.camera << ',' << row.texture << ',' << row.textureObject
+                        << ',' << row.glName << ',' << row.image << ',' << row.imageRevision << ',' << row.textureUnit
+                        << ',' << row.allocated << ',' << row.dirty << ',' << row.firstUse << ',' << row.nativeThread << '\n';
                 }
                 std::ofstream status(mPath+".gl-status.txt");
                 status<<"rows_dropped="<<(mNext>mRows->size()?mNext-mRows->size():0)
                     <<"\nframe_rows_dropped="<<(mFrameNext>mFrameRows->size()?mFrameNext-mFrameRows->size():0)
                     <<"\nscope=selected_OSG_extension_dispatch_only_not_direct_core_GL_or_driver_internals\n"
-                    <<"phase=0_outside_1_renderer_draw_2_matrices_3_state_4_drawable_5_retire_6_cull_draw_7_compile\n"
+                    <<"phase=0_outside_1_renderer_draw_2_matrices_3_state_4_drawable_5_retire_6_cull_draw_7_compile_8_direct_texture_apply\n"
+                    <<"texture_identity=explicit_scoped_Texture_apply_or_mipmap_owner_only;unknown_for_uninstrumented_direct_or_callback_applies\n"
                     <<"frame0_in_outer_scopes=unassigned_use_time_and_leaf_frame_not_assumed_alignment\n";
             } catch (...) {}
         }
@@ -160,6 +179,25 @@ namespace SceneUtil::GLCallTrace
         std::atomic<std::size_t> mNext{0};
         std::array<std::array<Total,Count>,16> mTotals{};
         std::array<Breadcrumb,16> mBreadcrumbs{};
+    };
+
+    class ScopedTextureApply
+    {
+    public:
+        ScopedTextureApply(osg::State& state, const osg::Texture& texture)
+            : mEnabled(Capture::instance().enabled()), mPrevious(location), mTexture(applyingTexture)
+        {
+            if (!mEnabled) return;
+            location.state=&state;location.context=state.getContextID();
+            if(const auto* stamp=state.getFrameStamp()) location.frame=stamp->getFrameNumber();
+            if(location.phase==Outside) location.phase=TextureApply;
+            applyingTexture=&texture;
+        }
+        ~ScopedTextureApply() { if(mEnabled){location=mPrevious;applyingTexture=mTexture;} }
+    private:
+        bool mEnabled;
+        Location mPrevious;
+        const osg::Texture* mTexture;
     };
 
     template<std::size_t N,typename Tuple> std::uint64_t argument(const Tuple& args)
@@ -187,9 +225,37 @@ namespace SceneUtil::GLCallTrace
             Row row;
             row.where = location;
             row.api = A;
+            row.nativeThread = Debug::HitchTrace::threadId();
             row.args = { argument<0>(tuple), argument<1>(tuple), argument<2>(tuple), argument<3>(tuple),
                 argument<4>(tuple), argument<5>(tuple), argument<6>(tuple), argument<7>(tuple) };
             row.startNs = std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch()).count();
+            // Only an explicit apply owner proves resource identity. State's
+            // last_applied_attribute can name an earlier texture during direct
+            // compile/FBO applies, so never infer identity from that cache.
+            if constexpr (A == CompressedTexImage2D || A == CompressedTexSubImage2D || A == GenerateMipmap)
+            {
+                if (auto* state = location.state)
+                {
+                    row.textureUnit = state->getActiveTextureUnit();
+                    const auto* texture = applyingTexture;
+                    if (texture)
+                    {
+                        row.texture = reinterpret_cast<std::uintptr_t>(texture);
+                        const auto* object = texture->getTextureObject(Context);
+                        row.textureObject = reinterpret_cast<std::uintptr_t>(object);
+                        row.glName = object ? object->id() : 0;
+                        row.allocated = object && object->isAllocated();
+                        row.dirty = texture->isDirty(Context);
+                        row.firstUse = !row.allocated;
+                        if (const auto* texture2d = dynamic_cast<const osg::Texture2D*>(texture))
+                            if (const auto* image = texture2d->getImage())
+                            {
+                                row.image = reinterpret_cast<std::uintptr_t>(image);
+                                row.imageRevision = image->getModifiedCount();
+                            }
+                    }
+                }
+            }
             struct Record
             {
                 Row row;
@@ -224,6 +290,9 @@ namespace SceneUtil::GLCallTrace
         P9_HOOK(glDrawElementsInstanced,DrawElementsInstanced); P9_HOOK(glDrawArraysInstanced,DrawArraysInstanced);
         P9_HOOK(glDrawRangeElements,DrawRangeElements); P9_HOOK(glGetQueryObjectiv,GetQueryObjectiv);
         P9_HOOK(glGetQueryObjectuiv,GetQueryObjectuiv); P9_HOOK(glGetQueryObjectui64v,GetQueryObjectui64v);
+        P9_HOOK(glBindFramebuffer,BindFramebuffer); P9_HOOK(glFramebufferTexture2D,FramebufferTexture2D);
+        P9_HOOK(glCheckFramebufferStatus,CheckFramebufferStatus); P9_HOOK(glGenerateMipmap,GenerateMipmap);
+        P9_HOOK(glBindBuffer,BindBuffer); P9_HOOK(glBindBufferBase,BindBufferBase);
 #undef P9_HOOK
     }
     inline bool install(unsigned context,osg::GLExtensions& e)

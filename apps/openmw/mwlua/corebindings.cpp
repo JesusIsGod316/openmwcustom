@@ -147,6 +147,8 @@ namespace MWLua
             if (context.mType != Context::Menu)
             {
                 api["sendGlobalEvent"] = [context](std::string eventName, const sol::object& eventData) {
+                    Debug::HitchTrace::Scope send("lua.api.core.send_global_event", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                        eventName);
                     context.mLuaEvents->addGlobalEvent(
                         { std::move(eventName), LuaUtil::serialize(eventData, context.mSerializer) });
                 };
@@ -156,6 +158,8 @@ namespace MWLua
             else
             {
                 api["sendGlobalEvent"] = [context](std::string eventName, const sol::object& eventData) {
+                    Debug::HitchTrace::Scope send("lua.api.core.send_global_event", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                        eventName);
                     if (MWBase::Environment::get().getStateManager()->getState() == MWBase::StateManager::State_NoGame)
                     {
                         throw std::logic_error("Can't send global events when no game is loaded");

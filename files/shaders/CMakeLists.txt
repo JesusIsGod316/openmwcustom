@@ -79,6 +79,8 @@ set(SHADER_FILES
     compatibility/temporal_camera_motion.frag
     compatibility/temporal_motion_view.vert
     compatibility/temporal_motion_view.frag
+    compatibility/temporal_dynamic_motion.vert
+    compatibility/temporal_dynamic_motion.frag
     compatibility/bs/default.vert
     compatibility/bs/default.frag
     compatibility/bs/nolighting.vert

@@ -1,9 +1,15 @@
+#include <components/debug/hitchtrace.hpp>
+#include <components/debug/compileattribution.hpp>
+#include <components/files/constrainedreadpolicy.hpp>
+#include <optional>
 #include "engine.hpp"
+#include <components/debug/resourcelifecycle.hpp>
 
 #include <components/resource/benchmarkcapture.hpp>
 #include <components/sceneutil/drawphasetrace.hpp>
 #include <components/debug/runtimeprocessmemory.hpp>
 #include <components/debug/gameplaydiagnostics.hpp>
+#include <components/debug/benchmarkcontext.hpp>
 
 #include <cerrno>
 #include <chrono>
@@ -20,6 +26,7 @@
 #include <osgDB/ImagePager>
 #include <osgDB/ReaderWriter>
 #include <osgDB/Registry>
+#include <osg/OperationThread>
 #include <osgUtil/IncrementalCompileOperation>
 #include <osgUtil/Statistics>
 
@@ -33,6 +40,7 @@
 #include <components/debug/debuglog.hpp>
 #include <components/debug/gldebug.hpp>
 #include <components/debug/v3diagnostics.hpp>
+#include <components/debug/v36gpuprofiler.hpp>
 
 #include <components/misc/rng.hpp>
 #include <components/misc/strings/format.hpp>
@@ -42,10 +50,21 @@
 
 #include <components/sdlutil/imagetosurface.hpp>
 #include <components/sdlutil/sdlgraphicswindow.hpp>
+#include <components/sdlutil/externalwindowclose.hpp>
 
 #include <components/resource/resourcesystem.hpp>
+#include <components/resource/niffilemanager.hpp>
+#include <components/resource/imagemanager.hpp>
 #include <components/resource/openmwcompileoperation.hpp>
 #include <components/resource/preparedterraintexture.hpp>
+#include <components/resource/compositecpumips.hpp>
+#include <components/resource/assetpolicy.hpp>
+#include <components/resource/derivedassetcache.hpp>
+#include <components/resource/texturestreaming.hpp>
+#include <components/sceneutil/textureownerboundary.hpp>
+#include <components/sceneutil/generatedstaticlod.hpp>
+#include <components/sceneutil/assetpaging.hpp>
+#include <components/sceneutil/selectivehlod.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/resource/stats.hpp>
 
@@ -56,6 +75,16 @@
 #include <components/stereo/stereomanager.hpp>
 
 #include <components/sceneutil/glextensions.hpp>
+#include <components/sceneutil/gpuindirectpackets.hpp>
+#include <components/sceneutil/frozenrigdeformation.hpp>
+#include <components/sceneutil/pagingwork.hpp>
+#include <components/sceneutil/ownedcellcull.hpp>
+#include <components/sceneutil/staticvaogeometry.hpp>
+#include <components/sceneutil/unchangedtransform.hpp>
+#include <components/sceneutil/temporalhistorylookup.hpp>
+#include <components/resource/templatecoalescing.hpp>
+#include <components/shader/programvariant.hpp>
+#include <components/shader/assetgeometrycontract.hpp>
 #include <components/sceneutil/workqueue.hpp>
 
 #include <components/files/configurationmanager.hpp>
@@ -96,8 +125,12 @@
 #include "mwworld/class.hpp"
 #include "mwworld/datetimemanager.hpp"
 #include "mwworld/worldimp.hpp"
+#include "mwworld/cellstore.hpp"
+#include "mwworld/scene.hpp"
+#include "mwworld/timestamp.hpp"
 
 #include "mwrender/vismask.hpp"
+#include "mwrender/camera.hpp"
 
 #include "mwclass/classes.hpp"
 
@@ -116,9 +149,56 @@
 #include "mwstate/statemanagerimp.hpp"
 
 #include "profile.hpp"
+#include <components/resource/assetgpubudget.hpp>
 
 namespace
 {
+    void sampleConfiguredAssetGpuAdmission()
+    {
+        Debug::V3GpuMemory::sampleIfDue(static_cast<bool>(Settings::cells().mV32GpuMemoryTelemetry),
+            static_cast<bool>(Settings::cells().mV32GpuMemoryManagement)
+                || static_cast<int>(Settings::cells().mV38GpuResidencyMode) > 0,
+            static_cast<int>(Settings::cells().mV32GpuSoftBudgetMb),
+            static_cast<int>(Settings::cells().mV32GpuHardBudgetMb));
+    }
+
+    class AssetGpuAdmissionOperation final : public osg::Operation
+    {
+    public:
+        AssetGpuAdmissionOperation() : osg::Operation("AssetGpuAdmissionSample", true) {}
+        void operator()(osg::Object*) override
+        {
+            // LoadingScreen runs viewer update/render traversals before the
+            // engine's first World::update. Its precompiles need the same fresh
+            // admission snapshot as gameplay. The existing sampler remains
+            // throttled to once per second and does not enable GPU profiling.
+            sampleConfiguredAssetGpuAdmission();
+        }
+    };
+
+    void reportAssetGpuAdmissionSample(const char* phase)
+    {
+        const auto sample = Debug::V3GpuMemory::admissionSample();
+        const auto now = Resource::AssetGpuBudget::milliseconds();
+        Log(Debug::Info) << std::dec << "OptimizedMW asset GPU sampler: phase=" << phase
+            << " mask=" << Resource::AssetPolicy::mask()
+            << " sampled_at_ms=" << sample.sampledAtMs << " valid=" << sample.valid
+            << " headroom_bytes=" << sample.headroomBytes
+            << " pressure_code=" << static_cast<int>(sample.pressure) + 1
+            << " now_ms=" << now << " clock_valid=" << (now >= sample.sampledAtMs)
+            << " sample_age_ms=" << (now >= sample.sampledAtMs ? now - sample.sampledAtMs : 0);
+    }
+
+    unsigned benchmarkStateFlags(MWBase::World& world, MWBase::StateManager& state, MWBase::WindowManager& windows)
+    {
+        using namespace Debug::BenchmarkContext;
+        return (world.getTimeManager()->isPaused() ? Paused : 0u)
+            | (windows.isGuiMode() ? Debug::BenchmarkContext::Gui : 0u)
+            | (windows.containsMode(MWGui::GM_MainMenu) ? MainMenu : 0u)
+            | (!windows.isWindowVisible() ? Hidden : 0u)
+            | (state.getState() != MWBase::StateManager::State_Running ? NotRunning : 0u);
+    }
+
     std::string missingVsgCompatibilityFacetNames(std::uint64_t mask)
     {
         std::string result;
@@ -491,6 +571,8 @@ namespace
 
             {
                 const auto start = Clock::now();
+                Debug::HitchTrace::Scope hitchWait("viewer.draw_completion_wait", {}, {},
+                    getFrameStamp() ? getFrameStamp()->getFrameNumber() : 0);
                 if (_endDynamicDrawBlock.valid())
                     _endDynamicDrawBlock->block();
                 breakdown.dynamicDrawWait = Debug::V3Diagnostics::elapsedMs(start);
@@ -546,9 +628,19 @@ namespace
     public:
         void swapBuffersImplementation(osg::GraphicsContext* gc) override
         {
+            std::optional<Debug::HitchTrace::Scope> swapScope;
+            if (Debug::CompileAttribution::requested())
+            {
+                const auto* stamp = gc && gc->getState() ? gc->getState()->getFrameStamp() : nullptr;
+                swapScope.emplace("viewer.swap_buffers", "", "", stamp ? stamp->getFrameNumber() : 0,
+                    Debug::HitchTrace::CpuTiming::WallEnvelope);
+                if (gc && gc->getState()) swapScope->setMetric(0, "context", gc->getState()->getContextID());
+                swapScope->setMetric(1, "frame_known", stamp ? 1 : 0);
+            }
             const auto start = Debug::V3Diagnostics::Clock::now();
             gc->swapBuffersImplementation();
             const double durationMs = Debug::V3Diagnostics::elapsedMs(start);
+            swapScope.reset();
             if (durationMs < 0.25)
                 return;
 
@@ -585,6 +677,8 @@ namespace
             Log(Debug::Info) << "OpenGL Renderer: " << glGetString(GL_RENDERER);
             Log(Debug::Info) << "OpenGL Version: " << glGetString(GL_VERSION);
             glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &mMaxTextureImageUnits);
+            if (Resource::CompositeCpuMips::requested())
+                Resource::CompositeCpuMips::publishCapabilities(*graphicsContext);
         }
 
         int getMaxTextureImageUnits() const
@@ -623,6 +717,7 @@ void OMW::Engine::executeLocalScripts()
 
 bool OMW::Engine::frame(unsigned frameNumber, float frametime)
 {
+    Debug::HitchTrace::Scope hitchFrame("engine.frame", {}, {}, frameNumber);
     if (Debug::RuntimeDiagnostics::enabled())
         Debug::RuntimeDiagnostics::currentFrame.store(frameNumber, std::memory_order_relaxed);
     Debug::GameplayDiagnostics::Frame gameplayDiagnostic(frameNumber, mUseVulkanRenderer, mViewer->done());
@@ -637,11 +732,13 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // Stop the background GC started at the previous frame's end.
         // Input handling can run Lua (the menu key does), so the state
         // must not be collected from this point on.
-        { Debug::GameplayDiagnostics::Stage diagnostic("lua_finish_gc"); mLuaWorker->finishGc(); }
+        { Debug::GameplayDiagnostics::Stage diagnostic("lua_finish_gc");
+          Debug::HitchTrace::Scope hitchGc("lua.finish_gc_wait"); mLuaWorker->finishGc(); }
 
         // update input
         {
             ScopedProfile<UserStatsType::Input> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.Input");
             mInputManager->update(frametime, false);
         }
 
@@ -651,6 +748,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // https://github.com/MyGUI/mygui/issues/21)
         {
             ScopedProfile<UserStatsType::Sound> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.Sound");
 
             if (!mWindowManager->isWindowVisible())
             {
@@ -667,6 +765,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
 
         {
             ScopedProfile<UserStatsType::LuaSyncUpdate> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.LuaSyncUpdate");
             // Should be called after input manager update and before any change to the game world.
             // It applies to the game world queued changes from the previous frame.
             mLuaManager->synchronizedUpdate();
@@ -675,13 +774,17 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update game state
         {
             ScopedProfile<UserStatsType::State> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.State");
             mStateManager->update(frametime);
         }
 
         bool paused = mWorld->getTimeManager()->isPaused();
+        if (Debug::BenchmarkContext::capture().enabled())
+            Debug::BenchmarkContext::capture().observe(benchmarkStateFlags(*mWorld, *mStateManager, *mWindowManager));
 
         {
             ScopedProfile<UserStatsType::Script> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.Script");
 
             if (mStateManager->getState() != MWBase::StateManager::State_NoGame)
             {
@@ -711,6 +814,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update mechanics
         {
             ScopedProfile<UserStatsType::Mechanics> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.Mechanics");
             Debug::GameplayDiagnostics::Stage diagnostic("mechanics");
 
             if (mStateManager->getState() != MWBase::StateManager::State_NoGame)
@@ -729,6 +833,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update physics
         {
             ScopedProfile<UserStatsType::Physics> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.Physics");
             Debug::GameplayDiagnostics::Stage diagnostic("physics");
 
             if (mStateManager->getState() != MWBase::StateManager::State_NoGame)
@@ -740,6 +845,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update world
         {
             ScopedProfile<UserStatsType::World> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.World");
             Debug::GameplayDiagnostics::Stage diagnostic("world_update");
 
             if (mStateManager->getState() != MWBase::StateManager::State_NoGame)
@@ -751,11 +857,14 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update GUI
         {
             ScopedProfile<UserStatsType::Gui> profile(frameStart, frameNumber, *timer, *stats);
+            Debug::HitchTrace::Scope hitchStage("engine.Gui");
             mWindowManager->update(frametime);
         }
     }
     catch (const std::exception& e)
     {
+        if (Debug::BenchmarkContext::capture().enabled())
+            Debug::BenchmarkContext::capture().observe(Debug::BenchmarkContext::FrameException);
         Log(Debug::Error) << "Error in frame: " << e.what();
     }
 
@@ -1152,6 +1261,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
     // update focus object for GUI
     {
         ScopedProfile<UserStatsType::Focus> profile(frameStart, frameNumber, *timer, *stats);
+        Debug::HitchTrace::Scope hitchStage("engine.Focus");
         Debug::GameplayDiagnostics::Stage diagnostic("focus");
         // V3.20 preserves the exact V3.19 fixed-cadence path by default. Optional
         // adaptive mode only adds an immediate refresh when the main camera's view or
@@ -1274,6 +1384,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
             const bool measureRenderHandoff = p3HandoffAttribution || p4HandoffFeedback;
             const auto p3RenderStart = measureRenderHandoff ? Debug::V3Diagnostics::Clock::now()
                                                            : Debug::V3Diagnostics::Clock::time_point{};
+            Debug::HitchTrace::Scope hitchRender("viewer.rendering_traversal");
             mViewer->renderingTraversals();
 
             if (measureRenderHandoff)
@@ -1298,6 +1409,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
     {
         Debug::V3HitchTelemetry::ScopedFrameTail v33Tail(Debug::V3HitchTelemetry::FrameTailStage::LuaWait);
         Debug::GameplayDiagnostics::Stage diagnostic("lua_wait");
+        Debug::HitchTrace::Scope hitchLuaWait("lua.worker_update_wait");
         mLuaWorker->finishUpdate(frameStart, frameNumber, *stats);
     }
 
@@ -1345,6 +1457,27 @@ OMW::Engine::Engine(Files::ConfigurationManager& configurationManager)
 
 OMW::Engine::~Engine()
 {
+    // Raw streamed allocations belong to the live owner context. Stop render
+    // threads before retiring them, then close the held contexts only after
+    // scene/worker teardown. Graph release alone does not repay pooled debt.
+    std::vector<osg::ref_ptr<osg::GraphicsContext>> assetContexts;
+    if (mDiagnosticWindowClose)
+        mDiagnosticWindowClose->stopAdmissionsAndJoin([&] { if (mViewer) mViewer->stopThreading(); });
+    if((Resource::AssetPolicy::mask() || mDiagnosticWindowClose) && mViewer && !mUseVulkanRenderer)
+    {
+        if (!mDiagnosticWindowClose) mViewer->stopThreading();
+        osgViewer::ViewerBase::Contexts contexts;
+        mViewer->getContexts(contexts);
+        for(auto* context:contexts)
+        {
+            assetContexts.emplace_back(context);
+            if(Resource::AssetPolicy::mask() && context->getState() && context->makeCurrent())
+            {
+                Resource::TextureStreaming::releaseContext(*context->getState());
+                context->releaseContext();
+            }
+        }
+    }
     if (mScreenCaptureOperation != nullptr)
     {
         mScreenCaptureOperation->stop();
@@ -1389,19 +1522,49 @@ OMW::Engine::~Engine()
         mWindow = nullptr;
 #endif
 
+    Resource::UploadPool::sample=nullptr;
+    Resource::UploadPool::sampleOwner=nullptr;
+    Resource::UploadPool::ledger=nullptr;
+    SceneUtil::GpuIndirectPackets::sample=nullptr;
+    SceneUtil::GpuIndirectPackets::sampleOwner=nullptr;
+    SceneUtil::GpuIndirectPackets::ledger=nullptr;
     mResourceSystem.reset();
+    for(auto& context:assetContexts)
+        if (!mDiagnosticWindowClose || !mDiagnosticWindowClose->ownsContext(context)) context->close(true);
+    if (mDiagnosticWindowClose)
+    {
+        mDiagnosticWindowClose->closeJoined();
+        // One finite retry on the retained native creation, independent of
+        // any OSG State discarded by close(). Live importer/fence debt keeps
+        // release denied; no synthetic zeroing or unbounded retry loop.
+        mDiagnosticWindowClose->retryCloseJoined();
+    }
+    const bool nativeWindowClosed=!mDiagnosticWindowClose || (mDiagnosticWindowClose->subsystemReleaseAllowed()
+        && mDiagnosticWindowClose->windowReleaseAllowed(mWindow));
+    if(!assetContexts.empty() && nativeWindowClosed) Resource::AssetGpuBudget::discardAfterContextsClosed();
+    // All resource, Lua and viewer workers are now joined.
+    Debug::ResourceLifecycle::emitStatus();
+    Debug::DiagnosticObserver::declareProducerThreadsJoined();
+    Debug::V36GpuProfiler::finish(true);
+    Debug::HitchTrace::Capture::instance().finish();
 
     mEncoder = nullptr;
 
-    if (mWindow)
+    if (mDiagnosticWindowClose)
+    {
+        if (!mDiagnosticWindowClose->destroyExternalWindow(mWindow))
+            Log(Debug::Error) << "Diagnostic native close refused: retaining external SDL window and context authority through process exit.";
+    }
+    else if (mWindow)
     {
         SDL_DestroyWindow(mWindow);
         mWindow = nullptr;
     }
 
-    SDL_Quit();
+    if (nativeWindowClosed) SDL_Quit();
+    else Log(Debug::Error) << "Diagnostic native close refused: SDL subsystem shutdown withheld; no native-death/free credit.";
 
-    Log(Debug::Info) << "Quitting peacefully.";
+    Log(Debug::Info) << (nativeWindowClosed ? "Quitting peacefully." : "Quitting with retained diagnostic native close debt.");
 }
 
 // Set data dir
@@ -1503,6 +1666,8 @@ void OMW::Engine::createWindow()
     }
 
     osg::ref_ptr<SDLUtil::GraphicsWindowSDL2> graphicsWindow;
+    if (Settings::video().mDiagnosticContextLifetime)
+        mDiagnosticWindowClose=std::make_unique<SDLUtil::ExternalWindowCloseAuthority>();
     while (!graphicsWindow || !graphicsWindow->valid())
     {
         while (!mWindow)
@@ -1568,7 +1733,8 @@ void OMW::Engine::createWindow()
         traits->vsync = 0;
         traits->inheritedWindowData = new SDLUtil::GraphicsWindowSDL2::WindowData(mWindow);
 
-        graphicsWindow = new SDLUtil::GraphicsWindowSDL2(traits, vsync);
+        graphicsWindow = new SDLUtil::GraphicsWindowSDL2(traits, vsync,bool(mDiagnosticWindowClose));
+        if (mDiagnosticWindowClose) mDiagnosticWindowClose->attach(mWindow,graphicsWindow);
         if (!graphicsWindow->valid())
             throw std::runtime_error("Failed to create GraphicsContext");
 
@@ -1576,9 +1742,20 @@ void OMW::Engine::createWindow()
         {
             Log(Debug::Warning) << "Warning: Framebuffer MSAA level is only " << traits->samples << "x instead of "
                                 << antialiasing << "x. Trying " << antialiasing / 2 << "x instead.";
-            graphicsWindow->closeImplementation();
-            SDL_DestroyWindow(mWindow);
-            mWindow = nullptr;
+            if (mDiagnosticWindowClose)
+            {
+                // No viewer/importer has acquired this startup creation yet.
+                mDiagnosticWindowClose->stopAdmissionsAndJoin([] {});
+                mDiagnosticWindowClose->closeJoined();
+                if (!mDiagnosticWindowClose->destroyExternalWindow(mWindow))
+                    throw std::runtime_error("Diagnostic native close denied MSAA window replacement");
+            }
+            else
+            {
+                graphicsWindow->closeImplementation();
+                SDL_DestroyWindow(mWindow);
+                mWindow = nullptr;
+            }
             antialiasing /= 2;
             Settings::video().mAntialiasing.set(antialiasing);
             checkSDLError(SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, antialiasing));
@@ -1677,6 +1854,9 @@ void OMW::Engine::createWindow()
         realizeOperations->add(new Stereo::InitializeStereoOperation(settings));
     }
 
+    // Allocate and touch the opt-in timeline arena before gameplay/draw threads.
+    (void)Debug::HitchTrace::Capture::instance();
+    Debug::ResourceLifecycle::initialize();
     if (SceneUtil::DrawPhaseTrace::Capture::instance().enabled())
     {
         if (Settings::stereo().mStereoEnabled || osg::DisplaySettings::instance()->getStereo())
@@ -1684,6 +1864,12 @@ void OMW::Engine::createWindow()
         const unsigned installed = SceneUtil::DrawPhaseTrace::installBeforeRealize(*mViewer);
         Log(Debug::Info) << "Phase 9 draw/state trace scene views installed=" + std::to_string(installed)
             + "; installed before realize; runtime leaf coverage must also be checked";
+    }
+    if(Resource::AssetPolicy::enabled(Resource::AssetPolicy::TexturePreparation
+        | Resource::AssetPolicy::TextureStreaming) && !Stereo::getStereo())
+    {
+        const unsigned installed=SceneUtil::TextureOwnerBoundary::installBeforeRealize(*mViewer);
+        Log(Debug::Info) << "Native texture owner root stages installed=" << installed;
     }
     mViewer->realize();
     mGlMaxTextureImageUnits = identifyOp->getMaxTextureImageUnits();
@@ -1745,7 +1931,7 @@ void OMW::Engine::prepareEngine()
             {"preload_min", static_cast<std::uint64_t>(Settings::RamCache::preloadCellCacheMin())},
             {"preload_max", static_cast<std::uint64_t>(Settings::RamCache::preloadCellCacheMax())},
             {"preload_expiry_seconds", static_cast<std::uint64_t>(Settings::RamCache::preloadCellExpiryDelay())},
-            {"parsed_nif_retention", Settings::RamCache::retainNifFiles()},
+            {"profile_parsed_nif_retention", Settings::RamCache::retainNifFiles()},
             {"shape_pool_limit", Settings::RamCache::shapeInstancePoolSize()},
             {"prepared_instances", static_cast<bool>(Settings::cells().mV3PreparedInstanceCache)},
             {"prepared_instance_limit", static_cast<std::uint64_t>(static_cast<int>(Settings::cells().mV3PreparedInstanceCacheMax))},
@@ -1781,6 +1967,24 @@ void OMW::Engine::prepareEngine()
                      << static_cast<int>(Settings::cells().mV32GpuHardBudgetMb) << " MiB";
     mResourceSystem = std::make_unique<Resource::ResourceSystem>(mVFS.get(), effectiveResourceCacheExpiry,
         &mEncoder.get()->getStatelessEncoder(), Settings::RamCache::retainNifFiles());
+    mResourceSystem->configureLoadingNifMaintenance(
+            Settings::cells().mLoadingNifMaintenance);
+    mResourceSystem->configureVisualCacheRetention(
+        Settings::cells().mUnusedImageCacheSeconds, Settings::cells().mUnusedSceneCacheSeconds);
+    mResourceSystem->configureVisualCacheHandoff(Settings::cells().mVisualCacheHandoff);
+    mResourceSystem->getImageManager()->configureCanonicalPublication(Settings::cells().mCanonicalImagePublication);
+    Log(Debug::Info) << "OptimizedMW canonical image publication: enabled="
+        << static_cast<bool>(Settings::cells().mCanonicalImagePublication)
+        << "; concurrent decoded owners only, not a whole-process RAM ceiling";
+    const auto effectiveParsedNifExpiry = mResourceSystem->getNifFileManager()->effectiveExpiryDelay();
+    Log(Debug::Info) << "OptimizedMW parsed NIF cache policy: profile_retention="
+        << Settings::RamCache::retainNifFiles() << " effective_ttl_s=" << effectiveParsedNifExpiry
+        << "; TTL is residence time, not a RAM byte limit";
+    if (Debug::RuntimeDiagnostics::enabled())
+        Debug::RuntimeDiagnostics::recordEvent("configuration", "effective_parsed_nif_policy", {}, {
+            {"profile_retention", Settings::RamCache::retainNifFiles()},
+            {"retention_enabled", effectiveParsedNifExpiry > 0},
+            {"effective_ttl_seconds", static_cast<std::uint64_t>(effectiveParsedNifExpiry)} });
     // Retain the useful V3 policy with a pressure escape hatch on the Vulkan
     // route. Same-executable control restores the pre-repair retention policy.
     const bool hostMemoryBudget = mUseVulkanRenderer
@@ -1794,18 +1998,31 @@ void OMW::Engine::prepareEngine()
     if (!mUseVulkanRenderer && static_cast<bool>(Settings::cells().mOpimizedMWSpeculativeBudget)
         && !static_cast<bool>(Settings::cells().mOpimizedMWHostPressure))
         throw std::runtime_error("OpimizedMW speculative budget requires opimizedmw host pressure=true");
-    if (!mUseVulkanRenderer && static_cast<bool>(Settings::cells().mOpimizedMWHostPressure))
+    if (!mUseVulkanRenderer && (static_cast<bool>(Settings::cells().mOpimizedMWHostPressure)
+        || Resource::AssetPolicy::mask()))
     {
         Resource::OpenGlPressureConfig pressureConfig;
         pressureConfig.physicalReserve = static_cast<std::uint64_t>(
             static_cast<int>(Settings::cells().mOpimizedMWHostReserveMb)) * Resource::OpenGlPressureConfig::MiB;
         pressureConfig.commitReserve = static_cast<std::uint64_t>(
             static_cast<int>(Settings::cells().mOpimizedMWCommitReserveMb)) * Resource::OpenGlPressureConfig::MiB;
-        if (static_cast<bool>(Settings::cells().mOpimizedMWSpeculativeBudget))
+        if (static_cast<bool>(Settings::cells().mOpimizedMWSpeculativeBudget) || Resource::AssetPolicy::mask())
         {
             Resource::SpeculativeBudget::Config config;
             config.transientLimit = static_cast<std::uint64_t>(
                 static_cast<int>(Settings::cells().mOpimizedMWTransientBudgetMb)) * Resource::SpeculativeBudget::MiB;
+            const char* budgetV2 = std::getenv("OPENMW_RAM_BUDGET_V2");
+            const bool experimentalOwnership = budgetV2 && std::string_view(budgetV2) == "1";
+            if(Resource::AssetPolicy::mask() && !experimentalOwnership)
+                config.transientLimit=std::min(config.transientLimit,Resource::AssetPolicy::CpuTransientLimit);
+            if (experimentalOwnership)
+            {
+                config.experimentLimit = static_cast<std::uint64_t>(
+                    static_cast<int>(Settings::cells().mExperimentalCacheBudgetMb)) * Resource::SpeculativeBudget::MiB;
+                config.experimentScratchLimit = std::min(config.experimentLimit, static_cast<std::uint64_t>(
+                    static_cast<int>(Settings::cells().mExperimentalScratchBudgetMb)) * Resource::SpeculativeBudget::MiB);
+                config.experimentMaximumJobs = static_cast<int>(Settings::cells().mExperimentalConcurrentBuilds);
+            }
             // Preserve the original four-job ceiling while reserving one
             // slot for the closest exterior preload. P2's optional strong
             // upgrade is intrinsically single-instance and uses the same
@@ -1813,6 +2030,12 @@ void OMW::Engine::prepareEngine()
             config.reservedNearFutureJobs = 1;
             mResourceSystem->enableOpenGlSpeculativeBudget(pressureConfig, config);
             Log(Debug::Info) << "OpimizedMW GL-P1B byte admission and bounded maintenance: on";
+            Log(Debug::Info) << "OptimizedMW memory policy v2=" << experimentalOwnership
+                << " common_future_bytes=" << config.transientLimit
+                << " experiment_total_bytes=" << config.experimentLimit
+                << " experiment_scratch_bytes=" << config.experimentScratchLimit
+                << " experiment_jobs=" << config.experimentMaximumJobs
+                << "; live/protected and uncharged payloads are outside cache targets";
         }
         else mResourceSystem->enableOpenGlHostMemoryBudget(pressureConfig);
         Log(Debug::Info) << "OpimizedMW GL-P1A pressure protection: on; healthy retention unchanged; "
@@ -1820,6 +2043,45 @@ void OMW::Engine::prepareEngine()
     }
     else
         Log(Debug::Info) << "OpimizedMW GL-P1A pressure protection: off (P0/Vulkan control)";
+    mResourceSystem->getImageManager()->configureImageSources(
+        Settings::cells().mImageSourceRecipes && !mUseVulkanRenderer && mResourceSystem->speculativeBudget(),
+        &Resource::ResourceSystem::speculativeSample,mResourceSystem.get());
+    if ((Resource::UploadPool::requested() || Resource::AssetPolicy::mask()) && !mUseVulkanRenderer)
+    {
+        Resource::UploadPool::sample=&Resource::ResourceSystem::speculativeSample;
+        Resource::UploadPool::sampleOwner=mResourceSystem.get();
+        Resource::UploadPool::ledger=mResourceSystem->speculativeBudget();
+    }
+    SceneUtil::reusePagingScoreValues.store(Settings::cells().mOptimizedMWPagingScoreValues,
+        std::memory_order_relaxed);
+    osgViewer::ViewerBase::Contexts cullContexts;
+    mViewer->getContexts(cullContexts, false);
+    const bool ownedCellCullThreading = !mUseVulkanRenderer && cullContexts.size() == 1
+        && (mViewer->getThreadingModel() == osgViewer::ViewerBase::SingleThreaded
+            || mViewer->getThreadingModel() == osgViewer::ViewerBase::DrawThreadPerContext);
+    SceneUtil::OwnedCellCull::enabled.store(Settings::cells().mOptimizedMWOwnedCellCull && ownedCellCullThreading,
+        std::memory_order_relaxed);
+    if (Settings::cells().mOptimizedMWOwnedCellCull && !ownedCellCullThreading)
+        Log(Debug::Info) << "OptimizedMW owned cell cull: ordinary fallback for unsupported context/threading ownership";
+    SceneUtil::UnchangedTransform::enabled.store(Settings::cells().mOptimizedMWUnchangedTransform, std::memory_order_relaxed);
+    Resource::TemplateCoalescing::enabled.store(Settings::cells().mOptimizedMWTemplateCoalescing, std::memory_order_relaxed);
+    SceneUtil::TemporalHistoryLookup::enabled.store(Settings::cells().mOptimizedMWTemporalHistoryLookup, std::memory_order_relaxed);
+    if (SceneUtil::GpuIndirectPackets::indirectEnabled() && !mUseVulkanRenderer)
+    {
+        SceneUtil::GpuIndirectPackets::reuseIndirectCommands.store(Settings::cells().mOptimizedMWIndirectCommandReuse,
+            std::memory_order_relaxed);
+        SceneUtil::GpuIndirectPackets::reuseContextCapabilities.store(
+            Settings::cells().mOptimizedMWIndirectContextCapabilityReuse, std::memory_order_relaxed);
+        SceneUtil::GpuIndirectPackets::filterVisibilityOpportunity.store(
+            Settings::cells().mOptimizedMWGpuVisibilityOpportunityFilter, std::memory_order_relaxed);
+        SceneUtil::GpuIndirectPackets::reuseProjectionProof.store(
+            Settings::cells().mOptimizedMWIndirectProjectionProofReuse, std::memory_order_relaxed);
+        SceneUtil::GpuIndirectPackets::earlyAdmissionFallback.store(
+            Settings::cells().mOptimizedMWIndirectEarlyAdmissionFallback, std::memory_order_relaxed);
+        SceneUtil::GpuIndirectPackets::sample=&Resource::ResourceSystem::speculativeSample;
+        SceneUtil::GpuIndirectPackets::sampleOwner=mResourceSystem.get();
+        SceneUtil::GpuIndirectPackets::ledger=mResourceSystem->speculativeBudget();
+    }
     mResourceSystem->getSceneManager()->setPreparedInstanceCacheLimit(
         Settings::cells().mV3PreparedInstanceCache
             ? static_cast<std::size_t>(Settings::cells().mV3PreparedInstanceCacheMax)
@@ -1982,8 +2244,20 @@ void OMW::Engine::prepareEngine()
 
     Loading::Listener* listener = MWBase::Environment::get().getWindowManager()->getLoadingScreen();
     Loading::AsyncListener asyncListener(*listener);
+    std::optional<Debug::HitchTrace::Scope> loadingEnvelope;
+    if (Debug::CompileAttribution::requested())
+        loadingEnvelope.emplace("startup.load_data_async", Debug::HitchTrace::CpuTiming::WallEnvelope);
+    const auto loadingLink = loadingEnvelope ? loadingEnvelope->id() : 0;
     auto dataLoading = std::async(std::launch::async,
-        [&] { mWorld->loadData(mFileCollections, mContentFiles, mGroundcoverFiles, mEncoder.get(), &asyncListener); });
+        [&, loadingLink] {
+            std::optional<Debug::HitchTrace::Scope> workerEnvelope;
+            if (Debug::CompileAttribution::requested())
+            {
+                workerEnvelope.emplace("startup.load_data_worker", Debug::HitchTrace::CpuTiming::WallEnvelope);
+                workerEnvelope->setLink(loadingLink);
+            }
+            mWorld->loadData(mFileCollections, mContentFiles, mGroundcoverFiles, mEncoder.get(), &asyncListener);
+        });
 
     if (!mSkipMenu)
     {
@@ -1995,10 +2269,17 @@ void OMW::Engine::prepareEngine()
     listener->loadingOn();
     {
         using namespace std::chrono_literals;
+        std::optional<Debug::HitchTrace::Scope> joinEnvelope;
+        if (Debug::CompileAttribution::requested())
+        {
+            joinEnvelope.emplace("startup.load_data_join", Debug::HitchTrace::CpuTiming::WallEnvelope);
+            joinEnvelope->setLink(loadingLink);
+        }
         while (dataLoading.wait_for(50ms) != std::future_status::ready)
             asyncListener.update();
         dataLoading.get();
     }
+    loadingEnvelope.reset();
     mSoundManager->warmStoreSounds();
     if (static_cast<bool>(Settings::cells().mV316SfxMetadataFrontload))
     {
@@ -2046,6 +2327,12 @@ void OMW::Engine::prepareEngine()
 
 void OMW::Engine::prepareVirtualFileSystem()
 {
+    if (const char* ack = std::getenv("OPENMW_P9_FILE_POLICY_ACK"); ack && std::string_view(ack) == "1")
+    {
+        const auto& policy = Files::ConstrainedReadPolicy::Options::startup();
+        Log(Debug::Info) << "P9 file policy: refill_bytes=" << policy.refillBytes
+            << " resident_seek=" << (policy.residentSeek ? 1 : 0) << " budget_bytes=" << policy.budgetBytes;
+    }
     if (mVFS)
         throw std::logic_error("Virtual file system was already prepared");
     if (!mEncoder)
@@ -2143,6 +2430,17 @@ void OMW::Engine::go()
 {
     assert(!mContentFiles.empty());
 
+    if (const char* automatic = std::getenv("OPENMW_P9_AUTOMATED_BENCHMARK"); automatic && std::string_view(automatic) == "1")
+    {
+        if (static_cast<float>(Settings::sound().mMasterVolume) != 0.f)
+            throw std::runtime_error("Private benchmark requires resolved master volume zero");
+        Log(Debug::Info) << "OptimizedMW automatic benchmark: master_volume=0"
+            << " material_images=" << static_cast<bool>(Settings::cells().mOptimizedMWPrepareMaterialImages)
+            << " lod_cache_hit=" << static_cast<bool>(Settings::cells().mOptimizedMWLodCacheHitAdmission)
+            << " ordinary_packets=" << static_cast<bool>(Settings::cells().mOptimizedMWOrdinaryOpaquePackets)
+            << " scope=muted_private_window";
+    }
+
     Log(Debug::Info) << "OSG version: " << osgGetVersion();
     const int sdlVersion = SDL_GetVersion();
     Log(Debug::Info) << "SDL version: " << SDL_VERSIONNUM_MAJOR(sdlVersion) << "."
@@ -2234,6 +2532,13 @@ void OMW::Engine::go()
 
     mEnvironment.setFrameRateLimit(Settings::video().mFramerateLimit);
 
+    if (!mUseVulkanRenderer && Resource::AssetPolicy::mask())
+    {
+        mViewer->addUpdateOperation(new AssetGpuAdmissionOperation);
+        sampleConfiguredAssetGpuAdmission();
+        reportAssetGpuAdmissionSample("startup");
+    }
+
     prepareEngine();
 
 #ifdef _WIN32
@@ -2248,6 +2553,7 @@ void OMW::Engine::go()
 
     const bool cleanCapture = Debug::DeferredCapture::enabled();
     Debug::V3HitchTelemetry::state().prepare();
+    Debug::BenchmarkContext::capture().prepare();
     Resource::BenchmarkCapture numericCapture;
     std::ofstream stats;
     if (!cleanCapture && !path.empty())
@@ -2321,9 +2627,16 @@ void OMW::Engine::go()
         }
 
         const unsigned frameNumber = mViewer->getFrameStamp()->getFrameNumber();
+        Debug::HitchTrace::Scope hitchIteration("engine.iteration", {}, {}, frameNumber);
+        auto& benchmarkContext = Debug::BenchmarkContext::capture();
+        if (benchmarkContext.enabled())
+            benchmarkContext.begin(frameNumber, benchmarkStateFlags(*mWorld, *mStateManager, *mWindowManager));
 
         if (!frame(frameNumber, static_cast<float>(dt)))
         {
+            if (benchmarkContext.enabled())
+                benchmarkContext.end(mViewer->getFrameStamp()->getFrameNumber(),
+                    benchmarkStateFlags(*mWorld, *mStateManager, *mWindowManager));
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
@@ -2334,8 +2647,84 @@ void OMW::Engine::go()
             timeManager.setRenderingSimulationTime(timeManager.getRenderingSimulationTime() + dt);
         }
 
+        if (benchmarkContext.enabled())
+        {
+            benchmarkContext.observe(benchmarkStateFlags(*mWorld, *mStateManager, *mWindowManager));
+            if (benchmarkContext.snapshotDue())
+            {
+                Debug::BenchmarkContext::Snapshot sample;
+                sample.frame = frameNumber;
+                try
+                {
+                    if (mStateManager->getState() == MWBase::StateManager::State_Running)
+                    {
+                        const auto player = mWorld->getPlayerPtr();
+                        const auto& position = player.getRefData().getPosition();
+                        const auto* camera = mWorld->getCamera();
+                        for (unsigned i = 0; i < 3; ++i)
+                        {
+                            sample.player[i] = position.pos[i];
+                            sample.camera[i] = camera->getPosition()[i];
+                        }
+                        sample.rotation = { camera->getYaw(), camera->getPitch(), camera->getRoll() };
+                        sample.cameraMode = static_cast<int>(camera->getMode());
+                        sample.weather = mWorld->getCurrentWeatherScriptId();
+                        sample.weatherTransition = mWorld->getWeatherTransition();
+                        const auto time = mWorld->getTimeStamp();
+                        sample.day = time.getDay();
+                        sample.hour = time.getHour();
+                        const auto* cell = mWorld->getWorldScene().getCurrentCell();
+                        if (cell && cell->getCell())
+                        {
+                            sample.setCell(cell->getCell()->getDescription());
+                            sample.exterior = cell->getCell()->isExterior();
+                            sample.valid = true;
+                        }
+                    }
+                }
+                catch (...) { /* Invalid sample is retained; it cannot alter gameplay. */ }
+                benchmarkContext.snapshot(sample);
+            }
+            benchmarkContext.end(mViewer->getFrameStamp()->getFrameNumber(),
+                benchmarkStateFlags(*mWorld, *mStateManager, *mWindowManager));
+        }
+
         if (cleanCapture)
+        {
             numericCapture.capture(mViewer->getFrameStamp()->getFrameNumber(), *mViewer);
+            using C = SceneUtil::GpuIndirectPackets::Counters;
+            numericCapture.captureIndirectWork(mViewer->getFrameStamp()->getFrameNumber(),
+                {C::draws.load(std::memory_order_relaxed), C::commands.load(std::memory_order_relaxed),
+                    C::dispatches.load(std::memory_order_relaxed), C::commandUploads.load(std::memory_order_relaxed),
+                    C::commandUploadsAvoided.load(std::memory_order_relaxed), C::capabilityDraws.load(std::memory_order_relaxed),
+                    C::gpuResolutionsAvoided.load(std::memory_order_relaxed), C::visibilityOriginalDraws.load(std::memory_order_relaxed),
+                    C::visibilityDispatchesAvoided.load(std::memory_order_relaxed), C::projectionProofReuses.load(std::memory_order_relaxed),
+                    C::earlyAdmissionFallbacks.load(std::memory_order_relaxed), C::earlyBusyFallbacks.load(std::memory_order_relaxed),
+                    SceneUtil::ExactPagingWorkCounters::scoreTableRuns.load(std::memory_order_relaxed),
+                    SceneUtil::ExactPagingWorkCounters::scoreTableHits.load(std::memory_order_relaxed),
+                    SceneUtil::ExactPagingWorkCounters::scoreTableComputations.load(std::memory_order_relaxed),
+                    SceneUtil::ExactPagingWorkCounters::scoreTableUncached.load(std::memory_order_relaxed),
+                    SceneUtil::WorkQueue::PriorityStats::submitted.load(std::memory_order_relaxed),
+                    SceneUtil::WorkQueue::PriorityStats::promoted.load(std::memory_order_relaxed),
+                    SceneUtil::WorkQueue::PriorityStats::consumed.load(std::memory_order_relaxed),
+                    SceneUtil::WorkQueue::PriorityStats::fairness.load(std::memory_order_relaxed),
+                    SceneUtil::OwnedCellCull::Counters::publications.load(std::memory_order_relaxed),
+                    SceneUtil::OwnedCellCull::Counters::boundReadsAvoided.load(std::memory_order_relaxed),
+                    SceneUtil::OwnedCellCull::Counters::classificationVisitsAvoided.load(std::memory_order_relaxed),
+                    SceneUtil::OwnedCellCull::Counters::invalidatedReads.load(std::memory_order_relaxed),
+                    SceneUtil::OwnedCellCull::Counters::refusals.load(std::memory_order_relaxed),
+                    SceneUtil::UnchangedTransform::dirtyCallsAvoided.load(std::memory_order_relaxed),
+                    SceneUtil::UnchangedTransform::changedInputs.load(std::memory_order_relaxed),
+                    Resource::TemplateCoalescing::Counters::afterLoadReuses.load(std::memory_order_relaxed),
+                    Resource::TemplateCoalescing::Counters::publishReuses.load(std::memory_order_relaxed),
+                    Resource::TemplateCoalescing::Counters::publications.load(std::memory_order_relaxed),
+                    SceneUtil::TemporalHistoryLookup::indexedLookups.load(std::memory_order_relaxed),
+                    SceneUtil::TemporalHistoryLookup::compatibilityComparisons.load(std::memory_order_relaxed),
+                    SceneUtil::StaticVao::Counters::draws.load(std::memory_order_relaxed),
+                    SceneUtil::StaticVao::Counters::layoutReuses.load(std::memory_order_relaxed),
+                    SceneUtil::StaticVao::Counters::producerFallbacks.load(std::memory_order_relaxed),
+                    SceneUtil::StaticVao::Counters::contextFallbacks.load(std::memory_order_relaxed)});
+        }
         if (!cleanCapture && stats.is_open())
         {
             // The delay is required because rendering happens in parallel to the main thread and stats from there is
@@ -2360,6 +2749,7 @@ void OMW::Engine::go()
 
     // The gameplay interval ends BEFORE deferred CSV formatting and disk output.
     Debug::V3HitchTelemetry::state().finish();
+    Debug::BenchmarkContext::capture().finish(true);
     numericCapture.finish();
     const auto preparedTextureStats = Resource::PreparedTerrainTextureCompileOp::stats();
     Log(Debug::Info) << "P8U1 terrain preparation snapshot: requested="
@@ -2367,6 +2757,394 @@ void OMW::Engine::go()
         + " submitted=" + std::to_string(preparedTextureStats.completed)
         + " (precompile calls, not GPU-completion or uploaded-byte counters)";
     mLuaWorker->join();
+
+    if (mResourceSystem && mResourceSystem->speculativeBudget())
+    {
+        const auto* budget = mResourceSystem->speculativeBudget();
+        const auto memory = budget->stats();
+        Log(Debug::Info) << "OptimizedMW experimental CPU ownership v2: worker_frozen=0 enabled="
+            << budget->experimentEnabled() << " future_bytes=" << memory.experimentFutureBytes
+            << " retained_estimate_bytes=" << memory.experimentRetainedBytes
+            << " pending_estimate_bytes=" << memory.experimentPendingBytes
+            << " peak_total_estimate_bytes=" << memory.experimentPeakTotalBytes
+            << " peak_future_bytes=" << memory.experimentPeakFutureBytes
+            << " concurrent_cooks=" << memory.experimentJobs
+            << " admitted=" << memory.experimentAdmitted << " denied=" << memory.experimentDenied
+            << " source_pins=" << memory.experimentSourcePins
+            << " source_pin_estimate_bytes=" << memory.experimentSourcePinEstimateBytes
+            << "; incremental charged CPU ownership only; pins may overlap; no physical free credit";
+    }
+
+    if(Resource::AssetPolicy::mask())
+    {
+        // Freeze consumers before the final draw proof. Optional preparation
+        // workers remain live until teardown, so readiness is a loop-end
+        // observation and must not be treated as a complete worker ledger.
+        mViewer->stopThreading();
+        const auto& textures=Resource::nativeTextureStats();
+        Log(Debug::Info) << "OptimizedMW asset QC v1: final=1 draw_stopped=1 worker_frozen=0 mask="
+            +std::to_string(Resource::AssetPolicy::mask())+" gpu_receipt_schema=1"
+            +" paging_attempted_mask="+std::to_string(SceneUtil::AssetPaging::Counters::attemptedMask.load())
+            +" paging_completed_mask="+std::to_string(SceneUtil::AssetPaging::Counters::completedMask.load())
+            +" paging_terminal_mask="+std::to_string(SceneUtil::AssetPaging::Counters::terminalMask.load())
+            +" paging_transient_mask="+std::to_string(SceneUtil::AssetPaging::Counters::transientMask.load())
+            +" paging_retry_attempts="+std::to_string(SceneUtil::AssetPaging::Counters::retryAttempts.load())
+            +" paging_retry_deferred="+std::to_string(SceneUtil::AssetPaging::Counters::retryDeferred.load())
+            +" paging_retry_exhausted="+std::to_string(SceneUtil::AssetPaging::Counters::retryExhausted.load())
+            +" optional_tail_attempts="+std::to_string(SceneUtil::AssetPaging::Counters::tailAttempts.load())
+            +" optional_tail_queued="+std::to_string(SceneUtil::AssetPaging::Counters::tailQueued.load())
+            +" optional_tail_deferred="+std::to_string(SceneUtil::AssetPaging::Counters::tailDeferred.load())
+            +" optional_tail_exhausted="+std::to_string(SceneUtil::AssetPaging::Counters::tailExhausted.load())
+            +" optional_tail_cancelled="+std::to_string(SceneUtil::AssetPaging::Counters::tailCancelled.load());
+        Log(Debug::Info) << "OptimizedMW asset QC L1: requested="
+            +std::to_string(SceneUtil::AssetPaging::Counters::lod.sourceRequested.load())
+            +" eligible="+std::to_string(SceneUtil::AssetPaging::Counters::lod.sourceCertified.load())
+            +" candidate_admitted="+std::to_string(SceneUtil::AssetPaging::Counters::lod.candidateAdmitted.load())
+            +" build_attempts="+std::to_string(SceneUtil::AssetPaging::Counters::lod.buildAttempts.load())
+            +" compile_ready="+std::to_string(SceneUtil::AssetPaging::Counters::lod.ready.load())
+            +" built="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::built.load())
+            +" original_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::originalIndices.load())
+            +" derived_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::derivedIndices.load())
+            +" post_optimized_candidates="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::postOptimizedCandidates.load())
+            +" private_array_copies="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::privateArrayCopies.load())
+            +" private_vertex_buffers="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::privateVertexBuffers.load())
+            +" new_index_gpu_bytes="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::newIndexGpuBytes.load())
+            +" consumed_draws="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::derivedDraws.load())
+            +" consumed_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::submittedIndices.load())
+            +" active_build_attempts="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeBuildAttempts.load())
+            +" active_built="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeBuilt.load())
+            +" active_coarse_views="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeCoarseViews.load())
+            +" active_original_views="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeOriginalViews.load())
+            +" active_consumed_draws="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeDerivedDraws.load())
+            +" active_consumed_indices="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::activeSubmittedIndices.load())
+            +" cache_fast_hits="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::cacheFastHits.load())
+            +" primitive_clone_bytes_avoided="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::primitiveCloneBytesAvoided.load())
+            +" cache_miss_admissions="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::cacheMissAdmissions.load());
+        Log(Debug::Info) << "OptimizedMW asset compile lifecycle:" << SceneUtil::GeneratedStaticLod::compileLifecycleSummary();
+        std::string lodRefusals;
+        const char* lodReasons[]={"none","graph","material","transform","layout","capacity","no_reduction"};
+        for(unsigned i=0;i<static_cast<unsigned>(SceneUtil::GeneratedStaticLod::Refusal::Count);++i)
+            lodRefusals+=" "+std::string(lodReasons[i])+"="
+                +std::to_string(SceneUtil::GeneratedStaticLod::Counters::refused[i].load());
+        const auto pagingRefusals=[](const SceneUtil::AssetPaging::LaneCounters& lane){
+            std::string result=" source_rejected="+std::to_string(lane.sourceRejected.load())
+                +" outer_cpu_denied="+std::to_string(lane.outerCpuDenied.load())
+                +" snapshot_denied="+std::to_string(lane.snapshotDenied.load())
+                +" private_cpu_denied="+std::to_string(lane.privateCpuDenied.load())
+                +" private_gpu_denied="+std::to_string(lane.privateGpuDenied.load())
+                +" control_sources_admitted="+std::to_string(lane.controlSourcesAdmitted.load())
+                +" control_reservation_bytes="+std::to_string(lane.controlReservationBytes.load())
+                +" control_retained_estimate_bytes="+std::to_string(lane.controlRetainedBytes.load())
+                +" control_census_refused="+std::to_string(lane.controlCensusRefused.load())
+                +" material_conflict_instances="+std::to_string(lane.materialConflictInstances.load())
+                +" build_refused="+std::to_string(lane.buildRefused.load());
+            const char* reasons[]={"graph","material","transform","layout","capacity","no_reduction","source","occluder","population"};
+            for(unsigned i=0;i<static_cast<unsigned>(SceneUtil::AssetPaging::Gate::Count);++i)
+                result+=" paging_"+std::string(reasons[i])+"="+std::to_string(lane.refusals[i].load());
+            // Independent reservation predicates can overlap on one refusal.
+            // Stage totals and sample-time memory are not a population funnel.
+            const char* stages[]={"outer","snapshot","private"};
+            const char* predicates[]={"pressure_policy","missing_watermark","accounting_saturated",
+                "invalid_request","aggregate_limit","physical_headroom","process_commit_headroom",
+                "system_commit_headroom","regressed_watermark","arithmetic_overflow",
+                "experiment_total_limit","experiment_scratch_limit","experiment_reservation_mismatch",
+                "experiment_job_limit"};
+            static_assert(std::size(predicates)==Resource::SpeculativeBudget::ReservationRefusalCount);
+            static_assert(std::size(stages)==static_cast<unsigned>(SceneUtil::AssetPaging::CpuStage::Count));
+            for(unsigned stage=0;stage<std::size(stages);++stage)
+            {
+                for(unsigned reason=0;reason<std::size(predicates);++reason)
+                    result+=" cpu_"+std::string(stages[stage])+"_"+predicates[reason]+"="
+                        +std::to_string(lane.cpuReasons[stage][reason].load());
+                result+=" cpu_"+std::string(stages[stage])+"_unclassified="
+                    +std::to_string(lane.cpuUnclassified[stage].load());
+            }
+            return result;
+        };
+        lodRefusals+=pagingRefusals(SceneUtil::AssetPaging::Counters::lod);
+        for(unsigned i=1;i<static_cast<unsigned>(SceneUtil::GeneratedStaticLod::BuildStep::Count);++i)
+            lodRefusals+=" build_step_"+std::string(SceneUtil::GeneratedStaticLod::buildStepName(
+                static_cast<SceneUtil::GeneratedStaticLod::BuildStep>(i)))+"="
+                +std::to_string(SceneUtil::GeneratedStaticLod::Counters::buildFailures[i].load());
+        lodRefusals+=" material_owner_unknown="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerUnknown.load())
+            +" material_owner_null="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerNull.load())
+            +" material_owner_capacity="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerCapacity.load())
+            +" material_owner_shared="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerShared.load())
+            +" material_owner_cohesions="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerCohesions.load())
+            +" material_owner_cohesive_instances="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::materialOwnerCohesiveInstances.load());
+        if (Resource::AssetPolicy::mask() & SceneUtil::AssetPaging::Lod)
+            lodRefusals+=SceneUtil::GeneratedStaticLod::postOptimizerSummary();
+        Log(Debug::Info) << "OptimizedMW asset QC L1 refusals:"+lodRefusals;
+        Log(Debug::Info) << "OptimizedMW asset QC H1: requested="+std::to_string(SceneUtil::AssetPaging::Counters::hlod.sourceRequested.load())
+            +" eligible="+std::to_string(SceneUtil::AssetPaging::Counters::hlod.sourceCertified.load())
+            +" candidate_admitted="+std::to_string(SceneUtil::AssetPaging::Counters::hlod.candidateAdmitted.load())
+            +" build_attempts="+std::to_string(SceneUtil::AssetPaging::Counters::hlod.buildAttempts.load())
+            +" compile_ready="+std::to_string(SceneUtil::AssetPaging::Counters::hlod.ready.load())
+            +" built="+std::to_string(SceneUtil::HlodCounters::built.load())
+            +" control_submissions="+std::to_string(SceneUtil::HlodCounters::controlSubmissions.load())
+            +" proxy_submissions="+std::to_string(SceneUtil::HlodCounters::proxySubmissions.load())
+            +" consumed_draws="+std::to_string(SceneUtil::HlodCounters::consumedDraws.load())
+            +" consumed_indices="+std::to_string(SceneUtil::HlodCounters::consumedIndices.load());
+        Log(Debug::Info) << "OptimizedMW asset QC H1 refusals: cook_refused="
+            +std::to_string(SceneUtil::HlodCounters::refused.load())
+            +pagingRefusals(SceneUtil::AssetPaging::Counters::hlod);
+        const auto shaderProducers = Shader::AssetGeometry::producerDiagnostics();
+        Log(Debug::Info) << std::dec << "OptimizedMW asset shader producers: live_metadata_bytes="
+            << shaderProducers.liveMetadataBytes << " peak_metadata_bytes=" << shaderProducers.peakMetadataBytes
+            << " metadata_limit_bytes=" << Shader::AssetGeometry::MaximumMetadataBytes;
+        for (unsigned i = 0; i < static_cast<unsigned>(Shader::AssetGeometry::Refusal::Count); ++i)
+        {
+            Log(Debug::Info) << std::dec << "OptimizedMW asset shader producer reason="
+                << Shader::AssetGeometry::refusalName(static_cast<Shader::AssetGeometry::Refusal>(i))
+                << " initial_source=" << shaderProducers.initialSource[i]
+                << " regenerated_source=" << shaderProducers.regeneratedSource[i]
+                << " refreshed_program=" << shaderProducers.refreshedProgram[i];
+        }
+        reportAssetGpuAdmissionSample("final");
+        const auto gpuAdmission=Resource::AssetGpuBudget::stats();
+        std::string gpuTotals=" reservation_attempts="+std::to_string(gpuAdmission.reservationAttempts)
+            +" reservation_admitted="+std::to_string(gpuAdmission.reservationAdmitted)
+            +" reservation_denied="+std::to_string(gpuAdmission.reservationDenied)
+            +" retention_attempts="+std::to_string(gpuAdmission.retentionAttempts)
+            +" retention_succeeded="+std::to_string(gpuAdmission.retentionSucceeded)
+            +" retention_failed="+std::to_string(gpuAdmission.retentionFailed)
+            +" current_debt="+std::to_string(gpuAdmission.currentDebt)
+            +" peak_debt="+std::to_string(gpuAdmission.peakDebt)
+            +" sequence="+std::to_string(gpuAdmission.sequence);
+        for(unsigned i=0;i<Resource::AssetGpuBudget::RefusalCount;++i)
+            gpuTotals+=" "+std::string(Resource::AssetGpuBudget::RefusalNames[i])+"="+std::to_string(gpuAdmission.refusalCounts[i]);
+        Log(Debug::Info) << "OptimizedMW asset GPU v1:"+gpuTotals;
+        for(unsigned i=0;i<Resource::AssetGpuBudget::RefusalCount;++i) if(gpuAdmission.hasFirstRefusal[i])
+        {
+            const auto& receipt=gpuAdmission.firstRefusal[i];
+            // Fixed bounded receipts: a sampler observation and the exact debt
+            // used by this reservation decision; not an instantaneous driver
+            // snapshot or a proof that pooled allocations were freed.
+            Log(Debug::Info) << "OptimizedMW asset GPU first "+std::string(Resource::AssetGpuBudget::RefusalNames[i])+":"
+                +" schema="+std::to_string(receipt.schema)+" sequence="+std::to_string(receipt.sequence)
+                +" operation="+std::to_string(static_cast<unsigned>(receipt.operation))
+                +" reasons="+std::to_string(receipt.reasons)+" requested="+std::to_string(receipt.requestedBytes)
+                +" local_limit="+std::to_string(receipt.localLimit)+" global_limit="+std::to_string(receipt.globalLimit)
+                +" current_debt="+std::to_string(receipt.currentDebt)+" proposed_debt="+std::to_string(receipt.proposedDebt)
+                +" headroom_reserve="+std::to_string(receipt.headroomReserve)
+                +" sample_valid="+std::to_string(receipt.sample.valid)
+                +" pressure_code="+std::to_string(static_cast<int>(receipt.sample.pressure)+1)
+                +" headroom="+std::to_string(receipt.sample.headroomBytes)
+                +" sampled_at_ms="+std::to_string(receipt.sample.sampledAtMs)
+                +" now_ms="+std::to_string(receipt.nowMs)+" sample_age_ms="+std::to_string(receipt.sampleAgeMs)
+                +" admitted="+std::to_string(receipt.admitted)+" retained="+std::to_string(receipt.retained);
+        }
+        Log(Debug::Info) << "OptimizedMW asset QC T1: requested="+std::to_string(textures.requested.load())
+            +" eligible="+std::to_string(textures.eligible.load())+" ready="+std::to_string(textures.ready.load())
+            +" native_images="+std::to_string(textures.nativeImages.load())
+            +" consumed_main_draws="+std::to_string(textures.consumedMainDraws.load())
+            +" consumed_composite_draws="+std::to_string(textures.consumedCompositeDraws.load())
+            +" full_applies="+std::to_string(textures.fullApplies.load())+" handoffs="+std::to_string(textures.handoffs.load())
+            +" retries="+std::to_string(textures.retries.load())+" terminal_declines="+std::to_string(textures.terminalDeclines.load())
+            +" transient_declines="+std::to_string(textures.transientDeclines.load())
+            +" full_published="+std::to_string(textures.fullPublished.load())
+            +" full_allocations="+std::to_string(textures.fullAllocations.load())
+            +" full_upload_bytes="+std::to_string(textures.fullUploadBytes.load())
+            +" full_deletions="+std::to_string(textures.fullDeletions.load())
+            +" full_live_bytes="+std::to_string(textures.fullLiveBytes.load())
+            +" full_peak_bytes="+std::to_string(textures.fullPeakBytes.load());
+        std::string textureRefusals;
+        for(unsigned i=0;i<static_cast<unsigned>(Resource::NativeTextureSkip::Count);++i)
+            textureRefusals+=" "+std::string(Resource::nativeTextureSkipName(static_cast<Resource::NativeTextureSkip>(i)))
+                +"="+std::to_string(textures.skips[i].load());
+        Log(Debug::Info) << "OptimizedMW asset QC T1 refusals:"+textureRefusals;
+        Log(Debug::Info) << "OptimizedMW asset pipeline: mask="+std::to_string(Resource::AssetPolicy::mask())
+            +" native_ready="+std::to_string(textures.ready.load())
+            +" native_dds="+std::to_string(textures.reusedDds.load())
+            +" native_converted="+std::to_string(textures.converted.load())
+            +" native_images="+std::to_string(textures.nativeImages.load())
+            +" native_full_applies="+std::to_string(textures.fullApplies.load())
+            +" native_fallback="+std::to_string(textures.fallback.load())
+            +" native_retained_bytes="+std::to_string(textures.retainedBytes.load())
+            +" derived_cache_hits="+std::to_string(Resource::DerivedAssets::Counters::hits.load())
+            +" derived_cache_writes="+std::to_string(Resource::DerivedAssets::Counters::writes.load())
+            +" derived_cache_corrupt="+std::to_string(Resource::DerivedAssets::Counters::corrupt.load())
+            +" gpu_live_debt="+std::to_string(Resource::AssetGpuBudget::liveBytes.load())
+            +" gpu_peak_debt="+std::to_string(Resource::AssetGpuBudget::peakBytes.load())
+            +" lod_built="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::built.load())
+            +" lod_coarse_views="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::coarseViews.load())
+            +" lod_derived_draws="+std::to_string(SceneUtil::GeneratedStaticLod::Counters::derivedDraws.load());
+        Log(Debug::Info) << "OptimizedMW HLOD: requested="+std::to_string(SceneUtil::HlodCounters::requests.load())
+            +" built="+std::to_string(SceneUtil::HlodCounters::built.load())
+            +" refused="+std::to_string(SceneUtil::HlodCounters::refused.load())
+            +" control_submissions="+std::to_string(SceneUtil::HlodCounters::controlSubmissions.load())
+            +" proxy_submissions="+std::to_string(SceneUtil::HlodCounters::proxySubmissions.load())
+            +" consumed_draws="+std::to_string(SceneUtil::HlodCounters::consumedDraws.load())
+            +" consumed_indices="+std::to_string(SceneUtil::HlodCounters::consumedIndices.load());
+        const auto& stream=Resource::TextureStreaming::counters();
+        Log(Debug::Info) << "OptimizedMW asset QC T2: requested="+std::to_string(stream.requested.load())
+            +" eligible="+std::to_string(stream.eligible.load())+" boundaries="+std::to_string(stream.boundaries.load())
+            +" allocations="+std::to_string(stream.allocations.load())+" uploads="+std::to_string(stream.uploads.load())
+            +" upload_bytes="+std::to_string(stream.uploadedBytes.load())
+            +" coarse_published="+std::to_string(stream.coarsePublished.load())+" fine_published="+std::to_string(stream.finePublished.load())
+            +" coarse_draws="+std::to_string(stream.coarseDraws.load())+" fine_draws="+std::to_string(stream.fineDraws.load())
+            +" demotions="+std::to_string(stream.demotions.load())+" demotion_eligible="+std::to_string(stream.demotionEligible.load())
+            +" demotion_draws="+std::to_string(stream.demotionDraws.load())+" deletions="+std::to_string(stream.deletions.load())
+            +" live_bytes="+std::to_string(stream.liveBytes.load())+" peak_bytes="+std::to_string(stream.peakBytes.load());
+        std::string streamRefusals;
+        for(unsigned i=0;i<static_cast<unsigned>(Resource::TextureStreaming::Skip::Count);++i)
+            streamRefusals+=" "+std::string(Resource::TextureStreaming::skipName(static_cast<Resource::TextureStreaming::Skip>(i)))
+                +"="+std::to_string(stream.skips[i].load());
+        Log(Debug::Info) << "OptimizedMW asset QC T2 refusals:"+streamRefusals;
+        Log(Debug::Info) << "OptimizedMW texture streaming: coarse_draws="+std::to_string(stream.coarseDraws.load())
+            +" fine_draws="+std::to_string(stream.fineDraws.load())+" demotions="+std::to_string(stream.demotions.load())
+            +" deleted_bytes="+std::to_string(stream.deletedBytes.load())+" live_bytes="+std::to_string(stream.liveBytes.load());
+        Resource::TextureStreaming::reportAdmissionProof();
+        Resource::TextureStreaming::reportDiagnostics();
+    }
+
+    if (Resource::CompositeCpuMips::requested())
+    {
+        const auto v = Resource::CompositeCpuMips::stats();
+        // Integer conversion deliberately ignores any inherited log-stream hex mode.
+        Log(Debug::Info) << "OptimizedMW CPU mip loop-end snapshot: attempted=" + std::to_string(v.attempted)
+            + " prepared=" + std::to_string(v.prepared) + " declined=" + std::to_string(v.declined)
+            + " allocation_failures=" + std::to_string(v.allocationFailures)
+            + " source_bytes=" + std::to_string(v.sourceBytes) + " supplied_bytes=" + std::to_string(v.mipBytes)
+            + " supplied_applies=" + std::to_string(v.suppliedApplies)
+            + " upload_submissions=" + std::to_string(v.uploadSubmissions)
+            + " producer_draw_uses=" + std::to_string(v.producerDrawUses)
+            + " first_producer_uses=" + std::to_string(v.firstProducerUses)
+            + " required_first_uses=" + std::to_string(v.requiredFirstUses)
+            + " optional_first_uses=" + std::to_string(v.optionalFirstUses)
+            + " control_applies=" + std::to_string(v.controlApplies)
+            + " control_producer_uses=" + std::to_string(v.controlProducerUses)
+            + " control_first_uses=" + std::to_string(v.controlFirstUses)
+            + " unproven_producer_uses=" + std::to_string(v.unprovenProducerUses)
+            + " (CPU-side accepted OSG submission and completed producer draw; no GPU-completion claim; "
+              "first uses count wrapper/context/path; snapshot excludes later shutdown work)";
+    }
+
+    if (Resource::UploadPool::requested())
+        Log(Debug::Info) << "OptimizedMW bounded upload snapshot: uploads="
+            +std::to_string(Resource::UploadPool::uploads.load())
+            +" bytes="+std::to_string(Resource::UploadPool::uploadedBytes.load())
+            +" allocations="+std::to_string(Resource::UploadPool::allocations.load())
+            +" live_staging_bytes="+std::to_string(Resource::UploadPool::liveBytes.load())
+            +" busy_fallbacks="+std::to_string(Resource::UploadPool::busyFallbacks.load())
+            +" admission_fallbacks="+std::to_string(Resource::UploadPool::admissionFallbacks.load())
+            +" upload_failures="+std::to_string(Resource::UploadPool::uploadFailures.load())
+            +" (exact supplied alpha mip uploads; nonblocking staging lease polls; no GPU-time claim)";
+
+    if (Shader::exactProgramVariantsEnabled())
+    {
+        const auto& v=Shader::programVariantStats();
+        Log(Debug::Info) << "OptimizedMW exact shader variants: requests=" << v.requests.load()
+            << " prepared=" << v.prepared.load() << " reused=" << v.reused.load()
+            << " failed=" << v.failed.load() << " stale=" << v.stale.load()
+            << " first_uses=" << v.firstUses.load() << " fallback_uses=" << v.fallbackUses.load()
+            << " reuse_uses=" << v.reuseUses.load()
+            << " unsupported=" << v.unsupported.load();
+    }
+    if (SceneUtil::PersistentOpaquePackets::enabled())
+    {
+        using C=SceneUtil::PersistentOpaquePackets::Counters;
+        Log(Debug::Info) << std::dec << "OptimizedMW persistent opaque packets: built=" << C::built.load()
+            << " rows=" << C::rows.load() << " submitted=" << C::submitted.load()
+            << " culled=" << C::culled.load() << " fallbacks=" << C::fallbacks.load()
+            << " state_pushes_avoided=" << C::statePushesAvoided.load()
+            << " changed_producers=" << C::changedProducers.load()
+            << " capacity_declines=" << C::capacityDeclines.load()
+            << " original_sources_certified=" << C::sourceCertified.load()
+            << " original_sources_rejected=" << C::sourceRejected.load()
+            << " ordinary_branches=" << C::ordinaryBranches.load();
+    }
+    if (Settings::cells().mOptimizedMWPrepareMaterialImages)
+    {
+        const auto& stats = mResourceSystem->getSceneManager()->materialPreparationStats();
+        Log(Debug::Info) << std::dec << "OptimizedMW material image preparation: animated_sources=" << stats.animatedSources.load()
+            << " discovered=" << stats.discovered.load() << " ready=" << stats.ready.load()
+            << " decoded=" << stats.decoded.load() << " deferred=" << stats.deferred.load()
+            << " per_cell_pin_mib=" << static_cast<int>(Settings::cells().mOptimizedMWMaterialImageBudget)
+            << " scope=ordinary_cpu_decoder_cache_no_gl";
+    }
+    if (SceneUtil::OwnedCellCull::enabled.load(std::memory_order_relaxed))
+    {
+        using C = SceneUtil::OwnedCellCull::Counters;
+        Log(Debug::Info) << std::dec << "OptimizedMW owned cell cull: publications=" << C::publications.load()
+            << " bound_reads_avoided=" << C::boundReadsAvoided.load()
+            << " classification_visits_avoided=" << C::classificationVisitsAvoided.load()
+            << " invalidated_reads=" << C::invalidatedReads.load() << " refused=" << C::refusals.load()
+            << " live_bytes=" << C::liveBytes.load() << " peak_bytes=" << C::peakBytes.load()
+            << " scope=current_cull_order_and_osg_bound_invalidation_no_previous_visibility";
+    }
+    if (Resource::TemplateCoalescing::enabled.load(std::memory_order_relaxed))
+    {
+        using C = Resource::TemplateCoalescing::Counters;
+        Log(Debug::Info) << std::dec << "OptimizedMW scene template coalescing: after_load_reuses=" << C::afterLoadReuses.load()
+            << " publication_reuses=" << C::publishReuses.load() << " canonical_publications=" << C::publications.load()
+            << " changed_epochs=" << C::changedEpochs.load()
+            << " scope=stable_manager_vfs_shader_generation_no_wait_no_in_place_file_reload_contract";
+    }
+    if (SceneUtil::UnchangedTransform::enabled.load(std::memory_order_relaxed))
+        Log(Debug::Info) << std::dec << "OptimizedMW unchanged transform bounds: dirty_calls_avoided="
+            << SceneUtil::UnchangedTransform::dirtyCallsAvoided.load() << " changed_inputs="
+            << SceneUtil::UnchangedTransform::changedInputs.load() << " scope=identical_finite_setters";
+    if (SceneUtil::GpuIndirectPackets::indirectEnabled())
+    {
+        using C=SceneUtil::GpuIndirectPackets::Counters;
+        Log(Debug::Info) << "OptimizedMW opaque indirect pipeline: built=" << C::built.load()
+            << " draws=" << C::draws.load() << " commands=" << C::commands.load()
+            << " dispatches=" << C::dispatches.load() << " fallbacks=" << C::fallbacks.load()
+            << " busy_slots=" << C::busySlots.load() << " unknown_shaders=" << C::unknownShaders.load()
+            << " admission_declines=" << C::admissionDeclines.load()
+            << " nested_geometry=" << C::nestedGeometry.load() << " nested_built=" << C::nestedBuilt.load()
+            << " nested_branch_declines=" << C::nestedBranchDeclines.load()
+            << " install_source_declines=" << C::installSourceDeclines.load()
+            << " install_command_shape_declines=" << C::installCommandShapeDeclines.load()
+            << " live_owned_bytes=" << C::liveBytes.load();
+        Log(Debug::Info) << std::dec << "OptimizedMW indirect command reuse: uploads=" << C::commandUploads.load()
+            << " uploaded_bytes=" << C::commandUploadBytes.load() << " command_uploads_avoided=" << C::commandUploadsAvoided.load();
+        Log(Debug::Info) << "OptimizedMW indirect context capability reuse: draws=" << C::capabilityDraws.load()
+            << " snapshots=" << C::capabilitySnapshots.load()
+            << " gpu_function_resolutions_avoided=" << C::gpuResolutionsAvoided.load();
+        Log(Debug::Info) << "OptimizedMW gpu visibility opportunity: original_draws=" << C::visibilityOriginalDraws.load()
+            << " requested_dispatches_avoided=" << C::visibilityDispatchesAvoided.load()
+            << " scope=strict_whole_bound_containment_no_private_submission";
+        Log(Debug::Info) << "OptimizedMW indirect projection proof reuse: reuses=" << C::projectionProofReuses.load()
+            << " scope=same_draw_same_state_program_held_producer";
+        Log(Debug::Info) << "OptimizedMW indirect early admission fallback: new_owner_refusals=" << C::earlyAdmissionFallbacks.load()
+            << " contended_inspections=" << C::earlyBusyFallbacks.load()
+            << " scope=live_ordinary_geometry_no_budget_change";
+    }
+    if (SceneUtil::FrozenRigDeformation::enabled())
+    {
+        using C=SceneUtil::FrozenRigDeformation::Counters;
+        Log(Debug::Info) << "OptimizedMW frozen parallel deformation: publications=" << C::publications.load()
+            << " vertices=" << C::vertices.load() << " groups=" << C::groups.load()
+            << " fallbacks=" << C::fallbacks.load();
+    }
+    if (const char* requested=std::getenv("OPENMW_P9_EXACT_PAGING_WORK"); requested && std::strcmp(requested,"1")==0)
+    {
+        using C=SceneUtil::ExactPagingWorkCounters;
+        Log(Debug::Info) << "OptimizedMW exact paging work: runs=" << C::runs.load()
+            << " triangles=" << C::triangles.load() << " score_updates=" << C::scoreUpdates.load()
+            << " score_reuses=" << C::scoreReuses.load() << " heap_comparisons=" << C::heapComparisons.load()
+            << " unchanged_heap_updates=" << C::unchangedHeapUpdates.load();
+    }
+    if (SceneUtil::reusePagingScoreValues.load(std::memory_order_relaxed))
+    {
+        using C=SceneUtil::ExactPagingWorkCounters;
+        Log(Debug::Info) << "OptimizedMW paging score value reuse: runs=" << C::scoreTableRuns.load()
+            << " pow_reuses=" << C::scoreTableHits.load()
+            << " pow_computations=" << C::scoreTableComputations.load()
+            << " uncached_pow_computations=" << C::scoreTableUncached.load()
+            << " scope=run_local_exact_float_inputs";
+    }
+
+    if (Settings::cells().mOptimizedMWPreloadPriorityPromotion)
+    {
+        using C = SceneUtil::WorkQueue::PriorityStats;
+        Log(Debug::Info) << "OptimizedMW preload priority promotion: submitted=" << C::submitted.load()
+            << " promoted=" << C::promoted.load() << " started=" << C::consumed.load()
+            << " fairness=" << C::fairness.load() << " burst_limit=" << SceneUtil::WorkQueue::MaximumNearFutureBurst
+            << " scope=queue_admission_and_start_not_cpu_ready";
+    }
 
     // Save user settings
     Settings::Manager::saveUser(mCfgMgr.getUserConfigPath() / "settings.cfg");

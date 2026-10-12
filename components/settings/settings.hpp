@@ -5,6 +5,7 @@
 #include "gyroscopeaxis.hpp"
 #include "hrtfmode.hpp"
 #include "navmeshrendermode.hpp"
+#include "optimizationaliases.hpp"
 #include "windowmode.hpp"
 
 #include <components/detournavigator/collisionshapetype.hpp>
@@ -44,6 +45,9 @@ namespace Settings
         static void clear();
         ///< clears all settings and default settings
 
+        static void validateDefaults(const CategorySettingValueMap& declared);
+        ///< rejects defaults that the typed settings registry did not initialize
+
         static std::filesystem::path load(const Files::ConfigurationManager& cfgMgr, bool loadEditorSettings = false);
         ///< load settings from all active config dirs. Returns the path of the last loaded file.
 
@@ -73,14 +77,14 @@ namespace Settings
         static const std::string& getString(std::string_view setting, std::string_view category);
         static std::vector<std::string> getStringArray(std::string_view setting, std::string_view category);
         static bool getBool(std::string_view setting, std::string_view category);
+        static bool hasSetting(std::string_view setting, std::string_view category);
         static osg::Vec2f getVector2(std::string_view setting, std::string_view category);
         static osg::Vec3f getVector3(std::string_view setting, std::string_view category);
 
         template <class T>
         static T getOrDefault(std::string_view setting, std::string_view category, const T& defaultValue)
         {
-            const auto key = std::make_pair(category, setting);
-            if (!mUserSettings.contains(key) && !mDefaultSettings.contains(key))
+            if (!hasSetting(setting, category))
                 return defaultValue;
             return get<T>(setting, category);
         }

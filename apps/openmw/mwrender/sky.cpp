@@ -20,6 +20,11 @@
 
 #include <components/resource/imagemanager.hpp>
 #include <components/resource/scenemanager.hpp>
+#include <components/resource/resourcesystem.hpp>
+#include <components/resource/cloudimagepreparation.hpp>
+#include <components/sceneutil/workqueue.hpp>
+#include <cstdlib>
+#include <atomic>
 
 #include <components/vfs/manager.hpp>
 
@@ -237,6 +242,10 @@ namespace MWRender
     SkyManager::SkyManager(osg::Group* parentNode, osg::Group* rootNode, osg::Camera* camera,
         Resource::SceneManager* sceneManager, bool enableSkyRTT)
         : mSceneManager(sceneManager)
+        , mCloudPreparationEnabled([] {
+            const char* value = std::getenv("OPENMW_HITCH_WEATHER_PREPARE");
+            return value && std::string_view(value) == "1";
+        }())
         , mCamera(camera)
         , mAtmosphereNightRoll(0.f)
         , mCreated(false)
@@ -478,11 +487,99 @@ namespace MWRender
 
     SkyManager::~SkyManager()
     {
+        if (mCloudPreparation) mCloudPreparation->abort();
+        mCloudPreparation = nullptr;
         if (mSkyRootNode)
         {
             mSkyRootNode->getParent(0)->removeChild(mSkyRootNode);
             mSkyRootNode = nullptr;
         }
+    }
+
+    void SkyManager::configureCloudPreparation(Resource::ResourceSystem* resources, SceneUtil::WorkQueue* queue)
+    {
+        mCloudPreparationResources = resources;
+        mCloudPreparationQueue = queue;
+    }
+
+    bool SkyManager::retireCloudPreparation()
+    {
+        // Never turn a canceled/replaced cache lease into a final image free
+        // on main. Queue refusal keeps the bounded owner/slot for later retry.
+        return Resource::CloudImagePreparation::retireCompleted(mCloudPreparation,
+            [&](auto& ticket, std::uint64_t bytes) { return mCloudPreparationResources->deferRelease(ticket, bytes); });
+    }
+
+    void SkyManager::prepareCloudImage(std::string_view selectedCloudTexture, bool allowNewWork)
+    {
+        if (!mCloudPreparationEnabled || !mCloudPreparationResources || !mCloudPreparationQueue) return;
+        const auto generation = mSceneManager->getVFS()->getIndexGeneration();
+        if (selectedCloudTexture.size() > 4096) selectedCloudTexture = {};
+        if (selectedCloudTexture != mCloudPreparationSelection || generation != mCloudPreparationGeneration)
+        {
+            if (mCloudPreparation) mCloudPreparation->abort();
+            mCloudPreparationSelection = selectedCloudTexture;
+            mCloudPreparationDesired = selectedCloudTexture.empty() ? std::string{}
+                : std::string(Misc::ResourceHelpers::correctTexturePath(
+                    VFS::Path::toNormalized(selectedCloudTexture), *mSceneManager->getVFS()).value());
+            mCloudPreparationGeneration = generation;
+            mCloudPreparationAttempted = false;
+        }
+        if (mCloudPreparation)
+        {
+            // Borrow the existing pressure sample; this performs no OS probe.
+            // Only explicit Critical/low-memory evidence retires owned work.
+            // Missing/invalid data suppresses new admission without inventing
+            // pressure. A denied selection retries after the next real choice.
+            const auto sample = Resource::ResourceSystem::speculativeSample(mCloudPreparationResources);
+            if (sample.decision.state == Resource::OpenGlPressure::Critical
+                || (sample.memory.lowMemoryValid && sample.memory.lowMemory))
+            {
+                mCloudPreparation->abort();
+                retireCloudPreparation();
+                return;
+            }
+            if (!mCloudPreparation->cancelled() && mCloudPreparation->generation() == generation
+                && mCloudPreparation->path().value() == mCloudPreparationDesired)
+                return; // Immutable request, including a deferred/failed attempt.
+            if (!mCloudPreparation->isDone()) return; // One outstanding job; no wait or replacement job.
+            if (!retireCloudPreparation()) return;
+        }
+        if (!allowNewWork || mCloudPreparationDesired.empty() || mCloudPreparationAttempted) return;
+        mCloudPreparationAttempted = true; // No repeated OS probes after denied admission.
+        try
+        {
+            osg::ref_ptr<Resource::CloudImagePreparation> item = new Resource::CloudImagePreparation(
+                mSceneManager->getImageManager(), {mCloudPreparationResources->speculativeBudget(),
+                    Resource::ResourceSystem::speculativeSample, mCloudPreparationResources, Resource::SpeculativePriority::Background},
+                VFS::Path::Normalized(mCloudPreparationDesired), generation);
+            mCloudPreparationQueue->addWorkItem(item);
+            mCloudPreparation = std::move(item);
+        }
+        catch (const Resource::SpeculativeDeferred&) { }
+    }
+
+    osg::ref_ptr<osg::Image> SkyManager::cloudImage(VFS::Path::NormalizedView path)
+    {
+        auto* images = mSceneManager->getImageManager();
+        if (mCloudPreparationEnabled && mCloudPreparation && mCloudPreparation->ready()
+            && mCloudPreparation->path() == path
+            && mCloudPreparation->generation() == mSceneManager->getVFS()->getIndexGeneration()
+            && mCloudPreparation->current())
+        {
+            Debug::HitchTrace::Scope adopt("weather.cloud_image_adopt", {}, path.value());
+            adopt.retain();
+            adopt.setLink(mCloudPreparation->receipt());
+            adopt.setMetric(0, "cache_revision", mCloudPreparation->lease().mRevision);
+            adopt.setMetric(1, "retained_bytes", mCloudPreparation->lease().bytes());
+            auto result = osg::ref_ptr<osg::Image>(static_cast<osg::Image*>(mCloudPreparation->lease().mValue.get()));
+            mCloudPreparation->abort();
+            // A running worker may still be completing its own receipt. The
+            // WorkQueue owns it until doWork returns; adoption never waits.
+            retireCloudPreparation();
+            return result;
+        }
+        return images->getImage(path);
     }
 
     int SkyManager::getMasserPhase() const
@@ -762,7 +859,7 @@ namespace MWRender
                 = Misc::ResourceHelpers::correctTexturePath(VFS::Path::toNormalized(mClouds), *mSceneManager->getVFS());
 
             osg::ref_ptr<osg::Texture2D> cloudTex
-                = new osg::Texture2D(mSceneManager->getImageManager()->getImage(texture));
+                = new osg::Texture2D(cloudImage(texture));
             cloudTex->setWrap(osg::Texture::WRAP_S, osg::Texture::REPEAT);
             cloudTex->setWrap(osg::Texture::WRAP_T, osg::Texture::REPEAT);
 
@@ -785,7 +882,7 @@ namespace MWRender
                     VFS::Path::toNormalized(mNextClouds), *mSceneManager->getVFS());
 
                 osg::ref_ptr<osg::Texture2D> cloudTex
-                    = new osg::Texture2D(mSceneManager->getImageManager()->getImage(texture));
+                    = new osg::Texture2D(cloudImage(texture));
                 cloudTex->setWrap(osg::Texture::WRAP_S, osg::Texture::REPEAT);
                 cloudTex->setWrap(osg::Texture::WRAP_T, osg::Texture::REPEAT);
 

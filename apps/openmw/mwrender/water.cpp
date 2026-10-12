@@ -18,6 +18,10 @@
 #include <components/resource/imagemanager.hpp>
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/scenemanager.hpp>
+#include <components/resource/statictextureprogram.hpp>
+#include <components/resource/programvariantcompile.hpp>
+#include <cstdlib>
+#include <string_view>
 
 #include <components/sceneutil/depth.hpp>
 #include <components/sceneutil/fog.hpp>
@@ -434,6 +438,11 @@ namespace MWRender
         , mParent(parent)
         , mSceneRoot(sceneRoot)
         , mResourceSystem(resourceSystem)
+        , mIncrementalCompileOperation(ico)
+        , mStaticPreparationEnabled([] {
+            const char* value = std::getenv("OPENMW_HITCH_WATER_PREPARE");
+            return value && std::string_view(value) == "1";
+        }())
         , mEnabled(true)
         , mToggled(true)
         , mTop(0)
@@ -442,6 +451,8 @@ namespace MWRender
         , mCullCallback(nullptr)
         , mShaderWaterStateSetUpdater(nullptr)
     {
+        if (mStaticPreparationEnabled)
+            mStaticPreparationAdmission = std::make_shared<Resource::StaticTextureProgramAdmission>();
         mSimulation = std::make_unique<RippleSimulation>(mSceneRoot, resourceSystem);
 
         mWaterGeom = SceneUtil::createWaterGeometry(Constants::CellSizeInUnits * 150, 40, 900);
@@ -497,6 +508,14 @@ namespace MWRender
 
     void Water::updateWaterMaterial()
     {
+        if (mProgramVariantPreparation) mProgramVariantPreparation->cancel();
+        mProgramVariantPreparation.reset();
+        mProgramVariantTarget = nullptr;
+        if (mStaticPreparation) mStaticPreparation->cancel();
+        mStaticPreparation.reset();
+        mStaticPreparationTexture = nullptr;
+        mStaticPreparationProgram = nullptr;
+        mStaticPreparationAttempted = false;
         if (mShaderWaterStateSetUpdater)
         {
             mWaterNode->removeCullCallback(mShaderWaterStateSetUpdater);
@@ -692,12 +711,25 @@ namespace MWRender
         Shader::ShaderManager& shaderMgr = mResourceSystem->getSceneManager()->getShaderManager();
         osg::ref_ptr<osg::Program> program = shaderMgr.getProgram("water", defineMap);
 
+        if (Shader::exactProgramVariantsEnabled())
+        {
+            mProgramVariantTarget = program;
+            prepareStaticMaterial();
+        }
+
         constexpr VFS::Path::NormalizedView waterImage("textures/omw/water_nm.png");
         osg::ref_ptr<osg::Texture2D> normalMap(
             new osg::Texture2D(mResourceSystem->getImageManager()->getImage(waterImage)));
         normalMap->setWrap(osg::Texture::WRAP_S, osg::Texture::REPEAT);
         normalMap->setWrap(osg::Texture::WRAP_T, osg::Texture::REPEAT);
         mResourceSystem->getSceneManager()->applyFilterSettings(normalMap);
+
+        if (mStaticPreparationEnabled)
+        {
+            mStaticPreparationTexture = normalMap;
+            mStaticPreparationProgram = program;
+            prepareStaticMaterial();
+        }
 
         mRainSettingsUpdater = new RainSettingsUpdater();
         node->setUpdateCallback(mRainSettingsUpdater);
@@ -712,8 +744,39 @@ namespace MWRender
         updateWaterMaterial();
     }
 
+    void Water::prepareStaticMaterial()
+    {
+        // Program-only readiness is independent of the image lease/static
+        // texture candidate. The updater copies the same canonical Program;
+        // no dynamic cull StateSet, RTT texture, or FBO enters this job.
+        if (mProgramVariantTarget && mIncrementalCompileOperation
+            && mIncrementalCompileOperation->getContextSet().size() == 1)
+        {
+            mProgramVariantPreparation = Resource::prepareExactProgram(
+                mIncrementalCompileOperation, mProgramVariantTarget, {});
+            mProgramVariantTarget = nullptr;
+        }
+        // Viewer contexts may be assigned after material creation. Retry only
+        // that lifecycle seam; no preparation or GL happens during cull.
+        if (!mStaticPreparationEnabled || mStaticPreparationAttempted || !mIncrementalCompileOperation
+            || mIncrementalCompileOperation->getContextSet().empty()) return;
+        if (mStaticPreparationAdmission->active.load(std::memory_order_acquire)) return;
+        mStaticPreparationAttempted = true;
+        constexpr VFS::Path::NormalizedView waterImage("textures/omw/water_nm.png");
+        auto lease = mStaticPreparationTexture ? mResourceSystem->getImageManager()->getImageLease(
+            waterImage, mStaticPreparationTexture->getImage()) : Resource::ObjectCacheLease{};
+        mStaticPreparation = Resource::prepareStaticTextureProgram(mIncrementalCompileOperation,
+            mStaticPreparationTexture, mStaticPreparationProgram, mStaticPreparationAdmission, std::move(lease));
+        mStaticPreparationTexture = nullptr;
+        mStaticPreparationProgram = nullptr;
+    }
+
     Water::~Water()
     {
+        if (mProgramVariantPreparation) mProgramVariantPreparation->cancel();
+        mProgramVariantPreparation.reset();
+        if (mStaticPreparation) mStaticPreparation->cancel();
+        mStaticPreparation.reset();
         mParent->removeChild(mWaterNode);
 
         if (mReflection)
@@ -795,6 +858,7 @@ namespace MWRender
 
     void Water::update(float dt, bool paused)
     {
+        prepareStaticMaterial();
         if (!paused)
         {
             mSimulation->update(dt);

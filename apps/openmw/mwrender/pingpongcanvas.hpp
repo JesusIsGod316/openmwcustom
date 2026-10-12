@@ -2,7 +2,9 @@
 #define OPENMW_MWRENDER_PINGPONGCANVAS_H
 
 #include <array>
+#include <memory>
 #include <optional>
+#include <limits>
 
 #include <osg/FrameBufferObject>
 #include <osg/Geometry>
@@ -11,6 +13,7 @@
 #include <osg/buffered_value>
 
 #include <components/fx/technique.hpp>
+#include <components/rendercore/diagnosticframeidentity.hpp>
 
 #include "luminancecalculator.hpp"
 #include "nisscaler.hpp"
@@ -21,13 +24,45 @@ namespace Shader
     class ShaderManager;
 }
 
+namespace osgUtil { class CullVisitor; }
+
 namespace MWRender
 {
+    struct TemporalCanvasOwner;
+    struct PostFxTargetGeneration
+    {
+        std::vector<Fx::Types::RenderTarget> attachments;
+        // Only the verified single graphics context's serialized draw owner
+        // reads/writes this field. Cull never tests initialization state.
+        unsigned initializedContext = std::numeric_limits<unsigned>::max();
+    };
     class PingPongCanvas : public osg::Geometry
     {
     public:
         PingPongCanvas(
             Shader::ShaderManager& shaderManager, const std::shared_ptr<LuminanceCalculator>& luminanceCalculator);
+
+        void accept(osg::NodeVisitor& visitor) override;
+        // A shared two-SceneView owner is installed only after the main
+        // renderer's actual CullVisitor identity/lifecycle has been verified.
+        void setTemporalOwner(std::shared_ptr<TemporalCanvasOwner> owner) { mTemporalOwner = std::move(owner); }
+        void setTemporalOwnershipAvailable(bool value, std::string reason = "unverified_owner")
+        {
+            mTemporalOwnershipAvailable = value;
+            mOwnershipFallback = std::move(reason);
+        }
+        void setOwnedFxState(osg::StateSet* value) { mOwnedFxState = value; }
+        static std::shared_ptr<TemporalCanvasOwner> createTemporalOwner(std::uint64_t publisherIdentity = 0);
+        static void finalizeTemporalOwner(const std::shared_ptr<TemporalCanvasOwner>& owner,
+            osgUtil::CullVisitor* visitor, osg::StateSet* fxState);
+        static void publishDiagnosticCapture(const std::shared_ptr<TemporalCanvasOwner>& owner,
+            osgUtil::CullVisitor* visitor);
+        void setDiagnosticTargetGroup(std::shared_ptr<RenderCore::Temporal::DiagnosticTargetGroup> group)
+        { mDiagnosticTargets = std::move(group); }
+        // Captured input identity only; no GL inspection/native certificate or
+        // async source lease. Read on the actual draw owner before slot reuse.
+        const RenderCore::Temporal::DiagnosticAcquiredIdentity& diagnosticAcquiredIdentity() const
+        { return mDiagnosticIdentity; }
 
         void drawGeometry(osg::RenderInfo& renderInfo) const;
 
@@ -43,12 +78,14 @@ namespace MWRender
 
         void setDirtyAttachments(const std::vector<Fx::Types::RenderTarget>& attachments)
         {
+            mDeclaredAttachments = attachments;
             mDirtyAttachments = attachments;
         }
 
         const Fx::DispatchArray& getPasses() { return mPasses; }
 
-        void setPasses(Fx::DispatchArray&& passes);
+        void setPasses(Fx::DispatchArray&& passes, std::shared_ptr<PostFxTargetGeneration> generation = {});
+        void setTargetGenerationSingleContext(bool qualified) { mTargetGenerationSingleContext = qualified; }
 
         void setMask(bool underwater, bool exterior);
 
@@ -67,6 +104,21 @@ namespace MWRender
         const osg::ref_ptr<osg::Texture>& getSceneTexture(size_t frameId) const { return mTextureScene; }
 
     private:
+        PingPongCanvas(const PingPongCanvas& source);
+        void copyFrameInputs(const PingPongCanvas& source);
+        std::shared_ptr<TemporalCanvasOwner> mTemporalOwner;
+        bool mTemporalOwnershipAvailable = false;
+        bool mOwnedSubmission = false;
+        std::shared_ptr<RenderCore::Temporal::DiagnosticTargetGroup> mDiagnosticTargets;
+        RenderCore::Temporal::DiagnosticAcquiredIdentity mDiagnosticIdentity;
+        std::string mOwnershipFallback = "unverified_owner";
+        osg::ref_ptr<osg::StateSet> mOwnedFxState;
+        osg::ref_ptr<osg::StateSet> mDrawFxState;
+        osg::ref_ptr<osg::StateSet> mOwnedFxBindings = new osg::StateSet;
+        std::vector<std::string> mOwnedTechniqueNames;
+        std::shared_ptr<PostFxTargetGeneration> mTargetGeneration;
+        bool mOwnedNis = false;
+        float mOwnedNisSharpness = 0.0f;
         std::shared_ptr<TemporalMotion> mTemporalMotion;
         TemporalCamera mTemporalCamera;
         osg::ref_ptr<osg::StateSet> mMotionViewState;
@@ -88,6 +140,8 @@ namespace MWRender
 
         mutable bool mDirty = false;
         mutable std::vector<Fx::Types::RenderTarget> mDirtyAttachments;
+        std::vector<Fx::Types::RenderTarget> mDeclaredAttachments;
+        bool mTargetGenerationSingleContext = false;
         mutable osg::ref_ptr<osg::Viewport> mRenderViewport;
         mutable osg::ref_ptr<osg::FrameBufferObject> mMultiviewResolveFramebuffer;
         mutable osg::ref_ptr<osg::FrameBufferObject> mDestinationFBO;

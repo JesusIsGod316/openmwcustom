@@ -172,11 +172,16 @@ namespace Settings
         if (!loadEditorSettings)
             Settings::StaticValues::init();
 
-        for (const auto& [key, value] : originalDefaultSettings)
-            if (!sInitialized.contains(key))
-                throw std::runtime_error("Default setting [" + key.first + "] " + key.second + " is not initialized");
+        validateDefaults(originalDefaultSettings);
 
         return settingspath;
+    }
+
+    void Manager::validateDefaults(const CategorySettingValueMap& declared)
+    {
+        for (const auto& [key, value] : declared)
+            if (!sInitialized.contains(key))
+                throw std::runtime_error("Default setting [" + key.first + "] " + key.second + " is not initialized");
     }
 
     void Manager::saveUser(const std::filesystem::path& file)
@@ -187,17 +192,22 @@ namespace Settings
 
     const std::string& Manager::getString(std::string_view setting, std::string_view category)
     {
-        const auto key = std::make_pair(category, setting);
-        CategorySettingValueMap::iterator it = mUserSettings.find(key);
+        auto it = OptimizationAliases::find(mUserSettings, category, setting);
         if (it != mUserSettings.end())
             return it->second;
 
-        it = mDefaultSettings.find(key);
+        it = OptimizationAliases::find(mDefaultSettings, category, setting);
         if (it != mDefaultSettings.end())
             return it->second;
 
         throw std::runtime_error("Trying to retrieve a non-existing setting: [" + std::string(category) + "] "
             + std::string(setting) + ".\nMake sure the defaults.bin file was properly installed.");
+    }
+
+    bool Manager::hasSetting(std::string_view setting, std::string_view category)
+    {
+        return OptimizationAliases::find(mUserSettings, category, setting) != mUserSettings.end()
+            || OptimizationAliases::find(mDefaultSettings, category, setting) != mDefaultSettings.end();
     }
 
     std::vector<std::string> Manager::getStringArray(std::string_view setting, std::string_view category)
@@ -307,14 +317,18 @@ namespace Settings
 
     void Manager::setString(std::string_view setting, std::string_view category, const std::string& value)
     {
-        auto found = mUserSettings.find(std::make_pair(category, setting));
+        const auto canonical = OptimizationAliases::canonical(category, setting);
+        for (const auto& alias : OptimizationAliases::aliases)
+            if (canonical.first == alias.category && canonical.second == alias.setting)
+                mUserSettings.erase(CategorySetting{ alias.oldCategory, alias.oldSetting });
+        auto found = mUserSettings.find(canonical);
         if (found != mUserSettings.end())
         {
             if (found->second == value)
                 return;
         }
 
-        CategorySettingValueMap::key_type key(category, setting);
+        CategorySettingValueMap::key_type key(canonical.first, canonical.second);
 
         mUserSettings[key] = value;
 
@@ -495,7 +509,7 @@ namespace Settings
 
     void Manager::recordInit(std::string_view setting, std::string_view category)
     {
-        sInitialized.emplace(category, setting);
+        sInitialized.insert(OptimizationAliases::canonical(category, setting));
     }
 
     GyroscopeAxis parseGyroscopeAxis(std::string_view value)

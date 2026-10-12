@@ -1,0 +1,42 @@
+OptimizedMW memory policy revision 2
+
+All launcher selections now default to the Headroom comparison profile.
+This is a new cohort. Do not compare its captures directly to older Overdrive
+captures as if only LOD or mipmaps changed.
+
+Headroom: retain the V3.6 performance profile, explicitly disable its RAM
+Overdrive override; normal residence policy with resource expiry 120 seconds,
+preload expiry 60 seconds, preload min/max 16/64, prediction 2 seconds and
+instance preloading on. C3 cold collision protection is explicitly included
+in the effective recorded RAM vector (4096 cold instances, 30 second recent
+protection). Active and externally referenced resources are protected.
+
+MatchedOverdrive: historical residence floors with the same new common
+preparation and experimental ownership allowances as Headroom.
+
+LegacyOverdrive: historical residence and byte policy, including the old
+1024 MiB common preparation allowance and asset-mode clamp to 256 MiB.
+Numeric menu: category 10, option 9. MatchedOverdrive is option 10 and Headroom
+is option 11. Custom combined tests can choose the memory profile under the
+RAM/renderer/asset submenu, option 4. CLI: -MemoryProfile <profile name>.
+Normal and Deep preserve the same gameplay and memory choices.
+
+New comparison profiles use a 256 MiB common future-work allowance. The
+experimental ownership child quota is 256 MiB total, retained plus in-flight,
+with no more than 128 MiB construction scratch inside that quota. Experimental
+future reservations also intersect the common allowance. They are not additive
+independent allowances. One optional experimental construction is admitted at
+a time. Required gameplay fallback and physical/commit safety floors remain.
+
+These controls are not a whole-process RAM ceiling. Residence/count reductions
+do not guarantee a fixed physical footprint; active, shared, pinned and unknown
+payloads remain. A 4 GiB cold main-cache eviction target requires a typed cold
+ownership census and is not implemented by declaring every retained byte cold.
+Logical release of charged ownership does not grant physical-memory credit.
+Compression stays off unless explicitly selected as a separate C5 experiment.
+
+Start with a short Normal proof, not an all-features matrix. Qualify actual
+build, readiness and reduced draw consumption before any performance claim.
+Then compare one control/candidate pair within the same memory profile and
+save/view/route/frame cap; watch revisits, reloads, disposal and memory headroom
+as well as whole frame time, adjacent-frame variation and worst tails.

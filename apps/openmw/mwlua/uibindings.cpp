@@ -1,5 +1,6 @@
 #include "uibindings.hpp"
 
+#include <components/debug/hitchtrace.hpp>
 #include <components/lua/util.hpp>
 #include <components/lua_ui/alignment.hpp>
 #include <components/lua_ui/content.hpp>
@@ -136,12 +137,14 @@ namespace MWLua
 
         api["create"]
             = [luaManager = context.mLuaManager, menu](const sol::table& layout, sol::optional<sol::table> options) {
+                  Debug::HitchTrace::Scope apiScope("lua.api.ui.create_queue", Debug::HitchTrace::CpuTiming::WallEnvelope);
                   auto element = LuaUi::Element::make(layout, menu, options);
                   luaManager->addAction([element] { element->create(); }, "Create UI");
                   return element;
               };
 
         api["getElements"] = [menu](sol::this_state thisState, sol::optional<std::string_view> layer) {
+            Debug::HitchTrace::Scope apiScope("lua.api.ui.get_elements", Debug::HitchTrace::CpuTiming::WallEnvelope);
             sol::table res(thisState, sol::create);
             size_t index = 1;
             LuaUi::Element::forEachShared(menu, [&](const std::shared_ptr<LuaUi::Element>& element) {
@@ -162,6 +165,7 @@ namespace MWLua
 
                 res[index++] = element;
             });
+            apiScope.setMetric(0, "result_count", index - 1);
             return res;
         };
 

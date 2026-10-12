@@ -5,16 +5,30 @@ import json
 import os
 from pathlib import Path
 import sys
+import runtime_dependencies
 
 root=Path(sys.argv[1]); source=Path(__file__).resolve().parents[3]
 public=source/'tools/optimizedmw/phase9'
 files=['openmw.exe','CI-ID.txt','START-OptimizedMW-Test.bat','OptimizedMW_Test.ps1',
-       'OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW-Phase9-README.txt']
+       'OptimizedMW_RunManifest.ps1','OptimizedMW_HitchMatrix.ps1','OptimizedMW_QuickTest.ps1','OptimizedMW_QuickRecorder.ps1',
+       'OptimizedMW_AttackPresets.ps1','OptimizedMW_NumericMenu.ps1','OptimizedMW_MemoryProfile.ps1','OptimizedMW_SettingNames.ps1','OptimizedMW_Optimizations.cfg',
+       'OptimizedMW_ContextReport.ps1','MEMORY-PROFILES.txt','OPTIMIZATION-SETTINGS-REFERENCE.txt',
+       'OptimizedMW_AssetEngagement.ps1','verify-asset-engagement.py',
+       'OptimizedMW_Benchmark_Report.ps1','OptimizedMW_ProfileArchive.ps1','OptimizedMW_HitchReport.ps1','OptimizedMW_SpikeReport.ps1','OptimizedMW-Phase9-README.txt',
+       'OptimizedMW_SystemTrace.ps1','OptimizedMW_QualifySystemTrace.ps1','OptimizedMW_SystemTraceLink.ps1','OptimizedMW-SystemTrace.wprp','START-OptimizedMW-SystemTrace.bat','HITCH-DIAGNOSTICS.md','HITCH-DIAGNOSTICS6.md','LUA-ALLOCATOR-GC-DIAGNOSTICS.md','RESOURCE-LIFECYCLE-DIAGNOSTICS.md','COMPOSITE-PROGRESS-CANDIDATE.md']
 for name in files:
     assert (root/name).is_file() and (root/name).stat().st_size>0,name
+for extra in ('ARCHITECTURE-CANDIDATES.md','ASSET-PIPELINE-CANDIDATES.txt'):
+    files.append(extra)
+    assert (root/extra).is_file() and (root/extra).stat().st_size>0
 assert (root/'openmw.exe').read_bytes()[:2]==b'MZ', 'not a Windows PE executable'
-assert sorted(p.name.lower() for p in root.glob('*.bat'))==['start-optimizedmw-test.bat']
+dependencies=runtime_dependencies.runtime_closure(root)
+Path('RUNTIME-DEPENDENCIES.json').write_text(json.dumps(dependencies,indent=2)+'\n')
+assert sorted(p.name.lower() for p in root.glob('*.bat'))==['start-optimizedmw-systemtrace.bat','start-optimizedmw-test.bat']
 assert os.environ['EXPECTED_COMMIT'] in (root/'CI-ID.txt').read_text()
+assert (root/'resources/version').read_text().splitlines()[1] == os.environ['EXPECTED_COMMIT'], 'resource version does not match engine source'
+assert (root/'optimization-settings-aliases.json').read_bytes()==(source/'files/optimization-settings-aliases.json').read_bytes(), 'setting alias map mismatch'
+aliases=json.loads((source/'files/optimization-settings-aliases.json').read_text())['aliases']
 manifest=json.loads((root/'resources/shaders/shader-package.json').read_text())
 expected=json.loads((source/'files/shaders/v3overlay/p8g3/manifest.json').read_text())
 assert expected['id']=='optimizedmw-p8g4-pbr-groundcover'
@@ -22,17 +36,29 @@ assert manifest['groundcover_patch']==expected, 'retained PBR overlay changed'
 for name in files[3:]:
     assert (root/name).read_bytes()==(public/name).read_bytes(),name
 assert (root/'START-OptimizedMW-Test.bat').read_bytes()==(source/'tools/optimizedmw/gl-p8g4/START-OptimizedMW-Test.bat').read_bytes()
+for relative in ('licenses/meshoptimizer-LICENSE.txt', 'licenses/DirectXTex-LICENSE.txt'):
+    assert (root/relative).is_file() and (root/relative).stat().st_size > 0, relative
+    files.append(relative)
 settings=base64.b64decode((root/'defaults.bin').read_bytes(),validate=True).decode('utf-8')
 for key in ('optimizedmw canonical terrain textures','optimizedmw composite slicing',
             'optimizedmw object userdata cache','warm sounds','optimizedmw setting consistency'):
-    assert key+' = false' in settings,key
+    canonical=next((a['new_key'] for a in aliases if a['old_key']==key),key)
+    assert canonical+' = false' in settings,canonical
 for name in ('groundcover.vert','groundcover.frag','groundcover_lod.glsl','temporal_camera_motion.vert',
-             'temporal_camera_motion.frag','temporal_motion_view.vert','temporal_motion_view.frag'):
+             'temporal_camera_motion.frag','temporal_motion_view.vert','temporal_motion_view.frag','temporal_dynamic_motion.vert','temporal_dynamic_motion.frag'):
     relative='compatibility/'+name; deployed=root/'resources/shaders'/relative
     assert deployed.is_file() and hashlib.sha256(deployed.read_bytes()).hexdigest()==manifest['files'][relative],relative
     if name.startswith('temporal_'):
         assert deployed.read_bytes()==(source/'files/shaders'/relative).read_bytes(),relative
     files.append('resources/shaders/'+relative)
 lines=[hashlib.sha256((root/n).read_bytes()).hexdigest()+'  '+n for n in files]
+lines += [hashlib.sha256(Path(n).read_bytes()).hexdigest()+'  '+str(Path(n).relative_to(root.resolve()))
+          for n in dependencies['files'] if Path(n)!=root.resolve()/'openmw.exe']
+lines.append(hashlib.sha256((root/'optimization-settings-aliases.json').read_bytes()).hexdigest()+'  optimization-settings-aliases.json')
+for relative in ('builtin.omwscripts', 'scripts/omw/camera/camera.lua',
+                 'scripts/omw/camera/settings.lua', 'scripts/omw/settings/common.lua'):
+    deployed=root/'resources/vfs'/relative
+    assert deployed.read_bytes()==(source/'files/data'/relative).read_bytes(),relative
+    lines.append(hashlib.sha256(deployed.read_bytes()).hexdigest()+'  resources/vfs/'+relative)
 Path('Phase9-INSTALLED-SHA256.txt').write_text('\n'.join(lines)+'\n')
 print('\n'.join(lines))

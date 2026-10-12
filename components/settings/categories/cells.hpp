@@ -18,274 +18,324 @@ namespace Settings
     {
         using WithIndex::WithIndex;
 
+        SettingValue<bool> mOptimizedMWOwnedCellCull{ mIndex, "Optimizations", "owned cell cull snapshots" };
+        SettingValue<bool> mOptimizedMWUnchangedTransform{ mIndex, "Optimizations", "unchanged transform bounds" };
+        SettingValue<bool> mOptimizedMWTemplateCoalescing{ mIndex, "Cells", "scene template coalescing" };
+        SettingValue<bool> mOptimizedMWTemporalHistoryLookup{ mIndex, "Optimizations", "temporal history lookup" };
+        SettingValue<bool> mOptimizedMWStaticVao{ mIndex, "Optimizations", "paged static vertex arrays" };
+
         // P2: cancellable, restart-indexed paging optimization and two-phase readiness.
-        SettingValue<bool> mOpimizedMWPagingOptimizer{ mIndex, "Cells", "opimizedmw paging optimizer" };
-        SettingValue<bool> mOpimizedMWPagingReadinessSplit{ mIndex, "Cells", "opimizedmw paging readiness split" };
+        SettingValue<bool> mOpimizedMWPagingOptimizer{ mIndex, "Cells", "paging optimizer" };
+        SettingValue<bool> mOpimizedMWPagingReadinessSplit{ mIndex, "Cells", "paging readiness split" };
 
         // OptimizedMW GL-P3: preserve primitive order/material semantics while compacting
         // adjacent indexed draws that differ only in index storage width.
         SettingValue<bool> mOptimizedMWSubmissionCompaction{
-            mIndex, "Cells", "optimizedmw submission compaction" };
+            mIndex, "Cells", "submission compaction" };
         SettingValue<bool> mOptimizedMWSemanticPremerge{
-            mIndex, "Cells", "optimizedmw semantic premerge" };
+            mIndex, "Cells", "semantic premerge" };
         SettingValue<bool> mOptimizedMWDistantDisplayLists{
-            mIndex, "Cells", "optimizedmw distant display lists" };
+            mIndex, "Cells", "distant display lists" };
         SettingValue<bool> mOptimizedMWNormalizedStaticPackets{
-            mIndex, "Cells", "optimizedmw normalized static packets" };
-        SettingValue<bool> mOptimizedMWActiveShadowBatching{ mIndex, "Cells", "optimizedmw active shadow batching" };
+            mIndex, "Cells", "normalized static packets" };
+        SettingValue<bool> mOptimizedMWPrepareMaterialImages{
+            mIndex, "Cells", "prepare material images" };
+        SettingValue<bool> mLoadingNifMaintenance{
+            mIndex, "Cells", "loading nif maintenance" };
+        SettingValue<bool> mVisualCacheHandoff{
+            mIndex, "Cells", "visual cache handoff" };
+        SettingValue<float> mUnusedImageCacheSeconds{
+            mIndex, "Cells", "unused image cache seconds", makeClampSanitizerFloat(0, 3600) };
+        SettingValue<float> mUnusedSceneCacheSeconds{
+            mIndex, "Cells", "unused scene cache seconds", makeClampSanitizerFloat(0, 3600) };
+        SettingValue<int> mOptimizedMWMaterialImageBudget{
+            mIndex, "Cells", "material image preparation mib", makeClampSanitizerInt(16, 256) };
+        SettingValue<bool> mOptimizedMWLodCacheHitAdmission{
+            mIndex, "Cells", "lod cache hit admission" };
+        SettingValue<bool> mOptimizedMWLodRetainSourceIndices{
+            mIndex, "Cells", "lod retain source indices" };
+        SettingValue<bool> mOptimizedMWOrdinaryOpaquePackets{
+            mIndex, "Cells", "ordinary opaque packets" };
+        SettingValue<bool> mOptimizedMWIndirectCommandReuse{
+            mIndex, "Optimizations", "indirect command reuse" };
+        SettingValue<bool> mOptimizedMWIndirectContextCapabilityReuse{
+            mIndex, "Optimizations", "indirect context capability reuse" };
+        SettingValue<bool> mOptimizedMWGpuVisibilityOpportunityFilter{
+            mIndex, "Optimizations", "gpu visibility opportunity filter" };
+        SettingValue<bool> mOptimizedMWIndirectProjectionProofReuse{
+            mIndex, "Optimizations", "indirect projection proof reuse" };
+        SettingValue<bool> mOptimizedMWIndirectEarlyAdmissionFallback{
+            mIndex, "Optimizations", "indirect early admission fallback" };
+        SettingValue<bool> mOptimizedMWPagingScoreValues{
+            mIndex, "Cells", "paging score value reuse" };
+        SettingValue<bool> mOptimizedMWPreloadPriorityPromotion{
+            mIndex, "Cells", "preload priority promotion" };
+        SettingValue<bool> mOptimizedMWActiveShadowBatching{ mIndex, "Shadows", "active batching" };
         SettingValue<bool> mOptimizedMWShadowStaticBatching{
-            mIndex, "Cells", "optimizedmw shadow static batching" };
+            mIndex, "Shadows", "static batching" };
         SettingValue<bool> mOptimizedMWRenderHandoffAttribution{
-            mIndex, "Cells", "optimizedmw render handoff attribution" };
+            mIndex, "Optimizations", "render handoff attribution" };
         SettingValue<bool> mOptimizedMWParallelTemplatePrefetch{
-            mIndex, "Cells", "optimizedmw parallel template prefetch" };
+            mIndex, "Cells", "parallel template prefetch" };
         SettingValue<int> mOptimizedMWParallelTemplatePrefetchWorkers{
-            mIndex, "Cells", "optimizedmw parallel template prefetch workers",
+            mIndex, "Cells", "parallel template prefetch workers",
             makeClampSanitizerInt(1, 2) };
         SettingValue<int> mOptimizedMWParallelTemplatePrefetchMinTemplates{
-            mIndex, "Cells", "optimizedmw parallel template prefetch min templates",
+            mIndex, "Cells", "parallel template prefetch minimum templates",
             makeClampSanitizerInt(4, 512) };
 
         // OptimizedMW GL-P4: startup-selected replacement for OSG ICO scheduling.
         // Mode 0 preserves stock/current ICO behavior, 1 adds cost-aware admission,
         // and 2 adds rendering-handoff feedback plus bounded compile credit.
         SettingValue<int> mOptimizedMWCompileSchedulerMode{
-            mIndex, "Cells", "optimizedmw compile scheduler mode",
+            mIndex, "Cells", "compile scheduler mode",
             makeClampSanitizerInt(0, 2) };
         SettingValue<float> mOptimizedMWCompileSchedulerMaxBudgetMs{
-            mIndex, "Cells", "optimizedmw compile scheduler max budget ms",
+            mIndex, "Cells", "compile scheduler max budget milliseconds",
             makeClampSanitizerFloat(0.1, 8.0) };
         SettingValue<float> mOptimizedMWCompileSchedulerCreditCapMs{
-            mIndex, "Cells", "optimizedmw compile scheduler credit cap ms",
+            mIndex, "Cells", "compile scheduler credit cap milliseconds",
             makeClampSanitizerFloat(0.1, 16.0) };
         SettingValue<float> mOptimizedMWCompileSchedulerHeadroomRatio{
-            mIndex, "Cells", "optimizedmw compile scheduler headroom ratio",
+            mIndex, "Cells", "compile scheduler headroom ratio",
             makeClampSanitizerFloat(0.05, 1.0) };
         SettingValue<float> mOptimizedMWCompileSchedulerHandoffThresholdMs{
-            mIndex, "Cells", "optimizedmw compile scheduler handoff threshold ms",
+            mIndex, "Cells", "compile scheduler handoff threshold milliseconds",
             makeClampSanitizerFloat(5.0, 100.0) };
         SettingValue<int> mOptimizedMWCompileSchedulerMaxQueueAgeFrames{
-            mIndex, "Cells", "optimizedmw compile scheduler max queue age frames",
+            mIndex, "Cells", "compile scheduler max queue age frames",
             makeClampSanitizerInt(1, 240) };
         SettingValue<float> mOptimizedMWCompileSchedulerDeleteBudgetMs{
-            mIndex, "Cells", "optimizedmw compile scheduler delete budget ms",
+            mIndex, "Cells", "compile scheduler delete budget milliseconds",
             makeClampSanitizerFloat(0.0, 4.0) };
         SettingValue<int> mOptimizedMWCompileSchedulerMaxObjectsPerFrame{
-            mIndex, "Cells", "optimizedmw compile scheduler max objects per frame",
+            mIndex, "Cells", "compile scheduler max objects per frame",
             makeClampSanitizerInt(1, 32) };
         SettingValue<float> mOptimizedMWCompileSchedulerDiagnosticThresholdMs{
-            mIndex, "Cells", "optimizedmw compile scheduler diagnostic threshold ms",
+            mIndex, "Cells", "compile scheduler diagnostic threshold milliseconds",
             makeClampSanitizerFloat(0.0, 20.0) };
 
         // P4R/P5: optional lane for individual GL calls whose observed/predicted
         // duration is too large for the ordinary frame budget.
         SettingValue<int> mOptimizedMWHeavyCompileLaneMode{
-            mIndex, "Cells", "optimizedmw heavy compile lane mode",
+            mIndex, "Cells", "heavy compile lane mode",
             makeClampSanitizerInt(0, 1) };
         SettingValue<float> mOptimizedMWHeavyCompileThresholdMs{
-            mIndex, "Cells", "optimizedmw heavy compile threshold ms",
+            mIndex, "Cells", "heavy compile threshold milliseconds",
             makeClampSanitizerFloat(1.0, 50.0) };
         SettingValue<int> mOptimizedMWHeavyCompileMinSmoothFrames{
-            mIndex, "Cells", "optimizedmw heavy compile min smooth frames",
+            mIndex, "Cells", "heavy compile minimum smooth frames",
             makeClampSanitizerInt(1, 600) };
         SettingValue<float> mOptimizedMWHeavyCompileMinHeadroomMs{
-            mIndex, "Cells", "optimizedmw heavy compile min headroom ms",
+            mIndex, "Cells", "heavy compile minimum headroom milliseconds",
             makeClampSanitizerFloat(0.5, 16.0) };
         SettingValue<float> mOptimizedMWTerrainDrawablePriorMs{
-            mIndex, "Cells", "optimizedmw terrain drawable prior ms",
+            mIndex, "Cells", "terrain drawable prior milliseconds",
             makeClampSanitizerFloat(0.0, 50.0) };
         SettingValue<bool> mOptimizedMWTerrainPhasedCompile{
-            mIndex, "Cells", "optimizedmw terrain phased compile" };
+            mIndex, "Cells", "terrain phased compile" };
 
         // P6 stutter-first residency experiments. All remain default-off.
         SettingValue<int> mOptimizedMWResidencySchedulerMode{
-            mIndex, "Cells", "optimizedmw residency scheduler mode",
+            mIndex, "Cells", "residency scheduler mode",
             makeClampSanitizerInt(0, 2) };
         SettingValue<bool> mOptimizedMWTerrainImmutableVertexReuse{
-            mIndex, "Cells", "optimizedmw terrain immutable vertex reuse" };
+            mIndex, "Cells", "terrain immutable vertex reuse" };
         // P6R: expose TerrainDrawable pass resources as native texture/program
         // compile operations instead of generic StateAttribute calls.
         SettingValue<bool> mOptimizedMWTerrainResourcePhases{
-            mIndex, "Cells", "optimizedmw terrain resource phases" };
+            mIndex, "Cells", "terrain resource phases" };
         // P6R: split the mutable terrain position/normal/color streams across
         // independent VBOs so GL upload work has scheduler interruption points.
         SettingValue<bool> mOptimizedMWTerrainSplitVertexBuffers{
-            mIndex, "Cells", "optimizedmw terrain split vertex buffers" };
+            mIndex, "Cells", "terrain split vertex buffers" };
 
         // P8U1: first resource-repair slice, independently startup-switchable.
         SettingValue<bool> mOptimizedMWCanonicalTerrainTextures{
-            mIndex, "Cells", "optimizedmw canonical terrain textures" };
+            mIndex, "Cells", "canonical terrain textures" };
         SettingValue<bool> mOptimizedMWCompositeSlicing{
-            mIndex, "Cells", "optimizedmw composite slicing" };
+            mIndex, "Cells", "composite slicing" };
 
         // P7 CPU preparation. These remain backend-neutral and default-off.
         SettingValue<bool> mOptimizedMWParallelActorBinding{
-            mIndex, "Cells", "optimizedmw parallel actor binding" };
+            mIndex, "Cells", "parallel actor binding" };
         SettingValue<bool> mOptimizedMWParallelTerrainCpuPrep{
-            mIndex, "Cells", "optimizedmw parallel terrain cpu prep" };
+            mIndex, "Cells", "parallel terrain cpu preparation" };
 
         // P8-HL1 ceiling probe. Startup-only OpenGL threading selection:
         // 0=OSG automatic/current behavior, 1=DrawThreadPerContext,
         // 2=CullDrawThreadPerContext, 3=SingleThreaded.
         SettingValue<int> mOptimizedMWOsgThreadingMode{
-            mIndex, "Cells", "optimizedmw osg threading mode",
+            mIndex, "Optimizations", "render threading mode",
             makeClampSanitizerInt(0, 3) };
 
-        SettingValue<bool> mOpimizedMWSpeculativeBudget{ mIndex, "Cells", "opimizedmw speculative budget" };
-        SettingValue<int> mOpimizedMWTransientBudgetMb{ mIndex, "Cells", "opimizedmw transient budget mb",
+        SettingValue<bool> mOpimizedMWSpeculativeBudget{ mIndex, "Cells", "speculative memory budget" };
+        SettingValue<int> mOpimizedMWTransientBudgetMb{ mIndex, "Cells", "speculative transient budget mb",
             makeClampSanitizerInt(64, 16384) };
 
         // OpimizedMW GL-P1A is an independent opt-in, not part of the V3 preset.
-        SettingValue<bool> mOpimizedMWHostPressure{ mIndex, "Cells", "opimizedmw host pressure" };
-        SettingValue<int> mOpimizedMWHostReserveMb{ mIndex, "Cells", "opimizedmw host reserve mb",
+        SettingValue<bool> mOpimizedMWHostPressure{ mIndex, "Cells", "host memory pressure" };
+        SettingValue<int> mOpimizedMWHostReserveMb{ mIndex, "Cells", "host memory reserve mb",
             makeClampSanitizerInt(0, 65536) };
-        SettingValue<int> mOpimizedMWCommitReserveMb{ mIndex, "Cells", "opimizedmw commit reserve mb",
+        SettingValue<int> mOpimizedMWCommitReserveMb{ mIndex, "Cells", "commit memory reserve mb",
             makeClampSanitizerInt(256, 65536) };
 
-        // V3.6 keeps profile controls in one category object while preserving the user-facing [V3] section.
-        SettingValue<bool> mV36PerformanceProfile{ mIndex, "V3", "v3.6 performance profile" };
-        SettingValue<bool> mV36DisableRamOverdrive{ mIndex, "V3", "v3.6 disable ram overdrive" };
-        SettingValue<bool> mV36DisableLuaFastPath{ mIndex, "V3", "v3.6 disable lua fast path" };
+        // Descriptive settings share the existing category object. The parser
+        // accepts historical names without changing their stored semantics.
+        SettingValue<int> mExperimentalCacheBudgetMb{
+            mIndex, "Optimizations", "experimental cache budget mb", makeClampSanitizerInt(1, 4096) };
+        SettingValue<int> mExperimentalScratchBudgetMb{
+            mIndex, "Optimizations", "experimental scratch budget mb", makeClampSanitizerInt(1, 4096) };
+        SettingValue<int> mExperimentalConcurrentBuilds{
+            mIndex, "Optimizations", "experimental concurrent builds", makeClampSanitizerInt(1, 2) };
+        SettingValue<bool> mV36PerformanceProfile{ mIndex, "Optimizations", "legacy performance profile" };
+        SettingValue<bool> mV36DisableRamOverdrive{ mIndex, "Optimizations", "disable legacy ram overdrive" };
+        SettingValue<bool> mV36DisableLuaFastPath{ mIndex, "Optimizations", "disable legacy lua fast path" };
         SettingValue<bool> mV36DisableCoarseChunkOcclusion{
-            mIndex, "V3", "v3.6 disable coarse chunk occlusion" };
-        SettingValue<bool> mV36AsyncGpuProfiler{ mIndex, "V3", "v3.6 async gpu profiler" };
-        SettingValue<float> mV36FarCasterMinimumPixels{ mIndex, "V3", "v3.6 far caster minimum pixels",
+            mIndex, "Optimizations", "disable legacy coarse chunk occlusion" };
+        SettingValue<bool> mV36AsyncGpuProfiler{ mIndex, "Optimizations", "async gpu profiler" };
+        SettingValue<float> mV36FarCasterMinimumPixels{ mIndex, "Shadows", "far caster minimum pixels",
             makeClampSanitizerFloat(0, 32) };
         // V3.19 stable gaming: promoted focus temporal-coherence cadence.
         SettingValue<int> mV319FocusCadence{
-            mIndex, "V3", "v3.19 focus cadence", makeClampSanitizerInt(1, 3) };
+            mIndex, "Camera", "focus refresh interval frames", makeClampSanitizerInt(1, 3) };
         // V3.20: optionally force a focus refresh when the main camera contract changes.
         // Disabled by default so the promoted fixed-cadence P0 path remains exact.
         SettingValue<bool> mV320AdaptiveFocusCadence{
-            mIndex, "V3", "v3.20 adaptive focus cadence" };
+            mIndex, "Camera", "focus refresh on camera change" };
         // V3.21 CP1 downstream completed-work admission. Mode 0 preserves the
         // V3.20 behavior; mode 1 enables the fixed governor.
         SettingValue<int> mV321CompletionGovernorMode{
-            mIndex, "V3", "v3.21 completion governor mode", makeClampSanitizerInt(0, 2) };
+            mIndex, "Cells", "completed work governor mode", makeClampSanitizerInt(0, 2) };
         SettingValue<int> mV321CompileObjectsPerFrame{
-            mIndex, "V3", "v3.21 compile objects per frame", makeClampSanitizerInt(1, 20) };
+            mIndex, "Cells", "completed work compile objects per frame", makeClampSanitizerInt(1, 20) };
         SettingValue<int> mV321MergeSetsPerFrame{
-            mIndex, "V3", "v3.21 merge sets per frame", makeClampSanitizerInt(1, 16) };
+            mIndex, "Cells", "completed work merge sets per frame", makeClampSanitizerInt(1, 16) };
         SettingValue<int> mV321MaxDeferredFrames{
-            mIndex, "V3", "v3.21 max deferred frames", makeClampSanitizerInt(1, 120) };
+            mIndex, "Cells", "completed work max deferred frames", makeClampSanitizerInt(1, 120) };
         SettingValue<int> mV321ForcedMergeSets{
-            mIndex, "V3", "v3.21 forced merge sets", makeClampSanitizerInt(0, 8) };
+            mIndex, "Cells", "completed work forced merge sets", makeClampSanitizerInt(0, 8) };
         SettingValue<float> mV321CompileMinimumMilliseconds{
-            mIndex, "V3", "v3.21 compile minimum milliseconds", makeClampSanitizerFloat(0.1, 4.0) };
+            mIndex, "Cells", "completed work compile minimum milliseconds", makeClampSanitizerFloat(0.1, 4.0) };
         SettingValue<float> mV321CompileConservativeRatio{
-            mIndex, "V3", "v3.21 compile conservative ratio", makeClampSanitizerFloat(0.1, 1.0) };
+            mIndex, "Cells", "completed work compile conservative ratio", makeClampSanitizerFloat(0.1, 1.0) };
         // MODE 127 adaptive merge-admission controls. Adaptation uses only the
         // previously completed frame and a bounded EMA/debt state.
         SettingValue<float> mV321AdaptiveTargetMilliseconds{
-            mIndex, "V3", "v3.21 adaptive target milliseconds", makeClampSanitizerFloat(8.0, 50.0) };
+            mIndex, "Cells", "completed work adaptive target milliseconds", makeClampSanitizerFloat(8.0, 50.0) };
         SettingValue<float> mV321AdaptiveFrameEmaAlpha{
-            mIndex, "V3", "v3.21 adaptive frame ema alpha", makeClampSanitizerFloat(0.05, 1.0) };
+            mIndex, "Cells", "completed work adaptive frame ema alpha", makeClampSanitizerFloat(0.05, 1.0) };
         SettingValue<int> mV321AdaptiveMergeMin{
-            mIndex, "V3", "v3.21 adaptive merge minimum", makeClampSanitizerInt(1, 8) };
+            mIndex, "Cells", "completed work adaptive merge minimum", makeClampSanitizerInt(1, 8) };
         SettingValue<int> mV321AdaptiveMergeMax{
-            mIndex, "V3", "v3.21 adaptive merge maximum", makeClampSanitizerInt(1, 16) };
+            mIndex, "Cells", "completed work adaptive merge maximum", makeClampSanitizerInt(1, 16) };
         SettingValue<int> mV321AdaptiveDebtCap{
-            mIndex, "V3", "v3.21 adaptive debt cap", makeClampSanitizerInt(0, 32) };
+            mIndex, "Cells", "completed work adaptive debt cap", makeClampSanitizerInt(0, 32) };
         SettingValue<int> mV321AdaptiveDebtRepayPerFrame{
-            mIndex, "V3", "v3.21 adaptive debt repay per frame", makeClampSanitizerInt(0, 4) };
+            mIndex, "Cells", "completed work adaptive debt repay per frame", makeClampSanitizerInt(0, 4) };
         // V3.21 CP2 class-aware completion fairness/dephasing. Default off.
         SettingValue<int> mV321CP2FairnessMode{
-            mIndex, "V3", "v3.21 CP2 fairness mode", makeClampSanitizerInt(0, 1) };
+            mIndex, "Cells", "compile fairness mode", makeClampSanitizerInt(0, 1) };
         SettingValue<int> mV321CP2ServiceSetsPerFrame{
-            mIndex, "V3", "v3.21 CP2 service sets per frame", makeClampSanitizerInt(1, 16) };
+            mIndex, "Cells", "compile fairness service sets per frame", makeClampSanitizerInt(1, 16) };
         SettingValue<int> mV321CP2ClassBurstSetsPerFrame{
-            mIndex, "V3", "v3.21 CP2 class burst sets per frame", makeClampSanitizerInt(1, 16) };
+            mIndex, "Cells", "compile fairness class burst sets per frame", makeClampSanitizerInt(1, 16) };
         SettingValue<int> mV321CP2MaxDeferredFrames{
-            mIndex, "V3", "v3.21 CP2 max deferred frames", makeClampSanitizerInt(1, 120) };
+            mIndex, "Cells", "compile fairness max deferred frames", makeClampSanitizerInt(1, 120) };
         SettingValue<int> mV321CP2ForcedSets{
-            mIndex, "V3", "v3.21 CP2 forced sets", makeClampSanitizerInt(0, 8) };
+            mIndex, "Cells", "compile fairness forced sets", makeClampSanitizerInt(0, 8) };
         SettingValue<int> mV321CP2DeficitCap{
-            mIndex, "V3", "v3.21 CP2 deficit cap", makeClampSanitizerInt(1, 32) };
+            mIndex, "Cells", "compile fairness deficit cap", makeClampSanitizerInt(1, 32) };
         SettingValue<bool> mV37DisableFarCasterPruning{
-            mIndex, "V3", "v3.7 disable far caster pruning" };
-        SettingValue<bool> mV37ActiveEventFastPath{ mIndex, "V3", "v3.7 active event fast path" };
+            mIndex, "Optimizations", "disable legacy far caster pruning" };
+        SettingValue<bool> mV37ActiveEventFastPath{ mIndex, "Lua", "bulk active event fast path" };
         SettingValue<bool> mV37CompanionKeyframePreload{
-            mIndex, "V3", "v3.7 companion keyframe preload" };
+            mIndex, "Cells", "companion keyframe preload" };
         SettingValue<bool> mV37RelaxedResourceSweep{
-            mIndex, "V3", "v3.7 relaxed resource cache sweep" };
-        SettingValue<float> mV37ResourceSweepSeconds{ mIndex, "V3", "v3.7 resource cache sweep seconds",
+            mIndex, "Cells", "relaxed resource cache sweep" };
+        SettingValue<float> mV37ResourceSweepSeconds{ mIndex, "Cells", "resource cache sweep seconds",
             makeClampSanitizerFloat(0.5, 60) };
-        SettingValue<bool> mV37StabilizeFarCascade{ mIndex, "V3", "v3.7 stabilize far shadow cascade" };
+        SettingValue<bool> mV37StabilizeFarCascade{ mIndex, "Shadows", "stabilize far cascade" };
 
-        SettingValue<int> mV38WorldBatchingMode{ mIndex, "V3", "v3.8 world batching mode",
+        SettingValue<int> mV38WorldBatchingMode{ mIndex, "Cells", "world batching mode",
             makeClampSanitizerInt(0, 3) };
-        SettingValue<float> mV38WorldBatchingMergeMultiplier{ mIndex, "V3",
-            "v3.8 world batching merge multiplier", makeClampSanitizerFloat(1, 8) };
-        SettingValue<int> mV38WorldBatchingMinInstances{ mIndex, "V3",
-            "v3.8 world batching min instances", makeClampSanitizerInt(2, 64) };
-        SettingValue<int> mV38GpuResidencyMode{ mIndex, "V3", "v3.8 gpu residency mode",
+        SettingValue<float> mV38WorldBatchingMergeMultiplier{ mIndex, "Cells",
+            "world batching merge multiplier", makeClampSanitizerFloat(1, 8) };
+        SettingValue<int> mV38WorldBatchingMinInstances{ mIndex, "Cells",
+            "world batching minimum instances", makeClampSanitizerInt(2, 64) };
+        SettingValue<int> mV38GpuResidencyMode{ mIndex, "Cells", "gpu residency mode",
             makeClampSanitizerInt(0, 3) };
-        SettingValue<int> mV38FarShadowMode{ mIndex, "V3", "v3.8 far shadow mode",
+        SettingValue<int> mV38FarShadowMode{ mIndex, "Shadows", "legacy far caster pruning mode",
             makeClampSanitizerInt(0, 3) };
-        SettingValue<int> mV38CompilePacingMode{ mIndex, "V3", "v3.8 compile pacing mode",
-            makeClampSanitizerInt(0, 3) };
-
-        SettingValue<int> mV39FrontloadMode{ mIndex, "V3", "v3.9 frontload mode",
-            makeClampSanitizerInt(0, 3) };
-        SettingValue<int> mV39BatchOptimizerMode{ mIndex, "V3", "v3.9 batch optimizer mode",
-            makeClampSanitizerInt(0, 3) };
-        SettingValue<int> mV39ProactiveResidencyMode{ mIndex, "V3", "v3.9 proactive residency mode",
+        SettingValue<int> mV38CompilePacingMode{ mIndex, "Cells", "compile pacing mode",
             makeClampSanitizerInt(0, 3) };
 
-        SettingValue<bool> mV310FreshInitialObjectPaging{ mIndex, "V3",
-            "v3.10 fresh initial object paging" };
-        SettingValue<bool> mV310PreloadPostTransform{ mIndex, "V3", "v3.10 preload post-transform" };
+        SettingValue<int> mV39FrontloadMode{ mIndex, "Cells", "initial multi-view preload mode",
+            makeClampSanitizerInt(0, 3) };
+        SettingValue<int> mV39BatchOptimizerMode{ mIndex, "Cells", "batch optimizer mode",
+            makeClampSanitizerInt(0, 3) };
+        SettingValue<int> mV39ProactiveResidencyMode{ mIndex, "Cells", "proactive residency mode",
+            makeClampSanitizerInt(0, 3) };
 
-        SettingValue<int> mV311ActiveGridPrepareMode{ mIndex, "V3", "v3.11 active grid prepare mode",
+        SettingValue<bool> mV310FreshInitialObjectPaging{ mIndex, "Cells",
+            "fresh initial object paging" };
+        SettingValue<bool> mV310PreloadPostTransform{ mIndex, "Cells", "initial preload post-transform" };
+
+        SettingValue<int> mV311ActiveGridPrepareMode{ mIndex, "Cells", "active grid prepare mode",
             makeClampSanitizerInt(0, 2) };
 
-        SettingValue<int> mV312PredictorMode{ mIndex, "V3", "v3.12 predictor mode",
+        // Index-only tiers for independently published strong active-grid
+        // controls. Required readiness and ordinary interaction retain control.
+        SettingValue<bool> mGeneratedStaticLodActiveGrid{
+            mIndex, "Cells", "generated static lod active grid" };
+
+        SettingValue<int> mV312PredictorMode{ mIndex, "Cells", "boundary predictor mode",
             makeClampSanitizerInt(0, 2) };
-        SettingValue<float> mV312PredictorLeadSeconds{ mIndex, "V3", "v3.12 predictor lead seconds",
+        SettingValue<float> mV312PredictorLeadSeconds{ mIndex, "Cells", "boundary predictor lead seconds",
             makeClampSanitizerFloat(0.25, 8.0) };
-        SettingValue<bool> mV312LuaPrecompile{ mIndex, "V3", "v3.12 lua precompile" };
-        SettingValue<int> mV312SpatialBatchMode{ mIndex, "V3", "v3.12 spatial batch mode",
+        SettingValue<bool> mV312LuaPrecompile{ mIndex, "Lua", "precompile configured scripts" };
+        SettingValue<int> mV312SpatialBatchMode{ mIndex, "Cells", "spatial batch mode",
             makeClampSanitizerInt(0, 1) };
-        SettingValue<int> mV313ChunkQualityMode{ mIndex, "V3", "v3.13 chunk quality mode",
+        SettingValue<int> mV313ChunkQualityMode{ mIndex, "Cells", "prepared chunk quality mode",
             makeClampSanitizerInt(0, 2) };
-        SettingValue<int> mV314LuaDependencyPrecompileMode{ mIndex, "V3", "v3.14 lua dependency precompile mode",
+        SettingValue<int> mV314LuaDependencyPrecompileMode{ mIndex, "Lua", "dependency precompile mode",
             makeClampSanitizerInt(0, 2) };
-        SettingValue<bool> mV314LuaPackagePrototypeReuse{ mIndex, "V3", "v3.14 lua package prototype reuse" };
-        SettingValue<int> mV314GroundcoverCompileMode{ mIndex, "V3", "v3.14 groundcover compile mode",
+        SettingValue<bool> mV314LuaPackagePrototypeReuse{ mIndex, "Lua", "package prototype reuse" };
+        SettingValue<int> mV314GroundcoverCompileMode{ mIndex, "Groundcover", "compile mode",
             makeClampSanitizerInt(0, 2) };
-        SettingValue<bool> mV314PostfxCompileWarmup{ mIndex, "V3", "v3.14 postfx compile warmup" };
+        SettingValue<bool> mV314PostfxCompileWarmup{ mIndex, "Post Processing", "compile warmup" };
 
-        SettingValue<bool> mV315PremergeStateCanonicalization{ mIndex, "V3",
-            "v3.15 premerge state canonicalization" };
-        SettingValue<int> mV315PacketizedPremergeMode{ mIndex, "V3", "v3.15 packetized premerge mode",
+        SettingValue<bool> mV315PremergeStateCanonicalization{ mIndex, "Cells",
+            "premerge state canonicalization" };
+        SettingValue<int> mV315PacketizedPremergeMode{ mIndex, "Cells", "packetized premerge mode",
             makeClampSanitizerInt(0, 2) };
-        SettingValue<int> mV315AdaptiveCompileGovernor{ mIndex, "V3", "v3.15 adaptive compile governor",
+        SettingValue<int> mV315AdaptiveCompileGovernor{ mIndex, "Cells", "adaptive compile governor",
             makeClampSanitizerInt(0, 2) };
-        SettingValue<bool> mV316IdleResourceSweep{ mIndex, "V3", "v3.16 idle resource sweep" };
-        SettingValue<bool> mV316SfxMetadataFrontload{ mIndex, "V3", "v3.16 sfx metadata frontload" };
+        SettingValue<bool> mV316IdleResourceSweep{ mIndex, "Cells", "idle resource sweep" };
+        SettingValue<bool> mV316SfxMetadataFrontload{ mIndex, "Sound", "preload sound metadata" };
 
         SettingValue<std::string> mRamCacheMode{ mIndex, "Cells", "ram cache mode",
             makeEnumSanitizerString({ "normal", "aggressive", "extreme", "overdrive" }) };
         SettingValue<std::string> mRamCacheOverdrivePreload{ mIndex, "Cells", "ram cache overdrive preload",
             makeEnumSanitizerString({ "balanced", "aggressive", "maximum" }) };
-        SettingValue<std::string> mV3StreamingScheduler{ mIndex, "Cells", "v3 streaming scheduler",
+        SettingValue<std::string> mV3StreamingScheduler{ mIndex, "Cells", "streaming scheduler",
             makeEnumSanitizerString({ "off", "adaptive", "adaptive-v2" }) };
-        SettingValue<float> mV3StreamingTargetFrametime{ mIndex, "Cells", "v3 streaming target frametime",
+        SettingValue<float> mV3StreamingTargetFrametime{ mIndex, "Cells", "streaming target frametime",
             makeMaxStrictSanitizerFloat(0) };
-        SettingValue<int> mV32StreamingMaxDefers{ mIndex, "Cells", "v3.2 streaming max defers",
+        SettingValue<int> mV32StreamingMaxDefers{ mIndex, "Cells", "streaming max defers",
             makeClampSanitizerInt(0, 16) };
-        SettingValue<bool> mV3PreparedInstanceCache{ mIndex, "Cells", "v3 prepared instance cache" };
-        SettingValue<int> mV3PreparedInstanceCacheMax{ mIndex, "Cells", "v3 prepared instance cache max",
+        SettingValue<bool> mV3PreparedInstanceCache{ mIndex, "Cells", "prepared instance cache" };
+        SettingValue<int> mV3PreparedInstanceCacheMax{ mIndex, "Cells", "prepared instance cache maximum",
             makeClampSanitizerInt(256, 65536) };
-        SettingValue<bool> mV32ExteriorHibernation{ mIndex, "Cells", "v3.2 exterior hibernation" };
-        SettingValue<bool> mV32RendererInsertionProfiling{ mIndex, "Cells", "v3.2 renderer insertion profiling" };
-        SettingValue<bool> mV32GpuMemoryTelemetry{ mIndex, "Cells", "v3.2 gpu memory telemetry" };
-        SettingValue<bool> mV32GpuMemoryManagement{ mIndex, "Cells", "v3.2 gpu memory management" };
-        SettingValue<int> mV32GpuSoftBudgetMb{ mIndex, "Cells", "v3.2 gpu soft budget mb",
+        SettingValue<bool> mV32ExteriorHibernation{ mIndex, "Cells", "exterior hibernation" };
+        SettingValue<bool> mV32RendererInsertionProfiling{ mIndex, "Optimizations", "renderer insertion profiling" };
+        SettingValue<bool> mV32GpuMemoryTelemetry{ mIndex, "Optimizations", "gpu memory telemetry" };
+        SettingValue<bool> mV32GpuMemoryManagement{ mIndex, "Cells", "gpu memory management" };
+        SettingValue<int> mV32GpuSoftBudgetMb{ mIndex, "Cells", "gpu soft budget mb",
             makeClampSanitizerInt(512, 65536) };
-        SettingValue<int> mV32GpuHardBudgetMb{ mIndex, "Cells", "v3.2 gpu hard budget mb",
+        SettingValue<int> mV32GpuHardBudgetMb{ mIndex, "Cells", "gpu hard budget mb",
             makeClampSanitizerInt(512, 65536) };
-        SettingValue<int> mV33SpeculativePreloadBudget{ mIndex, "Cells", "v3.3 speculative preload budget",
+        SettingValue<int> mV33SpeculativePreloadBudget{ mIndex, "Cells", "speculative preload jobs",
             makeClampSanitizerInt(0, 64) };
         SettingValue<bool> mPreloadEnabled{ mIndex, "Cells", "preload enabled" };
         SettingValue<int> mPreloadNumThreads{ mIndex, "Cells", "preload num threads", makeMaxSanitizerInt(1) };
@@ -294,6 +344,9 @@ namespace Settings
         SettingValue<bool> mPreloadDoors{ mIndex, "Cells", "preload doors" };
         SettingValue<float> mPreloadDistance{ mIndex, "Cells", "preload distance", makeMaxStrictSanitizerFloat(0) };
         SettingValue<bool> mPreloadInstances{ mIndex, "Cells", "preload instances" };
+        // Startup-only canonical publication for concurrent ordinary decoder misses.
+        SettingValue<bool> mCanonicalImagePublication{ mIndex, "Cells", "canonical image publication" };
+        SettingValue<bool> mImageSourceRecipes{ mIndex, "Cells", "image source recipes" };
         SettingValue<int> mPreloadCellCacheMin{ mIndex, "Cells", "preload cell cache min", makeMaxSanitizerInt(1) };
         SettingValue<int> mPreloadCellCacheMax{ mIndex, "Cells", "preload cell cache max", makeMaxSanitizerInt(1) };
         SettingValue<float> mPreloadCellExpiryDelay{ mIndex, "Cells", "preload cell expiry delay",

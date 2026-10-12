@@ -2,6 +2,8 @@
 #include "components/settings/parser.hpp"
 #include "components/settings/values.hpp"
 
+#include <iostream>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -37,6 +39,32 @@ namespace Settings
             EXPECT_EQ(values.mCamera.mFieldOfView.get(), 60);
         }
 
+        TEST_F(SettingsValuesTest, shouldRegisterEveryDefaultBeforeEngineConstruction)
+        {
+            // Full Values construction alone used to miss extra defaults. The
+            // real startup loader additionally rejects every unregistered key.
+            // Prefer the actual installed/generated payload when run from a
+            // package or build directory, before launching a world instance.
+            const auto installed = std::filesystem::current_path() / "defaults.bin";
+            const bool encoded = std::filesystem::exists(installed);
+            Manager::clear();
+            struct Cleanup { ~Cleanup() { Manager::clear(); } } cleanup;
+            SettingsFileParser parser;
+            parser.loadSettingsFile(encoded ? installed : mSettingsDefaultPath,
+                Manager::mDefaultSettings, encoded);
+            const auto declared = Manager::mDefaultSettings;
+            StaticValues::initDefaults();
+            Manager::mUserSettings[{ "Cells", "loading nif maintenance" }] = "true";
+            StaticValues::init();
+            EXPECT_NO_THROW(Manager::validateDefaults(declared));
+            const CategorySettingValueMap unknown{ { { "Cells", "unregistered test default" }, "false" } };
+            EXPECT_THROW(Manager::validateDefaults(unknown), std::runtime_error);
+            EXPECT_TRUE(cells().mLoadingNifMaintenance);
+            EXPECT_FALSE(lua().mLazyInstructionStatistics);
+            std::cout << "Settings registry checked " << declared.size() << " defaults from "
+                      << (encoded ? installed : mSettingsDefaultPath) << '\n';
+        }
+
         TEST_F(SettingsValuesTest, shouldFillIndexOnLoad)
         {
             Index index;
@@ -67,6 +95,21 @@ namespace Settings
             EXPECT_EQ(value.get(), 13);
             value.reset();
             EXPECT_EQ(value.get(), 42);
+        }
+
+        TEST_F(SettingsValuesTest, legacyAndCanonicalManagerReadsUseDescriptivePrecedence)
+        {
+            Manager::mDefaultSettings[{ "Optimizations", "legacy performance profile" }] = "true";
+            Manager::mUserSettings[{ "V3", "v3.6 performance profile" }] = "false";
+            EXPECT_FALSE(Manager::getBool("legacy performance profile", "Optimizations"));
+            EXPECT_FALSE(Manager::getOrDefault<bool>("v3.6 performance profile", "V3", true));
+            Manager::mUserSettings[{ "Optimizations", "legacy performance profile" }] = "true";
+            EXPECT_TRUE(Manager::getBool("v3.6 performance profile", "V3"));
+            Manager::setBool("v3.6 performance profile", "V3", true);
+            EXPECT_FALSE(Manager::mUserSettings.contains({ "V3", "v3.6 performance profile" }));
+            Manager::setBool("v3.6 performance profile", "V3", false);
+            EXPECT_FALSE(Manager::mUserSettings.contains({ "V3", "v3.6 performance profile" }));
+            EXPECT_EQ(Manager::mUserSettings.at({ "Optimizations", "legacy performance profile" }), "false");
         }
 
         TEST_F(SettingsValuesTest, constructorWithDefaultShouldSanitize)

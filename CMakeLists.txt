@@ -29,6 +29,13 @@ option(DEPLOY_QT_TRANSLATIONS "Deploy standard Qt translations to resources fold
 
 # Apps and tools
 option(BUILD_OPENMW             "Build OpenMW" ON)
+option(OPENMW_PHASE9_BUILD_NATIVE_GAME_TESTS "Build the separate Phase 9 production cache and postprocess fixtures" OFF)
+if (OPENMW_PHASE9_BUILD_NATIVE_GAME_TESTS)
+    if (NOT BUILD_OPENMW)
+        message(FATAL_ERROR "Phase 9 production postprocess tests require BUILD_OPENMW")
+    endif()
+    enable_testing()
+endif()
 option(OPENMW_ENABLE_V4_VULKAN_RUNTIME "Compile and link the experimental V4 VSG/Vulkan runtime into OpenMW" OFF)
 option(OPENMW_V4_BUILD_RECOVERY_TESTS "Build CP4F CPU-side recovery regression tests" OFF)
 if (OPENMW_V4_BUILD_RECOVERY_TESTS)
@@ -1272,9 +1279,41 @@ if(WIN32)
     install(FILES
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/gl-p8g4/START-OptimizedMW-Test.bat"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_Test.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/benchmark_desktop.py"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/benchmark_matrix.py"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/indirect_work.py"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/runtime_dependencies.py"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/AUTOMATED-BENCHMARKS.txt"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_NumericMenu.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_MemoryProfile.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/MEMORY-PROFILES.txt"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_SettingNames.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_Optimizations.cfg"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OPTIMIZATION-SETTINGS-REFERENCE.txt"
+        "${CMAKE_SOURCE_DIR}/files/optimization-settings-aliases.json"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_Benchmark_Report.ps1"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW-Phase9-README.txt"
         "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_ProfileArchive.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_RunManifest.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_HitchMatrix.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_AttackPresets.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_ContextReport.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_QuickTest.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_QuickRecorder.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_HitchReport.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_SpikeReport.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_SystemTrace.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_QualifySystemTrace.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW_SystemTraceLink.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/OptimizedMW-SystemTrace.wprp"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/START-OptimizedMW-SystemTrace.bat"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/HITCH-DIAGNOSTICS.md"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/HITCH-DIAGNOSTICS6.md"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/LUA-ALLOCATOR-GC-DIAGNOSTICS.md"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/RESOURCE-LIFECYCLE-DIAGNOSTICS.md"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/COMPOSITE-PROGRESS-CANDIDATE.md"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/ARCHITECTURE-CANDIDATES.md"
+        "${CMAKE_SOURCE_DIR}/tools/optimizedmw/phase9/ASSET-PIPELINE-CANDIDATES.txt"
         DESTINATION "."
     )
 endif()

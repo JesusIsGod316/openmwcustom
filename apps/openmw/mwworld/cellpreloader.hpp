@@ -5,11 +5,13 @@
 #include <components/debug/runtimediagnostics.hpp>
 
 #include <components/sceneutil/workqueue.hpp>
+#include <components/resource/ramretention.hpp>
 
 #include <osg/ref_ptr>
 
 #include <map>
 #include <span>
+#include <memory>
 
 namespace osg
 {
@@ -20,6 +22,7 @@ namespace Resource
 {
     class ResourceSystem;
     class BulletShapeManager;
+    class AnimationPreparation;
 }
 
 namespace Terrain
@@ -53,6 +56,8 @@ namespace MWWorld
         /// Ask a background thread to preload rendering meshes and collision shapes for objects in this cell.
         /// @note The cell itself must be in State_Loaded or State_Preloaded.
         void preload(MWWorld::CellStore& cell, double timestamp, bool nearFuture = false);
+        // Main-thread nearest-target prediction; no dependency scan or worker wait.
+        void setAnimationTarget(MWWorld::CellStore* cell, double timestamp);
 
         void notifyLoaded(MWWorld::CellStore* cell);
 
@@ -72,6 +77,8 @@ namespace MWWorld
 
         /// Enables the creation of instances in the preloading thread.
         void setPreloadInstances(bool preload);
+        // Startup-only independent C1/C4. Existing pressure retirement wins.
+        void setColdRetention(bool enabled, bool coordinateHeadroom = false);
 
         std::size_t getMaxCacheSize() const { return mMaxCacheSize; }
 
@@ -84,7 +91,8 @@ namespace MWWorld
         bool usesLegacyTerrain() const noexcept { return mUseLegacyTerrain; }
         void setTerrainPreloadPositions(std::span<const PositionCellGrid> positions);
 
-        void syncTerrainLoad(Loading::Listener& listener);
+        void syncTerrainLoad(Loading::Listener& listener, const PositionCellGrid* demanded = nullptr);
+        bool terrainCurrentFirstEnabled() const { return mTerrainCurrentFirst; }
         void abortTerrainPreloadExcept(const PositionCellGrid* exceptPos);
         bool isTerrainLoaded(const PositionCellGrid& position, double referenceTime) const;
         void setTerrain(Terrain::World* terrain);
@@ -94,6 +102,7 @@ namespace MWWorld
     private:
         void clearAllTasks();
         void retireCompletedPreloads();
+        void retainAnimationProgress(CellStore* cell, osg::ref_ptr<Resource::AnimationPreparation> progress);
         Debug::RuntimeDiagnostics::Sampler mDiagnosticSampler;
 
         Resource::ResourceSystem* mResourceSystem;
@@ -109,6 +118,7 @@ namespace MWWorld
         const bool mUseLegacyTerrain;
         const bool mCancellablePagingOptimization;
         const bool mPagingReadinessSplit;
+        const bool mTerrainCurrentFirst;
 
         double mLastResourceCacheUpdate;
 
@@ -133,6 +143,12 @@ namespace MWWorld
 
         // Cells that are currently being preloaded, or have already finished preloading
         PreloadMap mPreloadCells;
+        MWWorld::CellStore* mAnimationTarget = nullptr;
+        MWWorld::CellStore* mAnimationTicketCell = nullptr;
+        osg::ref_ptr<Resource::AnimationPreparation> mAnimationTicket;
+        double mAnimationTargetStamp = 0.0;
+        double mAnimationRetryAt = 0.0;
+        std::uint64_t mAnimationTargetGeneration = 0;
 
         std::vector<osg::ref_ptr<Terrain::View>> mTerrainViews;
         std::vector<PositionCellGrid> mTerrainPreloadPositions;
@@ -147,6 +163,11 @@ namespace MWWorld
         std::size_t mExpired = 0;
         std::size_t mLoaded = 0;
         std::size_t mPressureReleased = 0;
+        std::unique_ptr<Resource::ColdOwnerRetention<const CellStore*>> mColdRetention;
+        Resource::RamHeadroomPolicy mColdHeadroom;
+        bool mCoordinateColdHeadroom = false;
+        bool mColdBaseRetention = false;
+        std::size_t mColdRetired = 0, mColdRecoveryRetired = 0;
 
         std::size_t mV311TerrainTargetCompleted = 0;
         std::size_t mV311TerrainTargetReplaced = 0;

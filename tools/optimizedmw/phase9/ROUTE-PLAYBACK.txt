@@ -1,0 +1,87 @@
+OUTDOOR ROUTE PLAYBACK PREVIEW
+
+Launch START-OptimizedMW-Playback.bat. Choose 1 for Seyda Neen, 2 for Balmora,
+or 0 to exit. It selects the newest compatible complete recording for that
+route and verifies its identity, footer and captured starting save.
+Seyda Neen requires a NEW outdoor recording from the repaired native movement
+profile. The old incomplete indoor/combat capture stays rejected.
+The initial preview is a visible 1280x720 window. It starts automatically after
+loading and encounter-policy readiness; no start or checkpoint keys are needed.
+Let it run. Bare F11 aborts and exits. It exits automatically at the route end.
+
+Private settings, saves and Lua inputs are created under TestSessions. Results
+are in Benchmarks\Playback\<existing|balmora>_<session>. The original recording, starting
+save, frozen baseline and normal gameplay configuration are preserved.
+The engine's fixed Windows renderer cache is still shared.
+
+The default preview follows the captured path through normal movement controls,
+with bounded horizontal steering corrections and interpolated first-person
+camera direction. Normal physics and collisions move the character. Playback
+never writes position, disables collision, or changes the character's stats.
+The private guided profile uses [Game] player movement ignores animation = true.
+Visual animations still play; native movement inputs determine displacement.
+Fresh default recordings use the same native movement setting. The old complete
+Balmora recording remains an explicitly legacy preview control whose recorded
+movement differs. SESSION.json records source cohort, playback model, matching
+status and the derived private settings identity.
+If the character falls behind, the reference clock can briefly hold while
+ordinary movement catches up. Steering, holds, reference lag, position/camera
+errors and live collision state are recorded at 5 Hz using OMWPLAY JSON records.
+The initial fixed view and recorded stationary segments remain stationary.
+Starting mismatch, combat, policy failure, large drift or a blocked path aborts.
+
+New recordings carry recorded_additive_first_person_v1 camera metadata.
+Playback interpolates extra yaw/pitch, roll, extra roll and first-person offset
+separately from actor heading, then applies their matching public setters after
+earlier mod camera handlers. Sampled setter readbacks and restoration of owned
+camera state are checked; missing APIs, mismatched contracts or failed writes
+abort instead of reporting completion. The sampled 20 Hz route does not prove
+exact rendered-frame or full-body bone-camera equivalence. Legacy recordings
+without this camera contract retain the zero-additive-layer control path;
+the saved Balmora preview remains compatible and is not silently upgraded.
+
+This is a guided route preview, not a performance benchmark. Its steering and
+reference-clock holds change the original timed-input workload. Reaching the end
+does not prove repeatable actor workload or qualify a performance comparison.
+Review SUMMARY.json and playback.jsonl before designing an automatic benchmark.
+Both explicit route identities support first-person outdoor movement, including
+unnamed exterior cells. Canonical cell grid IDs identify cells; display names
+do not. Autorun and run/sneak toggles are retained as audit evidence; the resolved native
+movement and gait timeline drives playback without issuing the toggles again.
+Jump, attack, equipment switches, activation, doors, menus and interiors are
+unsupported. The older incomplete Seyda Neen recording
+remains incomplete and is not admitted by this launcher.
+
+Developer use:
+powershell -NoProfile -File OptimizedMW_RoutePlayback.ps1 -GameDir C:\OptimizedMW_Test -Route existing -PrepareOnly
+Optional -CaptureDirectory selects a specific complete recording.
+Optional -Route existing|balmora selects a route without the numeric prompt.
+Optional -RawInputs preserves uncorrected timed-input controls and the recorded
+native movement cohort when present. Legacy sources keep the frozen setting.
+Optional -AnimationMovement explicitly uses private animation displacement
+and admits a complete source with an explicitly recorded animation-displacement
+cohort. The default native-source admission remains unchanged. Combine it with
+-RawInputs to preview the old-movement recording using its recorded controls;
+guided animation movement can reproduce the observed steering failure.
+Optional -NativeGuidance admits an explicitly recorded animation-displacement
+source and previews its path with the native physical XY follower used by the
+Balmora preview. It cannot be combined with -RawInputs or -AnimationMovement.
+The manifest preserves the acquisition cohort and records that this private
+preview uses different movement semantics. It is not a benchmark qualification.
+This explicit preview also allows bounded position settling after movement has
+started and recorded inputs return to zero. The initial fixed view is unchanged;
+collision, divergence, clock-lag and final-position checks still apply. Legacy
+guided previews keep their original stationary behavior unless this is selected.
+Guided completion also rechecks the final position after the observer drain;
+residual movement beyond the final corridor rejects the successful footer.
+Raw input previews now stop at 96 units of divergence instead of 2048 units;
+their initial-position allowance is 32 units. A complete recording is not proof
+that open-loop input replay can reproduce collision/animation-dependent motion.
+Optional -SerialRenderer selects OSG SingleThreaded only in the private session
+for crash isolation. It leaves the frozen/gameplay profile intact and does not
+disable driver-internal workers. Completion with this option does not validate
+the ordinary renderer or the original acquisition movement semantics.
+SUMMARY.json distinguishes playback_complete from input_replay_complete; guided
+completion never claims exact raw-input completion. Both protocols remain
+PREVIEW_NOT_BENCHMARK_VALIDATED.
+Python 3 is required for the bounded route compiler; -PythonExecutable can select it.

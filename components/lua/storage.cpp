@@ -36,7 +36,11 @@ namespace LuaUtil
 
     sol::object LuaStorage::Value::getReadOnly(lua_State* state) const
     {
-        if (mReadOnlyValue == sol::nil && !mSerializedValue.empty())
+        Debug::HitchTrace::Scope lookup("lua.api.storage.readonly", Debug::HitchTrace::CpuTiming::WallEnvelope);
+        const bool readOnlyMissing = mReadOnlyValue == sol::nil;
+        lookup.setMetric(0, "cache_hit", !readOnlyMissing);
+        lookup.setMetric(1, "encoded_bytes", mSerializedValue.size());
+        if (readOnlyMissing && !mSerializedValue.empty())
             mReadOnlyValue = sol::main_object(deserialize(state, mSerializedValue, nullptr, true));
         return mReadOnlyValue;
     }
@@ -53,6 +57,9 @@ namespace LuaUtil
 
     void LuaStorage::Section::runCallbacks(sol::optional<std::string_view> changedKey)
     {
+        Debug::HitchTrace::Scope callbacks("lua.api.storage.callbacks", Debug::HitchTrace::CpuTiming::WallEnvelope,
+            mSectionName, changedKey.value_or(std::string_view{}));
+        callbacks.setMetric(0, "callback_count", mCallbacks.size() + mMenuScriptsCallbacks.size());
         mStorage->mRunningCallbacks.insert(this);
         mCallbacks.erase(std::remove_if(mCallbacks.begin(), mCallbacks.end(),
                              [&](const Callback& callback) {
@@ -85,6 +92,8 @@ namespace LuaUtil
 
     void LuaStorage::Section::set(std::string_view key, const sol::object& value)
     {
+        Debug::HitchTrace::Scope write("lua.api.storage.set", Debug::HitchTrace::CpuTiming::WallEnvelope,
+            mSectionName, key);
         checkIfActive();
         throwIfCallbackRecursionIsTooDeep();
         if (value != sol::nil)
@@ -102,6 +111,7 @@ namespace LuaUtil
 
     void LuaStorage::Section::setAll(const sol::optional<sol::table>& values)
     {
+        Debug::HitchTrace::Scope write("lua.api.storage.set_all", Debug::HitchTrace::CpuTiming::WallEnvelope, mSectionName);
         checkIfActive();
         throwIfCallbackRecursionIsTooDeep();
         mValues.clear();
@@ -117,6 +127,8 @@ namespace LuaUtil
 
     sol::table LuaStorage::Section::asTable(lua_State* state)
     {
+        Debug::HitchTrace::Scope copy("lua.api.storage.as_table", Debug::HitchTrace::CpuTiming::WallEnvelope, mSectionName);
+        copy.setMetric(0, "key_count", mValues.size());
         checkIfActive();
         sol::table res(state, sol::create);
         for (const auto& [k, v] : mValues)
@@ -128,9 +140,13 @@ namespace LuaUtil
     {
         sol::usertype<SectionView> sview = view.sol().new_usertype<SectionView>("Section");
         sview["get"] = [](sol::this_state s, const SectionView& section, std::string_view key) {
+            Debug::HitchTrace::Scope lookup("lua.api.storage.get", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                section.mSection->mSectionName, key);
             return section.mSection->get(key).getReadOnly(s);
         };
         sview["getCopy"] = [](sol::this_state s, const SectionView& section, std::string_view key) {
+            Debug::HitchTrace::Scope lookup("lua.api.storage.get_copy", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                section.mSection->mSectionName, key);
             return section.mSection->get(key).getCopy(s);
         };
         sview["asTable"]

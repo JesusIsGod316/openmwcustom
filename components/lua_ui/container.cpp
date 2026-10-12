@@ -1,6 +1,7 @@
 #include "container.hpp"
 
 #include <algorithm>
+#include <components/debug/hitchtrace.hpp>
 
 namespace LuaUi
 {
@@ -22,6 +23,9 @@ namespace LuaUi
 
     void LuaContainer::updateSizeToFit()
     {
+        Debug::HitchTrace::Scope measure("lua.ui.container.measure", Debug::HitchTrace::CpuTiming::WallEnvelope);
+        measure.setMetric(0, "content_children", children().size());
+        measure.setMetric(1, "template_children", templateChildren().size());
         MyGUI::IntSize innerSize = MyGUI::IntSize();
         for (const auto w : children())
         {
@@ -47,6 +51,7 @@ namespace LuaUi
 
     void LuaContainer::updateCoord()
     {
+        Debug::HitchTrace::Scope layout("lua.ui.container.coord", Debug::HitchTrace::CpuTiming::WallEnvelope);
         updateSizeToFit();
         WidgetExtension::updateCoord();
     }

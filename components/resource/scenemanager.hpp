@@ -14,6 +14,7 @@
 #include <osg/ref_ptr>
 
 #include "resourcemanager.hpp"
+#include "objectcache.hpp"
 #include "v321classifiedcompileset.hpp"
 
 #include <components/sceneutil/lightmanager.hpp>
@@ -182,6 +183,17 @@ namespace Resource
         /// Only templates with no update traversal are accepted. Thread safe.
         bool prepareInstance(VFS::Path::NormalizedView path);
 
+        void configureMaterialImagePreparation(bool enabled, unsigned budgetMiB);
+        // Worker-only discovery of future animated material inputs. Owners are
+        // attached to the existing bounded cell lifetime, not a global pin set.
+        void prepareMaterialImages(const osg::Node& sceneTemplate,
+            std::vector<ObjectCacheLease>& owners, std::uint64_t& ownedBytes);
+        struct MaterialPreparationStats
+        {
+            std::atomic_uint64_t discovered{0}, ready{0}, decoded{0}, deferred{0}, animatedSources{0};
+        };
+        const MaterialPreparationStats& materialPreparationStats() const { return mMaterialPreparationStats; }
+
         /// Instance the given scene template and immediately attach it to a parent node
         /// @see getTemplate
         /// @note Not thread safe, unless parentNode is not part of the main scene graph yet.
@@ -222,6 +234,12 @@ namespace Resource
         /// contexts, otherwise should be disabled to reduce memory usage.
         void setUnRefImageDataAfterApply(bool unref);
 
+        // Existing idle-worker handoff only. Unlike pressure trim, this never
+        // discards prepared instances or waits for pending compile producers.
+        struct VisualHandoffResult
+        { std::size_t templates = 0, states = 0, scanned = 0; };
+        VisualHandoffResult retireUnusedVisualHandoff();
+
         /// @see ResourceManager::updateCache
         void updateCache(double referenceTime) override;
 
@@ -232,12 +250,14 @@ namespace Resource
         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
         void reportRuntimeDiagnostics(double referenceTime) const noexcept override;
 
-        void setSupportsNormalsRT(bool supports) { mSupportsNormalsRT = supports; }
+        void setSupportsNormalsRT(bool supports)
+        { mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel); mSupportsNormalsRT = supports; }
         bool getSupportsNormalsRT() const { return mSupportsNormalsRT; }
 
         void setUpNormalsRTForStateSet(osg::StateSet* stateset, bool enabled);
 
-        void setWeatherParticleOcclusion(bool value) { mWeatherParticleOcclusion = value; }
+        void setWeatherParticleOcclusion(bool value)
+        { mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel); mWeatherParticleOcclusion = value; }
 
     private:
         osg::ref_ptr<Shader::ShaderVisitor> createShaderVisitor(const std::string& shaderPrefix = "objects");
@@ -247,8 +267,15 @@ namespace Resource
         mutable std::mutex mSharedStateMutex;
 
         std::atomic_bool mPreparedInstanceEnabled{ false };
+        std::atomic_uint64_t mTemplatePublicationEpoch{1};
         mutable std::mutex mPreparedInstanceMutex;
-        std::map<VFS::Path::Normalized, std::deque<osg::ref_ptr<osg::Node>>, std::less<>> mPreparedInstances;
+        struct PreparedInstance
+        {
+            osg::ref_ptr<osg::Node> mNode;
+            // Diagnostic identity only: never a lookup key or additional owner.
+            std::uint64_t mLifecycle = 0;
+        };
+        std::map<VFS::Path::Normalized, std::deque<PreparedInstance>, std::less<>> mPreparedInstances;
         std::size_t mPreparedInstanceLimit = 0;
         std::size_t mPreparedInstanceCount = 0;
         std::size_t mPreparedInstanceGeneration = 0;
@@ -281,6 +308,9 @@ namespace Resource
         bool mSupportsClusteredLighting = false;
         bool mAutoUseNormalMaps = false;
         bool mAutoUseSpecularMaps = false;
+        bool mPrepareMaterialImages = false;
+        std::uint64_t mMaterialImageBudget = 0;
+        MaterialPreparationStats mMaterialPreparationStats;
         bool mConvertAlphaTestToAlphaToCoverage = false;
         bool mAdjustCoverageForAlphaTest = false;
         bool mSupportsNormalsRT = false;

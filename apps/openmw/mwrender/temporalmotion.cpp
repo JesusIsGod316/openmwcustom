@@ -1,6 +1,9 @@
 #include "temporalmotion.hpp"
+#include <components/sceneutil/temporalhistorylookup.hpp>
+#include "temporaldynamic.hpp"
 
 #include <components/rendercore/temporalframe.hpp>
+#include <components/rendercore/diagnosticframeidentity.hpp>
 #include <osg/ColorMask>
 #include <osg/FrameBufferObject>
 #include <osg/FrameStamp>
@@ -12,7 +15,9 @@
 #include <osg/State>
 #include <osg/StateSet>
 #include <osg/Uniform>
+#include <osg/observer_ptr>
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -80,22 +85,35 @@ namespace MWRender
     {
         struct Context
         {
+            struct PreviousSurface
+            {
+                TemporalDynamicFrame::Surface surface;
+                osg::Matrixd projection;
+            };
             RenderCore::Temporal::History history;
+            const std::uint64_t historyOwnerIdentity = RenderCore::Temporal::issueDiagnosticHistoryOwner();
             osg::ref_ptr<osg::Texture2D> motion;
             osg::ref_ptr<osg::FrameBufferObject> fbo;
             osg::ref_ptr<osg::StateSet> state;
             osg::ref_ptr<osg::Uniform> transform, extent, clear, reset, depthRange;
             osg::Matrixd lastProjection;
-            std::uint64_t lensEpoch = 1, targetRevision = 0;
+            std::uint64_t lensEpoch = 1, targetRevision = 0, resourceEpoch = 0;
             bool haveProjection = false, programFailed = false;
             Status status;
             ConsumerFrame consumer;
+            osg::ref_ptr<osg::StateSet> dynamicState;
+            std::vector<PreviousSurface> previousSurfaces;
+            std::unique_ptr<SceneUtil::TemporalHistoryLookup::Scratch> historyLookupScratch;
         };
         osg::ref_ptr<osg::Program> program;
+        osg::ref_ptr<osg::Program> dynamicProgram;
         // The integration is mono/single-context initially. Additional contexts
         // can have independent state here, but are never silently aliased.
         std::array<std::unique_ptr<Context>, 16> contexts;
-        explicit Impl(osg::Program* value) : program(value) {}
+        Impl(osg::Program* value, osg::Program* dynamicValue) : program(value), dynamicProgram(dynamicValue)
+        {
+            if (dynamicProgram) dynamicProgram->addBindAttribLocation("previousPosition", 6);
+        }
 
         Context& get(unsigned id)
         {
@@ -130,16 +148,23 @@ namespace MWRender
         }
     };
 
-    TemporalMotion::TemporalMotion(osg::Program* program) : mImpl(std::make_unique<Impl>(program)) {}
+    TemporalMotion::TemporalMotion(osg::Program* program, osg::Program* dynamicProgram)
+        : mImpl(std::make_unique<Impl>(program, dynamicProgram)) {}
     TemporalMotion::~TemporalMotion() = default;
     bool TemporalMotion::enabled()
     {
-        static const bool value = selected("OPENMW_P9_TEMPORAL_INPUTS") || selected("OPENMW_P9_MOTION_VIEW");
+        static const bool value = selected("OPENMW_P9_TEMPORAL_INPUTS") || selected("OPENMW_P9_MOTION_VIEW")
+            || selected("OPENMW_P9_DYNAMIC_MOTION");
         return value;
     }
     bool TemporalMotion::debugView()
     {
         static const bool value = selected("OPENMW_P9_MOTION_VIEW");
+        return value;
+    }
+    bool TemporalMotion::ownershipEnabled()
+    {
+        static const bool value = selected("OPENMW_P9_TEMPORAL_OWNERSHIP");
         return value;
     }
 
@@ -151,6 +176,7 @@ namespace MWRender
         const auto id = state->getContextID();
         auto& c = mImpl->get(id);
         c.status = {};
+        c.status.frame = camera.frame;
         c.consumer = {};
         const auto* stamp = state->getFrameStamp();
         if (!camera.projection || !depth || !stamp || stamp->getFrameNumber() != camera.frame
@@ -174,7 +200,9 @@ namespace MWRender
 
         // Copy only here, after the world cull finalized the retained matrix.
         const osg::Matrixd projection(*camera.projection);
-        if (c.haveProjection && lensChanged(projection, c.lastProjection)) ++c.lensEpoch;
+        if ((c.haveProjection && lensChanged(projection, c.lastProjection))
+            || (c.resourceEpoch && c.resourceEpoch != camera.resourceEpoch)) ++c.lensEpoch;
+        c.resourceEpoch = camera.resourceEpoch;
         c.lastProjection = projection;
         c.haveProjection = true;
         RenderCore::Temporal::FrameInput input;
@@ -244,7 +272,64 @@ namespace MWRender
         }
         glViewport(0, 0, camera.renderWidth, camera.renderHeight);
         fullscreen.osg::Geometry::drawImplementation(info);
+        unsigned dynamicSubmitted = 0;
+        unsigned dynamicUnsupported = camera.dynamic ? camera.dynamic->unsupported : 0;
+        std::vector<Impl::Context::PreviousSurface> nextSurfaces;
+        if (camera.dynamic && mImpl->dynamicProgram)
+        {
+            if (!c.dynamicState)
+            {
+                c.dynamicState = new osg::StateSet(*c.state, osg::CopyOp::DEEP_COPY_UNIFORMS);
+                c.dynamicState->setAttributeAndModes(mImpl->dynamicProgram,
+                    osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE | osg::StateAttribute::PROTECTED);
+                c.dynamicState->addUniform(new osg::Uniform("currentModelViewProjection", osg::Matrixf{}));
+                c.dynamicState->addUniform(new osg::Uniform("previousModelViewProjection", osg::Matrixf{}));
+            }
+            c.dynamicState->setTextureAttributeAndModes(0, depth,
+                osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE | osg::StateAttribute::PROTECTED);
+            c.dynamicState->getUniform("renderSize")->set(osg::Vec2f(
+                static_cast<float>(camera.renderWidth), static_cast<float>(camera.renderHeight)));
+            c.dynamicState->getUniform("clearDepth")->set(static_cast<float>(camera.clearDepth));
+            nextSurfaces.reserve(camera.dynamic->surfaces.size());
+            SceneUtil::TemporalHistoryLookup::Read historyLookup(c.previousSurfaces,
+                [](const auto& previous) { return previous.surface.instance; }, c.historyLookupScratch);
+            for (const auto& surface : camera.dynamic->surfaces)
+            {
+                // The cull snapshot cannot authorize a material/source changed
+                // before its motion draw. Keep camera motion and refuse only
+                // this unsupported overlay; never mark dense completeness.
+                if (!surface.materialCurrent()) { ++dynamicUnsupported; continue; }
+                const auto previous = historyLookup.find(surface.instance, [&](const auto& value) {
+                    return surface.compatibleHistory(value.surface);
+                });
+                const bool history = frame->hasHistory() && previous != c.previousSurfaces.end()
+                    && previous->surface.geometry->getVertexArray()->getNumElements()
+                        == surface.geometry->getVertexArray()->getNumElements();
+                const auto currentProjection = osg::Matrixd(*surface.projection);
+                c.dynamicState->getUniform("currentModelViewProjection")->set(osg::Matrixf(surface.modelView * currentProjection));
+                c.dynamicState->getUniform("previousModelViewProjection")->set(osg::Matrixf(history
+                    ? previous->surface.modelView * previous->projection : surface.modelView * currentProjection));
+                c.dynamicState->getUniform("resetHistory")->set(!history);
+                surface.geometry->setVertexAttribArray(6, history ? previous->surface.geometry->getVertexArray()
+                    : surface.geometry->getVertexArray(), osg::Array::BIND_PER_VERTEX);
+                state->pushStateSet(c.dynamicState);
+                state->apply();
+                auto* dynamicPcp = mImpl->dynamicProgram->getPCP(*state);
+                if (dynamicPcp && dynamicPcp->isLinked())
+                {
+                    surface.geometry->osg::Geometry::drawImplementation(info);
+                    ++dynamicSubmitted;
+                    nextSurfaces.push_back({surface, currentProjection});
+                }
+                else ++dynamicUnsupported;
+                state->popStateSet();
+                state->apply();
+                surface.geometry->setVertexAttribArray(6, nullptr);
+            }
+        }
+        else if (camera.dynamic) dynamicUnsupported += static_cast<unsigned>(camera.dynamic->surfaces.size());
         if (!c.history.commit(frame->ticket)) return nullptr;
+        c.previousSurfaces = std::move(nextSurfaces);
 
         c.status.frame = camera.frame;
         c.status.previousFrame = frame->previousFrame;
@@ -261,9 +346,18 @@ namespace MWRender
         c.status.submitted = true;
         c.status.historyValid = frame->hasHistory();
         c.status.denseDynamicMotion = false;
+        // Opaque rigid/CPU rig/morph surfaces are now overlaid with submitted
+        // previous poses. Transparent/cutout/wind/effect/first-person coverage
+        // remains explicit; no complete dense/DLSS claim is made.
+        c.status.dynamicSurfaces = dynamicSubmitted;
+        c.status.unsupportedSurfaces = dynamicUnsupported;
 
         c.consumer.status = c.status;
         c.consumer.motion = c.motion;
+        c.consumer.committedHistoryTicket = frame->ticket;
+        c.consumer.viewIdentity = frame->input.identity.view;
+        c.consumer.resourceEpoch = camera.resourceEpoch;
+        c.consumer.historyOwnerIdentity = c.historyOwnerIdentity;
         c.consumer.currentViewProjection = RenderCore::Temporal::rowMajor(frame->currentViewProjection);
         c.consumer.previousViewProjection = RenderCore::Temporal::rowMajor(frame->previousViewProjection);
         c.consumer.inverseViewProjection = RenderCore::Temporal::rowMajor(frame->inverseViewProjection);
@@ -277,10 +371,13 @@ namespace MWRender
         return mImpl->contexts[context]->status;
     }
 
-    std::optional<TemporalMotion::ConsumerFrame> TemporalMotion::consumerFrame(unsigned context) const
+    std::optional<TemporalMotion::ConsumerFrame> TemporalMotion::consumerFrame(unsigned context,
+        std::uint64_t expectedFrame) const
     {
         if (context >= mImpl->contexts.size() || !mImpl->contexts[context]
             || !mImpl->contexts[context]->consumer.status.submitted
+            || !mImpl->contexts[context]->consumer.committedHistoryTicket
+            || mImpl->contexts[context]->consumer.status.frame != expectedFrame
             || !mImpl->contexts[context]->consumer.motion)
             return std::nullopt;
         return mImpl->contexts[context]->consumer;
@@ -305,9 +402,17 @@ namespace MWRender
                 c.history.invalidate();
                 c.status = {};
                 c.consumer = {};
+                c.previousSurfaces.clear();
+                c.historyLookupScratch.reset();
+                if (c.dynamicState) c.dynamicState->releaseGLObjects(state);
+                c.dynamicState = nullptr;
+                c.haveProjection = false;
+                c.resourceEpoch = 0;
                 c.programFailed = false;
                 if (c.fbo) c.fbo->releaseGLObjects(state);
                 if (c.motion) c.motion->releaseGLObjects(state);
+                c.fbo = nullptr;
+                c.motion = nullptr;
                 c.state->releaseGLObjects(state);
             }
     }

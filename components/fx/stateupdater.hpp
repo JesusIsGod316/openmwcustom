@@ -115,6 +115,12 @@ namespace Fx
 
         void apply(osg::StateSet* stateset, osg::NodeVisitor* nv) override;
 
+        // Call on the cull owner after world light collection and before its
+        // SceneView is published to drawQueue. Unknown bindings fail closed.
+        osg::ref_ptr<osg::StateSet> ownedFrame(osgUtil::CullVisitor* cv);
+        static void installOwnedFrame(osg::StateSet& destination, const osg::StateSet& captured,
+            osg::StateSet& retiredSlotBindings);
+
     private:
         struct ProjectionMatrix : Std140::Mat4
         {

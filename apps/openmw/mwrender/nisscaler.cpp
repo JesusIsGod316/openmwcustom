@@ -110,6 +110,25 @@ namespace MWRender
 
     NisScaler::~NisScaler() = default;
 
+    void NisScaler::releaseGLObjects(osg::State* state) const
+    {
+        mProgram->releaseGLObjects(state);
+        mStateSet->releaseGLObjects(state);
+        mOutputTexture->releaseGLObjects(state);
+        mCoefScaler->releaseGLObjects(state);
+        mCoefUsm->releaseGLObjects(state);
+        if (state)
+        {
+            mProgramStatus[state->getContextID()] = 0;
+            mLoggedActive[state->getContextID()] = 0;
+        }
+        else for (unsigned i = 0; i < mProgramStatus.size(); ++i)
+        {
+            mProgramStatus[i] = 0;
+            mLoggedActive[i] = 0;
+        }
+    }
+
     void NisScaler::resizeGLObjectBuffers(unsigned int maxSize)
     {
         mProgramStatus.resize(maxSize);

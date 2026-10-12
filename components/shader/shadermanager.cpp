@@ -1,6 +1,13 @@
 #include "shadermanager.hpp"
+#include "programvariant.hpp"
+#include "indirectprojectioncontract.hpp"
+#include "indirectprojectionbaseline.hpp"
+#include "assetgeometrycontract.hpp"
+#include <components/resource/derivedassetcache.hpp>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <filesystem>
@@ -19,6 +26,7 @@
 #include <osgViewer/Viewer>
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/hitchtrace.hpp>
 #include <components/debug/v3diagnostics.hpp>
 #include <components/files/conversion.hpp>
 #include <components/misc/pathhelpers.hpp>
@@ -28,6 +36,33 @@
 
 namespace
 {
+    void reportAssetProducerRefusal(bool programRefresh, bool regeneration, Shader::AssetGeometry::Refusal refusal,
+        std::string_view name, const Shader::AssetGeometry::SourceStatus& source, std::uint64_t managerVersion,
+        const Shader::AssetGeometry::SourceAttachReceipt& receipt = {}) noexcept
+    {
+        namespace A = Shader::AssetGeometry;
+        constexpr auto Count = static_cast<unsigned>(A::Refusal::Count);
+        static std::array<std::atomic_bool, Count * 3> reported{};
+        const auto reason = static_cast<unsigned>(refusal);
+        const auto stage = programRefresh ? 2 : regeneration ? 1 : 0;
+        if (!reason || reason >= Count || reported[stage * Count + reason].exchange(true)) return;
+        try
+        {
+            const auto diagnostics = A::producerDiagnostics();
+            Log(Debug::Info) << std::dec << "OptimizedMW asset producer first refusal: stage="
+                << (programRefresh ? "program_refresh" : regeneration ? "source_regeneration" : "source_initial")
+                << " reason=" << A::refusalName(refusal) << " step=" << A::sourceAttachStepName(receipt.step)
+                << " name=\"" << name.substr(0,192) << '"'
+                << " source_refusal=" << A::refusalName(source.refusal)
+                << " source_epoch=" << source.version << " source_current_epoch=" << source.currentVersion
+                << " manager_epoch=" << managerVersion << " metadata_live_bytes=" << diagnostics.liveMetadataBytes
+                << " metadata_peak_bytes=" << diagnostics.peakMetadataBytes
+                << " metadata_cap_bytes=" << A::MaximumMetadataBytes
+                << " requested_metadata_bytes=" << receipt.requestedMetadataBytes;
+        }
+        catch (...) {} // A bounded optional receipt must never change normal shader construction.
+    }
+
     osg::Shader::Type getShaderType(const std::string& templateName)
     {
         std::string_view ext = Misc::getFileExtension(templateName);
@@ -112,7 +147,8 @@ namespace
     // reference to allow automatic cleanup.
     bool parseIncludes(const std::filesystem::path& shaderPath, std::string& source, const std::string& fileName,
         int& fileNumber, std::set<std::filesystem::path> cycleIncludeChecker,
-        std::set<std::filesystem::path>& includedFiles)
+        std::set<std::filesystem::path>& includedFiles, bool* exactBaseline = nullptr,
+        Shader::AssetGeometry::RawProof* assetProof = nullptr)
     {
         includedFiles.insert(shaderPath / fileName);
         // An include is cyclic if it is being included by itself
@@ -167,9 +203,15 @@ namespace
             std::stringstream buffer;
             buffer << includeFstream.rdbuf();
             std::string stringRepresentation = buffer.str();
+            if (assetProof)
+                assetProof->observe(std::filesystem::path(includeFilename).generic_string(), stringRepresentation);
+            if (exactBaseline && *exactBaseline)
+                *exactBaseline = Shader::IndirectProjection::baselineRaw(
+                    std::filesystem::path(includeFilename).generic_string(), stringRepresentation);
             if (!addLineDirectivesAfterConditionalBlocks(stringRepresentation)
                 || !parseIncludes(
-                    shaderPath, stringRepresentation, includeFilename, fileNumber, cycleIncludeChecker, includedFiles))
+                    shaderPath, stringRepresentation, includeFilename, fileNumber, cycleIncludeChecker, includedFiles,
+                    exactBaseline, assetProof))
             {
                 Log(Debug::Error) << "In file included from " << fileName << "." << lineNumber;
                 return false;
@@ -193,6 +235,11 @@ namespace Shader
 
         std::unordered_map<std::string, KeysHolder> mShaderFiles;
         std::unordered_map<std::string, std::set<std::filesystem::path>> templateIncludedFiles;
+        // Only GPU visibility needs these extra owned producer certificates.
+        // The expanded raw recipe is pinned before define substitution, and a
+        // hot reload cannot obtain a new certificate from an old validation.
+        std::unordered_map<std::string, std::string> baselineExpandedTemplates;
+        std::unordered_map<std::string, AssetGeometry::TemplateProof> assetExpandedTemplates;
         std::filesystem::file_time_type mLastAutoRecompileTime;
         bool mHotReloadEnabled;
         bool mTriggerReload;
@@ -215,30 +262,45 @@ namespace Shader
 
         void update(ShaderManager& manager, osgViewer::Viewer& viewer)
         {
-            auto timeSinceLastCheckMillis = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::filesystem::file_time_type::clock::now() - mLastAutoRecompileTime);
-            if ((mHotReloadEnabled && timeSinceLastCheckMillis.count() > 200) || mTriggerReload == true)
+            bool reload = false;
             {
-                reloadTouchedShaders(manager, viewer);
+                std::lock_guard<std::mutex> lock(manager.mMutex);
+                auto timeSinceLastCheckMillis = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::filesystem::file_time_type::clock::now() - mLastAutoRecompileTime);
+                reload = (mHotReloadEnabled && timeSinceLastCheckMillis.count() > 200) || mTriggerReload;
+                mTriggerReload = false;
             }
-            mTriggerReload = false;
+            if (reload) reloadTouchedShaders(manager, viewer);
         }
 
         void reloadTouchedShaders(ShaderManager& manager, osgViewer::Viewer& viewer)
         {
-            bool threadsRunningToStop = false;
+            bool touched = false;
+            {
+                std::lock_guard<std::mutex> lock(manager.mMutex);
+                for (const auto& [path, keys] : mShaderFiles)
+                    if (std::filesystem::last_write_time(path) > mLastAutoRecompileTime) { touched = true; break; }
+                if (!touched) { mLastAutoRecompileTime = std::filesystem::file_time_type::clock::now(); return; }
+            }
+            // Join draw threads before acquiring either mutation lock. A draw
+            // thread may be awaiting a producer reader lease during the join.
+            struct RestartViewer
+            {
+                osgViewer::Viewer& viewer;
+                bool running;
+                ~RestartViewer() { if (running) viewer.startThreading(); }
+            } restart{viewer,viewer.areThreadsRunning()};
+            if (restart.running) viewer.stopThreading();
+            std::lock_guard<std::mutex> lock(manager.mMutex);
+            AssetGeometry::ProducerMutationScope producer;
+            IndirectProjection::ProducerMutationScope indirectProducer(IndirectProjection::enabled());
             for (auto& [pathShaderToTest, shaderKeys] : mShaderFiles)
             {
                 const std::filesystem::file_time_type writeTime = std::filesystem::last_write_time(pathShaderToTest);
                 if (writeTime.time_since_epoch() > mLastAutoRecompileTime.time_since_epoch())
                 {
-                    if (!threadsRunningToStop)
-                    {
-                        threadsRunningToStop = viewer.areThreadsRunning();
-                        if (threadsRunningToStop)
-                            viewer.stopThreading();
-                    }
-
+                    manager.mAssetEpoch->value.fetch_add(1, std::memory_order_acq_rel);
+                    assetExpandedTemplates.clear();
                     for (const auto& [templateName, shaderDefines] : shaderKeys)
                     {
                         ShaderManager::ShaderMap::iterator shaderIt
@@ -253,6 +315,7 @@ namespace Shader
                             templateName); // Can't be Null, if we're here it means the template was added
                         assert(templateIt != manager.mShaderTemplates.end());
                         std::string& shaderSource = templateIt->second;
+                        baselineExpandedTemplates.erase(templateName);
                         std::set<std::filesystem::path> insertedPaths;
                         std::filesystem::path path = (std::filesystem::path(manager.mPath) / templateName);
                         std::ifstream stream;
@@ -287,8 +350,6 @@ namespace Shader
                     }
                 }
             }
-            if (threadsRunningToStop)
-                viewer.startThreading();
             mLastAutoRecompileTime = std::filesystem::file_time_type::clock::now();
         }
     };
@@ -296,12 +357,16 @@ namespace Shader
     ShaderManager::ShaderManager()
     {
         mHotReloadManager = std::make_unique<HotReloadManager>();
+        mAssetEpoch = std::make_shared<AssetGeometry::Epoch>();
     }
 
     ShaderManager::~ShaderManager() = default;
 
     void ShaderManager::setShaderPath(const std::filesystem::path& path)
     {
+        std::lock_guard<std::mutex> lock(mMutex);
+        AssetGeometry::ProducerMutationScope producer;
+        mAssetEpoch->value.fetch_add(1, std::memory_order_acq_rel);
         mPath = path;
     }
 
@@ -547,9 +612,20 @@ namespace Shader
             // parse includes
             int fileNumber = 1;
             std::string source = buffer.str();
+            bool exactBaseline = IndirectProjection::enabled()
+                && IndirectProjection::baselineRaw(templateName, source);
+            AssetGeometry::RawProof assetProof;
+            if (AssetGeometry::enabled()) assetProof.observe(templateName, source);
             if (!addLineDirectivesAfterConditionalBlocks(source)
-                || !parseIncludes(mPath, source, templateName, fileNumber, {}, insertedPaths))
+                || !parseIncludes(mPath, source, templateName, fileNumber, {}, insertedPaths, &exactBaseline,
+                    AssetGeometry::enabled() ? &assetProof : nullptr))
                 return nullptr;
+            if (exactBaseline) mHotReloadManager->baselineExpandedTemplates.emplace(templateName, source);
+            if (AssetGeometry::enabled() && mHotReloadManager->assetExpandedTemplates.size() < 128)
+            {
+                auto proof = AssetGeometry::finish(assetProof, source);
+                if (proof.families) mHotReloadManager->assetExpandedTemplates.emplace(templateName, std::move(proof));
+            }
             mHotReloadManager->templateIncludedFiles[templateName] = std::move(insertedPaths);
             templateIt = mShaderTemplates.insert(std::make_pair(templateName, source)).first;
         }
@@ -557,6 +633,8 @@ namespace Shader
         ShaderMap::iterator shaderIt = mShaders.find(std::make_pair(templateName, defines));
         if (shaderIt == mShaders.end())
         {
+            AssetGeometry::ProducerMutationScope producer;
+            IndirectProjection::ProducerMutationScope indirectProducer(IndirectProjection::enabled());
             Debug::V3Diagnostics::TraceScope trace("render", "shader_source_create", templateName, 0.1);
             Debug::V3Diagnostics::ScopedCsvTimer timer(
                 Debug::V3Diagnostics::renderWriter(), "shader_source_create", templateName, 0.1);
@@ -571,6 +649,8 @@ namespace Shader
 
             osg::ref_ptr<osg::Shader> shader(new osg::Shader(type ? *type : getShaderType(templateName)));
             shader->setShaderSource(shaderSource);
+            attachIndirectSource(*shader, templateName, defines);
+            attachAssetSource(*shader, templateName, defines);
             // Assign a unique prefix to allow the SharedStateManager to compare shaders efficiently.
             // Append shader source filename for debugging.
             static unsigned int counter = 0;
@@ -585,7 +665,58 @@ namespace Shader
         return shaderIt->second;
     }
 
-    class SamplerProgram : public osg::Program
+    void ShaderManager::attachIndirectSource(osg::Shader& shader, const std::string& templateName, const DefineMap& defines)
+    {
+        if (!IndirectProjection::enabled()) return;
+        const auto pinned = mHotReloadManager->baselineExpandedTemplates.find(templateName);
+        const auto consumed = mShaderTemplates.find(templateName);
+        if (pinned == mHotReloadManager->baselineExpandedTemplates.end() || consumed == mShaderTemplates.end()
+            || pinned->second != consumed->second || !IndirectProjection::numericRecipe(defines)
+            || !IndirectProjection::numericRecipe(mGlobalDefines)) return;
+        try
+        {
+            auto* data = shader.getOrCreateUserDataContainer();
+            const auto index = data->getUserObjectIndex(IndirectProjection::SourceKey);
+            osg::ref_ptr<IndirectProjection::Source> proof = new IndirectProjection::Source(shader, templateName);
+            if (index < data->getNumUserObjects()) data->setUserObject(index, proof);
+            else data->addUserObject(proof);
+        }
+        catch (const std::bad_alloc&) {} // Optional exact proof must preserve ordinary source generation.
+    }
+
+    void ShaderManager::attachAssetSource(osg::Shader& shader, const std::string& templateName, const DefineMap& defines,
+        bool regeneration)
+    {
+        if (!AssetGeometry::enabled()) return;
+        auto refusal = AssetGeometry::Refusal::Missing;
+        AssetGeometry::SourceAttachReceipt receipt{AssetGeometry::SourceAttachStep::RawProof};
+        try
+        {
+            const auto source = mShaderTemplates.find(templateName);
+            const auto proof = mHotReloadManager->assetExpandedTemplates.find(templateName);
+            // This proof was made from the exact consumed root and includes before
+            // @ substitution. A reload clears it; filenames or regenerated output
+            // alone cannot authorize a refreshed source.
+            if (source != mShaderTemplates.end() && proof != mHotReloadManager->assetExpandedTemplates.end())
+            {
+                refusal = AssetGeometry::Refusal::Source;
+                if (proof->second.expandedDigest == Resource::DerivedAssets::digest(source->second))
+                    refusal = AssetGeometry::attachSource(shader, templateName, proof->second, defines, mGlobalDefines,
+                        mAssetEpoch, &receipt);
+            }
+        }
+        catch (const std::bad_alloc&)
+        {
+            refusal = AssetGeometry::Refusal::Capacity;
+            receipt.step = AssetGeometry::SourceAttachStep::Allocation;
+        } // Optional hash/proof work cannot abort normal shader regeneration.
+        AssetGeometry::recordSourceAttachment(regeneration, refusal);
+        if (refusal != AssetGeometry::Refusal::None)
+            reportAssetProducerRefusal(false, regeneration, refusal, templateName, AssetGeometry::sourceStatus(shader),
+                mAssetEpoch->value.load(std::memory_order_acquire), receipt);
+    }
+
+    class SamplerProgram : public VariantProgram, public AssetGeometry::SamplerProducer
     {
     public:
         SamplerProgram() = default;
@@ -597,6 +728,16 @@ namespace Shader
         META_Object(Shader, SamplerProgram)
 
         bool hasSamplers(const ShaderManager::SamplerBindingMap& samplers) const;
+        bool assetSamplersMatch(const AssetGeometry::Samplers& samplers) const override { return hasSamplers(samplers); }
+        bool assetCanPrepareVariant(const osg::State& state,
+            const osg::Program::PerContextProgram& program) const override
+        {
+            const auto context = state.getContextID();
+            return context < mApplied.size() && mApplied[context] != &program;
+        }
+        bool hasProgramTemplate(const osg::Program* program) const;
+        void prepareAssetRegeneration(const std::shared_ptr<AssetGeometry::Epoch>& epoch, std::uint64_t previousVersion);
+        void finishAssetRegeneration(const std::shared_ptr<AssetGeometry::Epoch>& epoch, std::uint64_t previousVersion);
 
         void apply(osg::State& state) const override;
 
@@ -605,6 +746,16 @@ namespace Shader
     private:
         std::vector<osg::ref_ptr<osg::Uniform>> mSamplers;
         mutable osg::buffered_value<const PerContextProgram*> mApplied;
+        struct AppliedVariant
+        {
+            GLuint handle = 0;
+            std::uint64_t generation = 0, linkEpoch = 0;
+        };
+        mutable std::unique_ptr<osg::buffered_object<AppliedVariant>> mAppliedVariants
+            = exactProgramVariantsEnabled() ? std::make_unique<osg::buffered_object<AppliedVariant>>() : nullptr;
+        std::optional<ProgramLinkIdentity> mTemplateIdentity;
+        bool mWithoutTemplate = true;
+        std::uint64_t mAssetRefreshVersion = 0;
     };
 
     SamplerProgram::SamplerProgram(const ShaderManager::SamplerBindingMap& samplers)
@@ -615,8 +766,11 @@ namespace Shader
 
     SamplerProgram::SamplerProgram(
         const ShaderManager::SamplerBindingMap& samplers, const osg::Program& other, const osg::CopyOp& copyop)
-        : osg::Program(other, copyop)
+        : VariantProgram(other, copyop)
+        , mWithoutTemplate(false)
     {
+        if (exactProgramVariantsEnabled())
+            mTemplateIdentity = ProgramLinkIdentity::capture(other);
         for (const auto& [name, index] : other.getUniformBlockBindingList())
             addBindUniformBlock(name, index);
         for (const auto& [name, unit] : samplers)
@@ -644,10 +798,61 @@ namespace Shader
         return true;
     }
 
+    bool SamplerProgram::hasProgramTemplate(const osg::Program* program) const
+    {
+        return program ? mTemplateIdentity && mTemplateIdentity->matches(*program) : mWithoutTemplate;
+    }
+
+    void SamplerProgram::prepareAssetRegeneration(
+        const std::shared_ptr<AssetGeometry::Epoch>& epoch, std::uint64_t previousVersion)
+    {
+        // Check the old immutable schema before ShaderManager removes/replaces
+        // dependencies. A mutated Program must never be blessed by that repair.
+        mAssetRefreshVersion = AssetGeometry::canRefreshProgram(*this, epoch, previousVersion) ? previousVersion : 0;
+    }
+
+    void SamplerProgram::finishAssetRegeneration(
+        const std::shared_ptr<AssetGeometry::Epoch>& epoch, std::uint64_t previousVersion)
+    {
+        if (mAssetRefreshVersion == previousVersion)
+        {
+            const auto refusal = AssetGeometry::refreshProgram(*this, epoch, previousVersion);
+            AssetGeometry::recordProgramRefresh(refusal);
+            if (refusal != AssetGeometry::Refusal::None)
+            {
+                const auto source = getNumShaders() ? AssetGeometry::sourceStatus(*getShader(0)) : AssetGeometry::SourceStatus{};
+                reportAssetProducerRefusal(true, true, refusal, getName(), source,
+                    epoch ? epoch->value.load(std::memory_order_acquire) : 0);
+            }
+        }
+        mAssetRefreshVersion = 0;
+    }
+
     void SamplerProgram::apply(osg::State& state) const
     {
         const PerContextProgram* pcp = getPCP(state);
         const bool relink = pcp->needsLink();
+        const bool exact = exactProgramVariantsEnabled();
+        const auto linkEpoch = exact ? preparedLinkEpoch(state, *pcp) : 0;
+        const auto initialized = exact ? (*mAppliedVariants)[state.getContextID()] : AppliedVariant{};
+        const bool producerRelink = exact && (initialized.handle != pcp->getHandle()
+            || initialized.generation != variantGeneration() || initialized.linkEpoch != linkEpoch);
+        const bool exactFirst = exactProgramVariantsEnabled()
+            && (relink || mApplied[state.getContextID()] != pcp || producerRelink);
+        const PreparedVariantUse prepared = exactFirst ? takePreparedFirstUse(state, *pcp) : PreparedVariantUse{};
+        std::optional<Debug::HitchTrace::Scope> preparedUse;
+        if (exactFirst)
+        {
+            preparedUse.emplace(prepared.ready ? "shader.variant_first_use"
+                : prepared.reused ? "shader.variant_reuse" : "shader.variant_fallback",
+                Debug::HitchTrace::CpuTiming::WallEnvelope);
+            preparedUse->setLink(prepared.receipt);
+            preparedUse->setMetric(0, "context", state.getContextID());
+            preparedUse->setMetric(1, "relink_needed", relink ? 1 : 0);
+            if (!prepared.ready && !prepared.reused)
+                programVariantStats().fallbackUses.fetch_add(1, std::memory_order_relaxed);
+            preparedUse->retain();
+        }
 
         auto& v3Writer = Debug::V3Diagnostics::renderWriter();
         const bool v3Profile = relink && v3Writer.enabled();
@@ -684,18 +889,22 @@ namespace Shader
             return;
 
         const PerContextProgram*& applied = mApplied[state.getContextID()];
-        if (applied == pcp && !relink)
+        if (applied == pcp && !relink && !producerRelink)
             return;
 
         for (const osg::ref_ptr<osg::Uniform>& sampler : mSamplers)
             pcp->apply(*sampler);
         applied = pcp;
+        if (exact)
+            (*mAppliedVariants)[state.getContextID()] = { pcp->getHandle(), variantGeneration(), linkEpoch };
     }
 
     void SamplerProgram::resizeGLObjectBuffers(unsigned int maxSize)
     {
         osg::Program::resizeGLObjectBuffers(maxSize);
         mApplied.resize(maxSize);
+        if (exactProgramVariantsEnabled())
+            mAppliedVariants->resize(maxSize);
     }
 
     osg::ref_ptr<osg::Program> ShaderManager::getProgram(const std::string& templateName, const DefineMap& defines,
@@ -715,11 +924,26 @@ namespace Shader
         const SamplerBindingMap& samplers)
     {
         std::lock_guard<std::mutex> lock(mMutex);
-        ProgramMap::iterator found = mPrograms.find(std::make_pair(vertexShader, fragmentShader));
+        AssetGeometry::ProducerMutationScope producer;
+        IndirectProjection::ProducerMutationScope indirectProducer(IndirectProjection::enabled());
+        if (!programTemplate)
+            programTemplate = mProgramTemplate;
+        const auto key = std::make_pair(vertexShader, fragmentShader);
+        ProgramMap::iterator found = mPrograms.find(key);
+        const bool exactTemplate = exactProgramVariantsEnabled()
+            && (!programTemplate || ProgramLinkIdentity::capture(*programTemplate).has_value());
+        if (exactTemplate)
+        {
+            const auto [first, last] = mPrograms.equal_range(key);
+            found = std::find_if(first, last, [&](const auto& entry) {
+                const auto* program = static_cast<const SamplerProgram*>(entry.second.get());
+                return program->hasSamplers(samplers) && program->hasProgramTemplate(programTemplate);
+            });
+            if (found == last)
+                found = mPrograms.end();
+        }
         if (found == mPrograms.end())
         {
-            if (!programTemplate)
-                programTemplate = mProgramTemplate;
             osg::ref_ptr<SamplerProgram> program = programTemplate
                 ? new SamplerProgram(samplers, *programTemplate, osg::CopyOp::SHALLOW_COPY)
                 : new SamplerProgram(samplers);
@@ -727,7 +951,13 @@ namespace Shader
             program->addShader(fragmentShader);
             addLinkedShaders(vertexShader, program);
             addLinkedShaders(fragmentShader, program);
-            found = mPrograms.insert(std::make_pair(std::make_pair(vertexShader, fragmentShader), program)).first;
+            if (IndirectProjection::enabled())
+            {
+                try { IndirectProjection::certify(*program); }
+                catch (const std::bad_alloc&) {} // Keep exact normal rendering under contract pressure.
+            }
+            AssetGeometry::certify(*program, samplers);
+            found = mPrograms.insert(std::make_pair(key, program));
         }
         else
             assert(static_cast<SamplerProgram*>(found->second.get())->hasSamplers(samplers));
@@ -736,6 +966,7 @@ namespace Shader
 
     osg::ref_ptr<osg::Program> ShaderManager::cloneProgram(const osg::Program* src)
     {
+        AssetGeometry::ProducerReadScope producer;
         osg::ref_ptr<osg::Program> program = static_cast<osg::Program*>(src->clone(osg::CopyOp::SHALLOW_COPY));
         for (auto& [name, idx] : src->getUniformBlockBindingList())
             program->addBindUniformBlock(name, idx);
@@ -744,13 +975,31 @@ namespace Shader
 
     ShaderManager::DefineMap ShaderManager::getGlobalDefines()
     {
+        std::lock_guard<std::mutex> lock(mMutex);
         return DefineMap(mGlobalDefines);
+    }
+
+    std::uint64_t ShaderManager::assetGeneration() const noexcept
+    {
+        return mAssetEpoch->value.load(std::memory_order_acquire);
     }
 
     void ShaderManager::setGlobalDefines(DefineMap& globalDefines)
     {
         std::lock_guard<std::mutex> lock(mMutex);
+        // An identical recipe changes no source or link dependency. Preserve
+        // its exact preparations and candidate snapshots instead of forcing
+        // unnecessary regeneration and first-use linking.
+        if (mGlobalDefines == globalDefines) return;
+        AssetGeometry::ProducerMutationScope producer;
+        IndirectProjection::ProducerMutationScope indirectProducer(IndirectProjection::enabled());
+        const auto previousAssetVersion = mAssetEpoch->value.fetch_add(1, std::memory_order_acq_rel);
+        for (const auto& [pair, program] : mPrograms)
+            static_cast<SamplerProgram*>(program.get())->prepareAssetRegeneration(mAssetEpoch, previousAssetVersion);
         mGlobalDefines = globalDefines;
+        if (exactProgramVariantsEnabled())
+            for (const auto& [pair, program] : mPrograms)
+                static_cast<const VariantProgram*>(program.get())->invalidateVariantPreparations();
         // clear out linked dependencies - changing defines may make them obsolete
         for (const auto& [pair, program] : mPrograms)
         {
@@ -770,6 +1019,11 @@ namespace Shader
                 // I'm not sure how to handle a shader that was already broken as there's no way to get a potential
                 // replacement to the nodes that need it.
                 continue;
+            const bool refreshAsset = AssetGeometry::canRefreshSource(*shader, mAssetEpoch, previousAssetVersion);
+            const auto* data = shader->getUserDataContainer();
+            const auto* indirect = data ? dynamic_cast<const IndirectProjection::Source*>(
+                data->getUserObject(IndirectProjection::SourceKey)) : nullptr;
+            const bool refreshIndirect = IndirectProjection::enabled() && indirect && indirect->matches(*shader);
             std::string shaderSource = mShaderTemplates[templateId];
             std::vector<std::string> linkedShaderNames;
             if (!createSourceFromTemplate(shaderSource, linkedShaderNames, templateId, defines))
@@ -778,6 +1032,8 @@ namespace Shader
                 // put a working one in later.
                 continue;
             shader->setShaderSource(shaderSource);
+            if (refreshIndirect) attachIndirectSource(*shader, templateId, defines);
+            if (refreshAsset) attachAssetSource(*shader, templateId, defines, true);
 
             getLinkedShaders(shader, linkedShaderNames, defines);
         }
@@ -785,6 +1041,12 @@ namespace Shader
         {
             addLinkedShaders(pair.first, program);
             addLinkedShaders(pair.second, program);
+            if (IndirectProjection::enabled())
+            {
+                try { IndirectProjection::certify(*program); }
+                catch (const std::bad_alloc&) {} // Stale proof fails closed; normal regeneration remains valid.
+            }
+            static_cast<SamplerProgram*>(program.get())->finishAssetRegeneration(mAssetEpoch, previousAssetVersion);
         }
     }
 
@@ -882,11 +1144,15 @@ namespace Shader
 
     void ShaderManager::setHotReloadEnabled(bool value)
     {
+        std::lock_guard<std::mutex> lock(mMutex);
         mHotReloadManager->mHotReloadEnabled = value;
     }
 
     void ShaderManager::triggerShaderReload()
     {
+        std::lock_guard<std::mutex> lock(mMutex);
+        AssetGeometry::ProducerMutationScope producer;
+        mAssetEpoch->value.fetch_add(1, std::memory_order_acq_rel);
         mHotReloadManager->mTriggerReload = true;
     }
 

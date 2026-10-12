@@ -49,11 +49,15 @@ namespace
     sol::object getValue(const MWLua::Context& context, const ObjectVariant& obj, SelfObject::CachedStat::Setter setter,
         Index index, std::string_view prop, G getter)
     {
+        Debug::HitchTrace::Scope query("lua.api.stat_get", prop);
         if (obj.isSelfObject())
         {
             SelfObject* self = obj.asSelfObject();
             if (auto value = self->getCachedStat({ setter, index, prop }))
+            {
+                query.setMetric(0, "cache_hit", 1);
                 return *value;
+            }
         }
         return sol::make_object(context.mLua->unsafeState(), getter(obj.ptr()));
     }

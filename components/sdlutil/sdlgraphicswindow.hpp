@@ -6,6 +6,7 @@
 #include <osgViewer/GraphicsWindow>
 
 #include "vsyncmode.hpp"
+#include <components/rendercore/diagnosticnamespace.hpp>
 
 namespace SDLUtil
 {
@@ -19,13 +20,40 @@ namespace SDLUtil
         bool mRealized;
         bool mOwnsWindow;
         VSyncMode mVSyncMode;
+        const bool mDiagnosticRequested;
+        const std::thread::id mDiagnosticNativeOwnerThread = std::this_thread::get_id();
+        std::uintptr_t mDiagnosticCreationNative = 0;
+        unsigned mDiagnosticOsgContext = 0;
+        osg::observer_ptr<osg::State> mDiagnosticIssuedState;
+        std::unique_ptr<RenderCore::Temporal::DiagnosticNamespace> mDiagnosticNamespace;
 
         void init();
 
         virtual ~GraphicsWindowSDL2();
 
     public:
-        GraphicsWindowSDL2(osg::GraphicsContext::Traits* traits, VSyncMode vsyncMode);
+        enum class DiagnosticCloseState { NotRequested, Open, Closing, DestroyFailed, Destroyed, Unsupported };
+        GraphicsWindowSDL2(osg::GraphicsContext::Traits* traits, VSyncMode vsyncMode,
+            bool diagnosticNamespaceRequested = false);
+        std::optional<RenderCore::Temporal::DiagnosticNamespaceObserver> diagnosticNamespaceObserver() const noexcept;
+        RenderCore::Temporal::DiagnosticNativeObservation diagnosticCurrentObservation() const noexcept;
+        RenderCore::Temporal::DiagnosticNamespaceSnapshot diagnosticNamespaceSnapshot() const noexcept;
+        RenderCore::Temporal::DiagnosticNamespaceStatus requestDiagnosticClose() noexcept;
+        // Main native owner only, after its render workers have stopped/joined.
+        // These operate independently of OSG State, which close() may discard.
+        bool makeDiagnosticCurrentForRetirement() noexcept;
+        template <class Consumer>
+        RenderCore::Temporal::DiagnosticNamespaceStatus retireDiagnosticResources(Consumer&& consumer)
+        {
+            if (!mDiagnosticNamespace || std::this_thread::get_id() != mDiagnosticNativeOwnerThread)
+                return RenderCore::Temporal::DiagnosticNamespaceStatus::WrongThread;
+            return mDiagnosticNamespace->withRetirement(diagnosticRetirementObservation(), std::forward<Consumer>(consumer));
+        }
+        bool retryDiagnosticNativeClose() noexcept;
+        DiagnosticCloseState diagnosticCloseState() const noexcept { return mDiagnosticCloseState.load(); }
+        bool diagnosticExternalWindowReleaseAllowed() const noexcept
+        { return !mDiagnosticRequested || diagnosticCloseState() == DiagnosticCloseState::Destroyed; }
+        bool diagnosticNamespaceRequested() const noexcept { return mDiagnosticRequested; }
 
         bool isSameKindAs(const Object* object) const override
         {
@@ -91,6 +119,8 @@ namespace SDLUtil
         };
 
     private:
+        RenderCore::Temporal::DiagnosticNativeObservation diagnosticRetirementObservation() const noexcept;
+        std::atomic<DiagnosticCloseState> mDiagnosticCloseState{DiagnosticCloseState::NotRequested};
         void setSwapInterval(VSyncMode mode);
     };
 

@@ -4,6 +4,7 @@ from pathlib import Path
 import argparse
 import hashlib
 import json
+import re
 
 
 def main() -> None:
@@ -52,9 +53,22 @@ def main() -> None:
     need('typeid(*cv) != typeid(osgUtil::CullVisitor)' in trace, 'unknown cull visitor must remain unchanged')
     need('osgUtil::RenderLeaf::render(info, previous)' in trace, 'stock trace-off leaf fallback missing')
     leaf = trace.split('class Leaf final', 1)[1].split('class CullVisitor final', 1)[0]
-    need(leaf.index('_drawable->getName()') < leaf.index('state.decrementDynamicObjectCount()'),
+    need(leaf.index('Capture::Row row = descriptor;') < leaf.index('state.decrementDynamicObjectCount()'),
          'metadata cannot be read after the dynamic safe point releases update')
     need('capture.append(row);' in leaf, 'post-safe-point record must own its metadata')
+    need('SubmissionScope' in read('components/terrain/terraindrawable.cpp')
+         and 'stampSubmissions' in trace, 'direct terrain submissions bypass metadata initialization')
+    for token in ('.resources.csv', 'resource_catalog_dropped_attempts=', 'OVERRIDE', 'PROTECTED',
+                  'ResourceDefaultCapacity = 131072', 'ResourceMaximumCapacity = 262144',
+                  'resource_catalog_capacity=', 'resource_catalog_allocation_failures=', 'row.bytes,row.context'):
+        need(token in trace, 'missing bounded effective resource attribution: ' + token)
+    transport = read('components/debug/diagnostictransport.hpp')
+    for token in ('OPENMW_P9_CAPTURE_TRANSPORT', 'QueueCapacity = 32768', 'ByteCapacity = 32u * 1024u * 1024u',
+                  'RowCapacity = 64u * 1024u', 'attempt < 128', 'slot.sequence.store(position + 1, std::memory_order_release)',
+                  '.writer-status.txt', 'normal_finish=1', 'output_ok=', 'allocation_dropped=', 'contention_dropped='):
+        need(token in transport, 'missing bounded MPSC capture publication/output contract: ' + token)
+    need('"diagnostictransport.hpp"' in read('components/debug/v3diagnostics.hpp'),
+         'actual CSV channels must use the qualified capture hub')
 
     temporal = read('apps/openmw/mwrender/temporalmotion.cpp')
     need('input.jitterEnabled = false;' in temporal, 'do not jitter gameplay without a reconstruction consumer')
@@ -64,7 +78,7 @@ def main() -> None:
          'independent framebuffer/read/viewport restoration missing')
     need('c.status.denseDynamicMotion = false;' in temporal,
          'camera/static submission must not advertise dense dynamic motion')
-    need('consumerFrame(unsigned context)' in read('apps/openmw/mwrender/temporalmotion.hpp')
+    need('consumerFrame(unsigned context,' in read('apps/openmw/mwrender/temporalmotion.hpp')
          and 'RenderCore::Temporal::rowMajor(frame->currentViewProjection)' in temporal,
          'consumer-ready temporal matrix contract missing')
     # GPU timing lives at the canvas seam so the standalone temporal math/render
@@ -78,10 +92,29 @@ def main() -> None:
     need('catch (const std::exception& error)' in post, 'shader setup must preserve normal fallback')
     need('mPostProcessor->captureTemporalCamera(cv);' in read('apps/openmw/mwrender/pingpongcull.cpp'),
          'real camera capture hook missing')
+    owner = read('components/rendercore/sceneviewowner.hpp')
+    need('std::array<Slot, 2>' in owner and 'slot.visitor.get() != visitor' in owner,
+         'temporal lifetime must use the two acquired SceneView owners, not frame parity')
+    for token in ('typeid(*renderer) == typeid(osgViewer::Renderer)',
+                  'typeid(*cv) == typeid(osgUtil::CullVisitor)', 'DrawThreadPerContext',
+                  'mTemporalResourceEpoch', 'snapshotRenderStageCamera'):
+        need(token in post, 'ownership qualification/lifecycle guard missing: ' + token)
+    stage = read('components/rendercore/ownedrenderstage.hpp')
+    need('osg::ref_ptr<osg::Camera> camera;' in stage and 'stage.setUserDataContainer(data)' in stage
+         and 'explicitFramebufferSetup' in stage,
+         'deferred camera setup must retain its metadata and explicit framebuffer pair')
+    identity = read('components/sceneutil/temporalmotionidentity.hpp')
+    need('OPENMW_P9_DYNAMIC_MOTION' in identity and 'std::strcmp(value, "1") == 0' in identity,
+         'dynamic motion must remain independently default-off')
+    dynamic = read('apps/openmw/mwrender/temporaldynamic.hpp')
+    need('MaxBytes = 16u * 1024u * 1024u' in dynamic and 'MaxSurfaces = 2048' in dynamic,
+         'dynamic capture memory/surface bounds missing')
     canvas = read('apps/openmw/mwrender/pingpongcanvas.cpp')
     need('mTemporalMotion->render(renderInfo, mTemporalCamera, depth, *this)' in canvas,
          'real presentation hook missing')
-    need('setDataVariance(osg::Object::DYNAMIC)' in canvas, 'temporal frame slot must retain CPU ownership barrier')
+    need('setDataVariance(osg::Object::DYNAMIC)' in canvas, 'unsupported temporal paths must retain the DYNAMIC fallback')
+    need('OPENMW_P9_TEMPORAL_OWNERSHIP' in temporal and 'mOwnedSubmission' in canvas,
+         'ownership must remain an independent qualified opt-in')
     need('TemporalMotion::debugView()' in canvas, 'normal color must not be replaced by the debug view')
     need('p9TemporalInputWriter()' in canvas and 'requiredForDlss' in canvas
          and 'status.denseDynamicMotion' in canvas,
@@ -92,7 +125,7 @@ def main() -> None:
          'OpenGL/Vulkan external-memory capability probe missing')
     temporal_test = read('tools/optimizedmw/phase9/temporal-render-tests.cpp')
     need('consumer-ready matrix/motion contract' in temporal_test
-         and 'consumerFrame(state->getContextID())' in temporal_test,
+         and 'consumerFrame(state->getContextID(),' in temporal_test,
          'consumer-frame runtime regression coverage missing')
     need('Debug::V36GpuProfiler::ScopedPass' in canvas and '"temporal/camera_motion"' in canvas,
          'nonblocking GPU timing for temporal input pass missing')
@@ -109,6 +142,10 @@ def main() -> None:
     need('p9CompositeWriter()' in composite_cpp and 'telemetry->stateMs' in composite_cpp
          and 'telemetry->drawMs' in composite_cpp,
          'terrain composite state/draw attribution missing')
+    need('OPENMW_P9_COMPOSITE_PREPARE' in read('apps/openmw/mwrender/renderingmanager.cpp')
+         and 'P9DiscretionaryAdmission' in read('components/resource/openmwcompileoperation.hpp')
+         and 'preparationSupported' in composite_cpp and 'dependenciesReady' in composite_cpp,
+         'independent composite preparation must retain exact-context readiness and shared admission')
     gltrace = read('components/sceneutil/glcalltrace.hpp')
     need('std::array<std::uint64_t, 8> args' in gltrace and 'mBreadcrumbs' in gltrace
          and 'breadcrumb(unsigned context)' in gltrace and '.gl-last.csv' in gltrace,
@@ -120,6 +157,52 @@ def main() -> None:
         need(token in trace, 'draw identity/camera/resource telemetry missing: ' + token)
 
     launcher = read('tools/optimizedmw/phase9/OptimizedMW_Test.ps1')
+    paging = read('apps/openmw/mwrender/objectpaging.cpp')
+    need('const bool activeNearFuture =' in paging,
+         'explicit active-owner experiment authorization is missing')
+    priority_gate = paging.split('const bool activeNearFuture =', 1)[1].split(';', 1)[0]
+    need(all(token in priority_gate for token in (
+             'prepareActiveLod', 'OptionalUpgradeScope::preparedActiveLodOnly()',
+             'waitingAssets == SceneUtil::AssetPaging::Lod',
+             'context.priority == Resource::SpeculativePriority::NearFuture'))
+         and 'if (activeNearFuture && !assetSourcesCurrent())' in paging
+         and paging.index('if (activeNearFuture && !assetSourcesCurrent())')
+             < paging.index('std::make_unique<Resource::ExperimentalSpeculativeScope>(experimentPriority)')
+             < paging.index('node = createChunkImpl(size, center, activeGrid, viewPoint, compile, lod, assetOutcome,prepareActiveLod)'),
+         'explicit experimental NearFuture must require the exact prepared active owner before construction')
+    budget = read('components/resource/speculativebudget.hpp')
+    for method in ('experimentJobReceipt', 'tryExperimentJob'):
+        need(re.search(method + r'\(const OpenGlPressureSample& sample,\s*'
+                       r'SpeculativePriority priority = SpeculativePriority::Background\)', budget),
+             'ordinary/distant experimental permits must retain Background defaults: ' + method)
+    need('if (admitted && !independentActiveLod() && (mOptionalRetry.generation.mask' in
+         read('apps/openmw/mwworld/cellpreloader.cpp'),
+         'aggregate Background permit must not suppress strict active-owner traversal')
+    canonical_active_lod = 'generated static lod active grid'
+    cells = read('components/settings/categories/cells.hpp')
+    need('SettingValue<bool> mGeneratedStaticLodActiveGrid' in cells
+         and 'mIndex, "Cells", "' + canonical_active_lod + '"' in cells,
+         'active-grid L1 must have its own canonical Cells switch')
+    for path in ('files/settings-default.cfg', 'tools/optimizedmw/phase9/OptimizedMW_Optimizations.cfg'):
+        section = ''
+        values = []
+        for line in read(path).splitlines():
+            heading = re.fullmatch(r'\s*\[([^]]+)\]\s*', line)
+            if heading:
+                section = heading[1]
+            value = re.fullmatch(r'\s*' + re.escape(canonical_active_lod) + r'\s*=\s*(\S+)\s*', line)
+            if section == 'Cells' and value:
+                values.append(value[1])
+        need(values == ['false'], 'active-grid L1 must remain independently default-off: ' + path)
+    setting_writer = read('tools/optimizedmw/phase9/OptimizedMW_SettingNames.ps1')
+    need("$activeLod=if($AssetMask -band 1){'true'}else{'false'}" in setting_writer
+         and "Set-IniValue $Path 'Cells' '" + canonical_active_lod + "' $activeLod" in setting_writer,
+         'asset writer must select active L1 only for its bit and clear the control')
+    active_call = 'Set-OptimizedMWAssetSettings -Path $SettingsPath -AssetMask $AssetMask'
+    need(launcher.count(active_call) == 1
+         and launcher.index("Set-IniValue $SettingsPath 'V3' 'v3.13 chunk quality mode' '1'")
+             < launcher.index(active_call),
+         'actual benchmark launcher must set independent active L1 after its readiness foundation')
     for token in ('Get-P9Mode', 'OPENMW_P9_DYNAMIC_STREAM=$mode.Stream',
                   'OPENMW_P9_TEMPORAL_INPUTS=$mode.Temporal', 'OPENMW_P9_MOTION_VIEW=$mode.View',
                   'OPENMW_P9_LEAF_TRACE_FILE', 'OPENMW_P9_DYNAMIC_TRACE_FILE',
@@ -127,10 +210,18 @@ def main() -> None:
                   'OPENMW_P9_COMPOSITE_FILE', 'OPENMW_V36_GPU_PASS_FILE',
                   'phase9_dense_dynamic_motion=false', 'phase9_scene_jitter=false',
                   'phase9_static_prewarm=disabled_after_optimized_trace_driver_crash',
-                  'phase9_temporal_contract=consumer_frame_v1',
+                  'phase9_temporal_contract=consumer_frame_v2_ownership',
+                  'phase9_capture_transport=bounded_mpsc_v1',
                   'Test-Phase9TraceCapture -ProfileDir',
-                  'Test-Phase9TemporalCapture -ProfileDir'):
+                  'Test-Phase9TemporalCapture -ProfileDir',
+                  'OPENMW_P9_TEMPORAL_OWNERSHIP=$mode.Ownership',
+                  'OPENMW_P9_COMPOSITE_PREPARE=$mode.Composite',
+                  'OPENMW_P9_DYNAMIC_MOTION=$mode.DynamicMotion',
+                  'phase9_detail_revision=4', 'OPENMW_P9_HITCH_CAPACITY',
+                  'New-Phase9SystemTraceLink -GameDir', 'Complete-Phase9SystemTraceLink -Link'):
         need(token in launcher, 'missing actual launcher control/provenance: ' + token)
+    need(launcher.index('Complete-Phase9Profile -ProfileDir') < launcher.index('Complete-Phase9SystemTraceLink -Link'),
+         'bind only final engine ZIP')
     need('$mode.Prewarm' not in launcher and 'OPENMW_P9_STATIC_PREWARM=$mode.Prewarm' not in launcher,
          'rejected prewarm must not be selectable from the shipped launcher')
     need(launcher.index('settings_restore_verified=$restoreVerified') < launcher.index('Complete-Phase9Profile -ProfileDir'),
@@ -158,7 +249,8 @@ def main() -> None:
 
     cmake = read('files/shaders/CMakeLists.txt')
     names = ('temporal_camera_motion.vert', 'temporal_camera_motion.frag',
-             'temporal_motion_view.vert', 'temporal_motion_view.frag')
+             'temporal_motion_view.vert', 'temporal_motion_view.frag',
+             'temporal_dynamic_motion.vert', 'temporal_dynamic_motion.frag')
     for name in names:
         relative = 'compatibility/' + name
         need(relative in cmake, 'shader absent from actual staging list: ' + relative)
@@ -170,8 +262,11 @@ def main() -> None:
                  'deployed shader differs from tested source: ' + relative)
     culling = json.loads(read('tools/optimizedmw/phase9/culling-preserved.json'))
     for path, digest in culling['sha256'].items():
-        need(hashlib.sha256((root/path).read_bytes()).hexdigest() == digest,
-             'this root-cause checkpoint must preserve audited culling: '+path)
+        # Git's canonical text is LF; Windows worktrees may apply CRLF. Keep
+        # the exact source-content check without confusing checkout EOLs with
+        # a visibility-policy edit.
+        need(hashlib.sha256((root/path).read_bytes().replace(b'\r\n', b'\n')).hexdigest() == digest,
+             'current tested culling and paging source seal changed; re-audit required: '+path)
     print(json.dumps({'source_contract': 'PASS', 'deployed_temporal_shaders':
                       'PASS' if args.staged_shaders else 'NOT_CHECKED',
                       'dlss_runtime': 'NOT_IMPLEMENTED', 'performance': 'NOT_MEASURED'}))

@@ -200,11 +200,31 @@ namespace Crash
 
         STARTUPINFOW si;
         ZeroMemory(&si, sizeof(si));
+        si.cb = sizeof(si);
+        // Keep the crash monitor on the application's own desktop. A console
+        // broker can otherwise allocate a visible window on the input desktop,
+        // even when the game is running on an unswitched private desktop.
+        const auto objectName = [](HANDLE handle) {
+            DWORD needed = 0;
+            GetUserObjectInformationW(handle, UOI_NAME, nullptr, 0, &needed);
+            if (!needed || needed > 65536) throw std::runtime_error("Cannot identify crash monitor desktop");
+            std::wstring value(needed / sizeof(wchar_t), L'\0');
+            if (!GetUserObjectInformationW(handle, UOI_NAME, value.data(), needed, &needed))
+                throw std::runtime_error("Cannot identify crash monitor desktop");
+            value.resize(wcslen(value.c_str()));
+            return value;
+        };
+        auto desktop = objectName(GetProcessWindowStation()) + L"\\" + objectName(GetThreadDesktop(GetCurrentThreadId()));
+        si.lpDesktop = desktop.data();
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+        si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
 
         PROCESS_INFORMATION pi;
         ZeroMemory(&pi, sizeof(pi));
 
-        if (!CreateProcessW(executablePath.data(), arguments.data(), NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi))
+        if (!CreateProcessW(executablePath.data(), arguments.data(), NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
             throw std::runtime_error("Could not start crash monitor process");
 
         CloseHandle(pi.hProcess);

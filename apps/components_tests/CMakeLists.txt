@@ -25,10 +25,12 @@ file(GLOB UNITTEST_SRC_FILES
     esm/variant.cpp
 
     lua/testasync.cpp
+    lua/testcamerastorage.cpp
     lua/testconfiguration.cpp
     lua/testinputactions.cpp
     lua/testl10n.cpp
     lua/testlua.cpp
+    lua/testpreparedscriptroots.cpp
     lua/testscriptscontainer.cpp
     lua/testserialization.cpp
     lua/teststorage.cpp
@@ -41,6 +43,7 @@ file(GLOB UNITTEST_SRC_FILES
     misc/testendianness.cpp
     misc/testmathutil.cpp
     misc/testresourcehelpers.cpp
+    misc/testanimationdependencies.cpp
     misc/teststringops.cpp
 
     nifloader/testbulletnifloader.cpp
@@ -69,6 +72,7 @@ file(GLOB UNITTEST_SRC_FILES
     shader/parsefors.cpp
     shader/parselinks.cpp
     shader/shadermanager.cpp
+    shader/programvariant.cpp
 
     sqlite3/db.cpp
     sqlite3/request.cpp
@@ -101,6 +105,8 @@ file(GLOB UNITTEST_SRC_FILES
 
     resource/testobjectcache.cpp
     resource/testresourcesystem.cpp
+    resource/testvisualretention.cpp
+    resource/testresourcelifecycle.cpp
 
     vfs/testpathutil.cpp
 

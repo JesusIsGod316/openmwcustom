@@ -83,6 +83,7 @@ int main() try
     // Model a cull-owned matrix finalized after capture. Taking an early copy
     // would give half the expected motion on the following frame.
     (*projection)(0,0)=2;(*projection)(1,1)=2;
+    std::uint64_t lastCommittedTicket=0, historyOwnerIdentity=0;
     auto draw=[&](unsigned frame,float x,float y,bool reset){
         camera.frame=frame;stamp->setFrameNumber(frame);
         osg::Texture2D* flow=pass.render(info,camera,depth,*quad);
@@ -94,8 +95,17 @@ int main() try
         require(status.renderWidth==camera.renderWidth && status.renderHeight==camera.renderHeight
             && status.outputWidth==camera.outputWidth && status.outputHeight==camera.outputHeight,
             "consumer extents differ from rendered frame");
-        const auto consumer=pass.consumerFrame(state->getContextID());
+        const auto consumer=pass.consumerFrame(state->getContextID(),frame);
         require(consumer.has_value(),"submitted temporal frame did not publish a consumer contract");
+        require(consumer->committedHistoryTicket>lastCommittedTicket,
+            "producer did not expose a fresh actual committed history ticket");
+        lastCommittedTicket=consumer->committedHistoryTicket;
+        require(consumer->historyOwnerIdentity != 0, "actual History owner did not publish its creation identity");
+        if (!historyOwnerIdentity) historyOwnerIdentity = consumer->historyOwnerIdentity;
+        require(consumer->historyOwnerIdentity == historyOwnerIdentity,
+            "resize/gap/release replaced the CPU History owner identity without an actual owner replacement");
+        require(consumer->viewIdentity==1 && consumer->resourceEpoch==camera.resourceEpoch,
+            "consumer submission lost mono-view role or coarse history reset epoch");
         require(consumer->motion.get()==flow && consumer->motionInPixels,
             "consumer motion surface or convention changed");
         require(consumer->status.frame==status.frame && consumer->status.previousFrame==status.previousFrame
@@ -123,17 +133,24 @@ int main() try
         return status;
     };
     draw(1,0,0,true);
+    const auto firstDepth = depth;
+    // Production has two equal-generation opaque depth inputs. Switching
+    // between them is normal ownership, not a resize/reset on every frame.
+    depth = new osg::Texture2D(*firstDepth,osg::CopyOp::SHALLOW_COPY);
     camera.view=osg::Matrixd::translate(-.125,.25,0);draw(2,2,4,false);
+    depth = firstDepth;
     camera.view=osg::Matrixd::translate(-.25,.5,0);draw(3,2,4,false);
     require(!pass.render(info,camera,depth,*quad),"duplicate draw incorrectly advances history");
     camera.view=osg::Matrixd::translate(-.375,.75,0);draw(5,0,0,true);
+    require(lastCommittedTicket!=camera.frame,
+        "consumer substituted frame identity for the committed history ticket");
     ++camera.cameraEpoch;draw(6,0,0,true);
     ++camera.worldEpoch;draw(7,0,0,true);
     (*projection)(0,0)=3;draw(8,0,0,true);
     (*projection)(2,2)=.5;draw(9,0,0,false);
     stamp->setFrameNumber(10);camera.frame=10;camera.renderWidth=15;
     require(!pass.render(info,camera,depth,*quad),"wrong-sized depth accepted");
-    require(!pass.consumerFrame(state->getContextID()),"invalid frame left a stale DLSS consumer contract");
+    require(!pass.consumerFrame(state->getContextID(),camera.frame),"invalid frame left a stale DLSS consumer contract");
     verifyState();
     camera.renderWidth=16;draw(11,0,0,true);
     image=depthImage(8);depth->setImage(image);depth->setTextureSize(8,8);
@@ -142,7 +159,7 @@ int main() try
     camera.zeroToOne=true;camera.clearDepth=0;draw(13,0,0,true);
     camera.view=osg::Matrixd::translate(-.5,1,0);draw(14,1.5,2,false);
     pass.releaseGLObjects(state);
-    require(!pass.consumerFrame(state->getContextID()),"GL release left stale temporal consumer state");
+    require(!pass.consumerFrame(state->getContextID(),camera.frame),"GL release left stale temporal consumer state");
     draw(15,0,0,true);
     require(glGetError()==GL_NO_ERROR,"GL errors from temporal production adapter");
     pass.releaseGLObjects(state);depth->releaseGLObjects(state);quad->releaseGLObjects(state);

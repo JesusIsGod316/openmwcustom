@@ -2,6 +2,8 @@
 #define OPENMW_COMPONENTS_KEYFRAMEMANAGER_H
 
 #include <string>
+#include <cstdint>
+#include <limits>
 
 #include <osg/ref_ptr>
 #include <osgAnimation/BasicAnimationManager>
@@ -9,6 +11,7 @@
 #include <components/sceneutil/keyframe.hpp>
 
 #include "resourcemanager.hpp"
+#include "animationsourceplan.hpp"
 
 namespace ToUTF8
 {
@@ -56,13 +59,31 @@ namespace Resource
 
         /// Retrieve a read-only keyframe resource by name (case-insensitive).
         /// @note Throws an exception if the resource is not found.
-        osg::ref_ptr<const SceneUtil::KeyframeHolder> get(VFS::Path::NormalizedView name);
+        osg::ref_ptr<const SceneUtil::KeyframeHolder> get(VFS::Path::NormalizedView name,
+            std::uint64_t maximumPreloadEstimate = std::numeric_limits<std::uint64_t>::max());
+
+        ObjectCacheLease getReadyLease(VFS::Path::NormalizedView name,
+            std::uint64_t maximumPreloadEstimate = std::numeric_limits<std::uint64_t>::max());
+        bool isReadyLeaseCurrent(VFS::Path::NormalizedView name, const ObjectCacheLease& lease) const
+        {
+            const auto current = mCache->getLeaseFromObjectCache(name, lease.mValue.get(), mVFS->getIndexGeneration());
+            return current && current.mRevision == lease.mRevision && current.mCharge == lease.mCharge;
+        }
+
+        void setSpeculativeBudget(SpeculativeBudget* budget) override
+        { ResourceManager::setSpeculativeBudget(budget); mAnimationPlans.setBudget(budget); }
+        void clearCache() override { mAnimationPlans.clear(); ResourceManager::clearCache(); }
+        template <class Visitor, class Continue, class Sample>
+        bool visitAdditionalSources(VFS::Path::NormalizedView model, Visitor&& visit,
+            Continue&& keepGoing, Sample&& sample)
+        { return mAnimationPlans.visit(*mVFS, model, visit, keepGoing, sample); }
 
         void reportStats(unsigned int frameNumber, osg::Stats* stats) const override;
 
     private:
         SceneManager* mSceneManager;
         const ToUTF8::StatelessUtf8Encoder* mEncoder;
+        AnimationSourcePlanCache mAnimationPlans;
     };
 
 }

@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "baseline_git_commit": "e017315a1b8ce5dce6f7156bf4ac8efe5bbab5af",
+  "implementation_state": "uncommitted audited implementation source",
+  "compiler": "MSVC 19.44.35228 x64 RelWithDebInfo",
+  "osg": "3.6.5",
+  "vulkan_headers": "official v1.3.290",
+  "vulkan_headers_zip_sha256": "918a8bb31b8312fd649fd1d1826443da870f33f3187c16c4528aa94927409bab",
+  "native_ctest": "2 of 2 interop tests passed",
+  "powershell51": "hardware pixel and protocol pass",
+  "powershell7": "hardware pixel and protocol pass",
+  "source_files": {
+    "gl-vulkan-interop.cpp": {
+      "sha256": "84bfef52eef945acdca546f99e648746facce5f3a7c5034f873db99c3fc5d4ee",
+      "git_blob": "c517908d033c572a0c76b99ada65d281d88725ec"
+    },
+    "interop-contract.hpp": {
+      "sha256": "1abf10791be9556cd56697fd52afd0f73d90c0d95a2908d3ff5dac0f5878f0a4",
+      "git_blob": "6535ffa7b916d38ccafc7c8d499be4ab82d3d991"
+    },
+    "interop-contract-tests.cpp": {
+      "sha256": "43e54a2449662f70319dd2e403b82383949701f92bae7afc348466a3016b226f",
+      "git_blob": "d9cfeb916e436de6b4f9eff5c86ce8a2e010362e"
+    },
+    "Run-InteropFixture.ps1": {
+      "sha256": "47afa75cb2f02177cce55e07923767c11ffb3778db95fdb1f7973ed68cd7e7ef",
+      "git_blob": "f8648bb2b026ca87efcc33d7300b5ba73c1969dd"
+    },
+    "CMakeLists.txt": {
+      "sha256": "3437c2342b27374de63eb8f9d97c733cb89e1bdbed33def702baf9361fcb6df7",
+      "git_blob": "ca960453d255f36e6a57f16efb1d5036c5353b95"
+    }
+  },
+  "scope": "Standalone RGBA8 fixture only; no production DLSS or FPS claim"
+}

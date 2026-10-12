@@ -6,10 +6,21 @@
 
 #include <filesystem>
 #include <fstream>
+#include <charconv>
 #include <regex>
 #include <set>
+#include <cstdlib>
+#include <atomic>
+#include <cstring>
+#include <limits>
+#include <memory>
+
+#if defined(_WIN32) && !defined(NO_LUAJIT)
+#include <windows.h>
+#endif
 
 #include <components/debug/debuglog.hpp>
+#include <components/debug/diagnosticobserver.hpp>
 #include <components/debug/v36luaaddscripttrace.hpp>
 #include <components/files/conversion.hpp>
 #include <components/settings/values.hpp>
@@ -25,6 +36,90 @@
 
 namespace LuaUtil
 {
+    namespace
+    {
+        std::atomic<LuaState*> sDiagnosticVmSamplerOwner{ nullptr };
+    }
+
+    void LuaState::vmProfileCallback(void* data, lua_State*, int samples, int state)
+    {
+        // LuaJIT calls this on the Lua owner at a profile dispatch hook, not on
+        // its timer thread. No stack access, allocation, logging or I/O here.
+        auto* owner = static_cast<LuaState*>(data);
+        unsigned index = 5;
+        switch (state)
+        {
+            case 'N': index = 0; break;
+            case 'I': index = 1; break;
+            case 'C': index = 2; break;
+            case 'G': index = 3; break;
+            case 'J': index = 4; break;
+        }
+        if (samples > 0)
+            owner->mDiagnosticVmSamples.mStates[index] += static_cast<std::uint64_t>(samples);
+        ++owner->mDiagnosticVmSamples.mCallbacks;
+    }
+
+    bool LuaState::startDiagnosticVmSampler()
+    {
+        if (mVmProfileStop)
+            return true;
+        if (!Debug::HitchTrace::requested())
+            return false;
+        const char* requested = std::getenv("OPENMW_LUA_VM_STATE_SAMPLER");
+        if (!requested || std::string_view(requested) != "1")
+            return false;
+        LuaState* expected = nullptr;
+        if (!sDiagnosticVmSamplerOwner.compare_exchange_strong(expected, this))
+        {
+            Log(Debug::Info) << "OptimizedMW Lua VM sampling: refused_multiple_engine_owners";
+            return false;
+        }
+#if defined(_WIN32) && !defined(NO_LUAJIT)
+        HMODULE module = nullptr;
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<const char*>(&lua_pcall), &module);
+        using Start = void (*)(lua_State*, const char*, luaJIT_profile_callback, void*);
+        using Stop = void (*)(lua_State*);
+        const auto start = module ? reinterpret_cast<Start>(GetProcAddress(module, "luaJIT_profile_start")) : nullptr;
+        const auto stop = module ? reinterpret_cast<Stop>(GetProcAddress(module, "luaJIT_profile_stop")) : nullptr;
+        if (start && stop)
+        {
+            // No f/l mode: do not flush JIT traces at start. Stop unavoidably
+            // flushes this diagnostic VM's traces in the pinned LuaJIT source.
+            // There is no public acceptance query; observed callbacks, not the
+            // void return, qualify that the requested sampler actually ran.
+            start(mSol.lua_state(), "i1", &vmProfileCallback, this);
+            mVmProfileStop = stop;
+            Log(Debug::Info) << "OptimizedMW Lua VM sampling: requested=1 api_available=1 interval_ms=1"
+                << " acceptance_requires_callbacks=1 delivery_is_not_sample_time=1 stop_flushes_jit=1";
+            return true;
+        }
+#endif
+        sDiagnosticVmSamplerOwner.store(nullptr);
+        Log(Debug::Info) << "OptimizedMW Lua VM sampling: requested=1 api_available=0 qualified=0";
+        return false;
+    }
+
+    void LuaState::stopDiagnosticVmSampler()
+    {
+        if (!mVmProfileStop)
+            return;
+        mVmProfileStop(mSol.lua_state());
+        mVmProfileStop = nullptr;
+        sDiagnosticVmSamplerOwner.store(nullptr);
+        const auto& s = mDiagnosticVmSamples;
+        Log(Debug::Info) << "OptimizedMW Lua VM sampling: final_callbacks=" << s.mCallbacks
+            << " native=" << s.mStates[0] << " interpreted=" << s.mStates[1] << " c=" << s.mStates[2]
+            << " gc=" << s.mStates[3] << " jit=" << s.mStates[4] << " unknown=" << s.mStates[5]
+            << " delivery_is_not_sample_time=1 stop_flushes_jit=1";
+    }
+
+    LuaState::~LuaState()
+    {
+        stopDiagnosticVmSampler();
+    }
+
     static VFS::Path::Normalized packageNameToVfsPath(std::string_view packageName, const VFS::Manager& vfs)
     {
         std::string pathValue(packageName);
@@ -105,11 +200,34 @@ namespace LuaUtil
     void* LuaState::trackingAllocator(void* ud, void* ptr, size_t osize, size_t nsize)
     {
         LuaState* self = static_cast<LuaState*>(ud);
+        const bool diagnostic = Debug::HitchTrace::requested();
+        if (diagnostic)
+        {
+            Debug::DiagnosticObserver::Scope observer(Debug::DiagnosticObserver::Category::LuaAllocatorBookkeeping);
+            auto& stats = self->mDiagnosticAllocations;
+            ++stats.calls;
+            if (!nsize)
+                ++stats.frees;
+            else
+            {
+                constexpr std::array<std::size_t, 5> limits{ 64, 256, 1024, 16384, 1048576 };
+                const auto bucket = std::lower_bound(limits.begin(), limits.end(), nsize) - limits.begin();
+                ++stats.requestedSizes[bucket];
+            }
+        }
         const uint64_t smallAllocSize = self->mSettings.mSmallAllocMaxSize;
         const uint64_t memoryLimit = self->mSettings.mMemoryLimit;
 
         if (!ptr)
             osize = 0;
+        const std::uint64_t positiveGrowth = nsize > osize ? nsize - osize : 0;
+        if (self->mPreparedAllocationActive && self->mPreparedAllocationMayDeny
+            && positiveGrowth > self->mPreparedAllocationLimit
+                - (std::min)(self->mPreparedAllocationGrowth, self->mPreparedAllocationLimit))
+        {
+            self->mPreparedAllocationDenied = true;
+            return nullptr;
+        }
         int64_t smallAllocDelta = 0, bigAllocDelta = 0;
         if (osize <= smallAllocSize)
             smallAllocDelta -= osize;
@@ -122,24 +240,62 @@ namespace LuaUtil
 
         if (bigAllocDelta > 0 && memoryLimit > 0 && self->mTotalMemoryUsage + nsize - osize > memoryLimit)
         {
+            if (diagnostic)
+            {
+                Debug::DiagnosticObserver::Scope observer(Debug::DiagnosticObserver::Category::LuaAllocatorBookkeeping);
+                ++self->mDiagnosticAllocations.failures;
+                ++self->mDiagnosticAllocations.policyBlocked;
+            }
             Log(Debug::Error) << "Lua realloc " << osize << "->" << nsize
                               << " is blocked because Lua memory limit (configurable in settings.cfg) is exceeded";
             return nullptr;
         }
 
         void* newPtr = nullptr;
+        const auto serviceStart = diagnostic ? Debug::HitchTrace::Clock::now() : Debug::HitchTrace::Clock::time_point{};
         if (nsize == 0)
             free(ptr);
         else
-        {
             newPtr = realloc(ptr, nsize);
-            if (!newPtr)
+        if (diagnostic)
+        {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                Debug::HitchTrace::Clock::now() - serviceStart).count();
+            // Count the existing pair of timer boundaries without recursively
+            // timing clocks or charging free/realloc service to the observer.
+            Debug::DiagnosticObserver::count(Debug::DiagnosticObserver::Category::LuaAllocatorTimerBoundary);
+            Debug::DiagnosticObserver::count(Debug::DiagnosticObserver::Category::LuaAllocatorTimerBoundary);
+            Debug::DiagnosticObserver::Scope observer(Debug::DiagnosticObserver::Category::LuaAllocatorBookkeeping);
+            ++self->mDiagnosticAllocations.serviceCalls;
+            self->mDiagnosticAllocations.serviceNs += static_cast<std::uint64_t>((std::max)(elapsed, std::int64_t{ 0 }));
+        }
+        if (nsize != 0 && !newPtr)
+        {
+            if (diagnostic)
             {
-                Log(Debug::Error) << "Lua realloc " << osize << "->" << nsize << " failed";
-                return nullptr;
+                Debug::DiagnosticObserver::Scope observer(Debug::DiagnosticObserver::Category::LuaAllocatorBookkeeping);
+                ++self->mDiagnosticAllocations.failures;
+                ++self->mDiagnosticAllocations.serviceFailures;
             }
+            Log(Debug::Error) << "Lua realloc " << osize << "->" << nsize << " failed";
+            return nullptr;
         }
         self->mTotalMemoryUsage += smallAllocDelta + bigAllocDelta;
+        if (self->mPreparedAllocationActive)
+        {
+            // This scope includes successful temporary growth even if GC frees
+            // unrelated objects. It is independent of Deep diagnostics/clocks.
+            self->mPreparedAllocationGrowth = positiveGrowth > std::numeric_limits<std::uint64_t>::max()
+                    - self->mPreparedAllocationGrowth
+                ? std::numeric_limits<std::uint64_t>::max()
+                : self->mPreparedAllocationGrowth + positiveGrowth;
+        }
+        if (diagnostic)
+        {
+            Debug::DiagnosticObserver::Scope observer(Debug::DiagnosticObserver::Category::LuaAllocatorBookkeeping);
+            if (nsize >= osize) self->mDiagnosticAllocations.growthBytes += nsize - osize;
+            else self->mDiagnosticAllocations.shrinkBytes += osize - nsize;
+        }
         self->mSmallAllocMemoryUsage += smallAllocDelta;
 
         if (bigAllocDelta != 0)
@@ -174,6 +330,108 @@ namespace LuaUtil
         }
 
         return newPtr;
+    }
+
+    bool LuaState::diagnosticTrackingAllocator() const
+    {
+        return lua_getallocf(mLuaState.get(), nullptr) == &trackingAllocator;
+    }
+
+    std::pair<std::string_view, std::string_view> LuaState::diagnosticAllocationContext(ScriptId scriptId) const
+    {
+        std::string_view path;
+        if (mConf && scriptId.mIndex >= 0 && static_cast<std::size_t>(scriptId.mIndex) < mConf->size())
+            path = (*mConf)[scriptId.mIndex].mScriptPath.value();
+        return { scriptId.mContainer ? std::string_view(scriptId.mContainer->mNamePrefix) : "unassigned", path };
+    }
+
+    LuaState::DiagnosticAllocationScope::DiagnosticAllocationScope(LuaState* state, ScriptId scriptId)
+        : mState(Debug::HitchTrace::requested() ? state : nullptr)
+    {
+        if (!mState)
+            return;
+        mBefore = mState->diagnosticAllocations();
+        const auto [container, path] = mState->diagnosticAllocationContext(scriptId);
+        mService.emplace("lua.alloc.service", Debug::HitchTrace::CpuTiming::WallEnvelope, container, path);
+        mSmall.emplace("lua.alloc.request_small", Debug::HitchTrace::CpuTiming::WallEnvelope, container, path);
+        mLarge.emplace("lua.alloc.request_large", Debug::HitchTrace::CpuTiming::WallEnvelope, container, path);
+        if (mState->diagnosticVmSamplerStarted())
+        {
+            mVmBefore = mState->diagnosticVmSamples();
+            mVmStates.emplace("lua.vm.delivered_states", Debug::HitchTrace::CpuTiming::WallEnvelope, container, path);
+            mVmExtra.emplace("lua.vm.delivered_coverage", Debug::HitchTrace::CpuTiming::WallEnvelope, container, path);
+        }
+    }
+
+    LuaState::DiagnosticAllocationScope::~DiagnosticAllocationScope()
+    {
+        if (!mState)
+            return;
+        const auto after = mState->diagnosticAllocations();
+        mService->setMetric(0, "service_ns", after.serviceNs - mBefore.serviceNs);
+        mService->setMetric(1, "service_calls", after.serviceCalls - mBefore.serviceCalls);
+        mService->setMetric(2, "service_failures", after.serviceFailures - mBefore.serviceFailures);
+        mService->setMetric(3, "policy_blocked", after.policyBlocked - mBefore.policyBlocked);
+        constexpr std::array<std::string_view, 4> names{ "req_le64", "req_65_256", "req_257_1024", "req_1025_16384" };
+        for (std::size_t i = 0; i < names.size(); ++i)
+            mSmall->setMetric(i, names[i], after.requestedSizes[i] - mBefore.requestedSizes[i]);
+        mLarge->setMetric(0, "req_16385_1048576", after.requestedSizes[4] - mBefore.requestedSizes[4]);
+        mLarge->setMetric(1, "req_gt1048576", after.requestedSizes[5] - mBefore.requestedSizes[5]);
+        mLarge->setMetric(2, "free_requests", after.frees - mBefore.frees);
+        mLarge->setMetric(3, "tracking_available", mState->diagnosticTrackingAllocator());
+        if (mVmStates)
+        {
+            const auto vm = mState->diagnosticVmSamples();
+            mVmStates->setMetric(0, "sample_native", vm.mStates[0] - mVmBefore.mStates[0]);
+            mVmStates->setMetric(1, "sample_interpreted", vm.mStates[1] - mVmBefore.mStates[1]);
+            mVmStates->setMetric(2, "sample_c", vm.mStates[2] - mVmBefore.mStates[2]);
+            mVmStates->setMetric(3, "sample_gc", vm.mStates[3] - mVmBefore.mStates[3]);
+            mVmExtra->setMetric(0, "sample_jit", vm.mStates[4] - mVmBefore.mStates[4]);
+            mVmExtra->setMetric(1, "sample_unknown", vm.mStates[5] - mVmBefore.mStates[5]);
+            mVmExtra->setMetric(2, "delivered_callbacks", vm.mCallbacks - mVmBefore.mCallbacks);
+            mVmExtra->setMetric(3, "delivery_not_sample_time", 1);
+        }
+    }
+
+    bool LuaState::gcStep(int steps)
+    {
+        const bool diagnostic = Debug::HitchTrace::requested();
+        const auto heapBefore = diagnostic ? getTotalMemoryUsage() : 0;
+        std::array<char, 16> argument{};
+        std::string_view requestedSteps;
+        if (diagnostic)
+        {
+            const auto end = std::to_chars(argument.data(), argument.data() + argument.size(), steps);
+            requestedSteps = std::string_view(argument.data(), end.ptr - argument.data());
+        }
+        DiagnosticAllocationScope allocationDiagnostic(diagnostic ? this : nullptr);
+        Debug::HitchTrace::Scope detail("lua.gc.step_metrics", Debug::HitchTrace::CpuTiming::WallEnvelope,
+            "explicit_step", requestedSteps);
+        const bool completed = lua_gc(mSol.lua_state(), LUA_GCSTEP, steps) == 1;
+        if (diagnostic)
+        {
+            detail.setMetric(0, "requested_steps", static_cast<std::uint64_t>((std::max)(steps, 0)));
+            detail.setMetric(1, "cycle_completed", completed);
+            detail.setMetric(2, "heap_before_bytes", heapBefore);
+            detail.setMetric(3, "heap_after_bytes", getTotalMemoryUsage());
+        }
+        return completed;
+    }
+
+    void LuaState::setProtectedCallReuse(bool enabled)
+    {
+        if (enabled && mProtectedCallReference == LUA_NOREF)
+        {
+            // Create the reusable closure inside an ordinary protected boundary,
+            // so registry growth retains the existing out-of-memory behavior.
+            LuaUtil::protectedCall(mSol.lua_state(), [&](LuaView& view) {
+                lua_State* state = view.sol().lua_state();
+                lua_pushcfunction(state, &invokeReusableProtectedCall);
+                mProtectedCallReference = luaL_ref(state, LUA_REGISTRYINDEX);
+            });
+            ++mProtectedCallStats.mClosureCreations;
+        }
+        mProtectedCallReuse = enabled;
     }
 
     LuaStatePtr LuaState::createLuaRuntime(LuaState* luaState)
@@ -217,6 +475,25 @@ namespace LuaUtil
     {
         if (sProfilerEnabled && mSettings.mInstructionProfilerEnabled)
             setInstructionProfilerEnabled(true);
+
+        if (Debug::HitchTrace::requested())
+        {
+            // The pinned LuaJIT sampling API has no public profiler ownership
+            // query and stopping it flushes JIT traces. Preserve the existing
+            // VM/profiler policy and make the automatic-GC coverage gap explicit.
+#ifndef NO_LUAJIT
+            constexpr std::string_view runtime = LUAJIT_VERSION;
+#else
+            constexpr std::string_view runtime = LUA_VERSION;
+#endif
+            Debug::HitchTrace::Scope observation("lua.gc.observation", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                "unavailable_without_vm_sampler", runtime);
+            observation.setMetric(0, "automatic_gc_observed", 0);
+            observation.setMetric(1, "tracking_available", diagnosticTrackingAllocator());
+            observation.setMetric(2, "instruction_profiler", mInstructionProfilerEnabled);
+            observation.setMetric(3, "vm_sampler_enabled", 0);
+            observation.retain(); // One coverage record per VM, never per allocation/callback.
+        }
 
         protectedCall([&](LuaView& view) {
             auto& sol = view.sol();
@@ -352,6 +629,9 @@ namespace LuaUtil
                     { { "date", sol["os"]["date"] }, { "difftime", sol["os"]["difftime"] },
                         { "time", sol["os"]["time"] } }));
         });
+        const char* descriptors = std::getenv("OPENMW_HITCH_LUA_PACKAGE_DESCRIPTORS");
+        if (descriptors && std::string_view(descriptors) == "1")
+            setPackageDescriptorReuse(true);
     }
 
     sol::table makeReadOnly(const sol::table& table, bool strictIndex)
@@ -387,23 +667,59 @@ namespace LuaUtil
 
     void LuaState::addCommonPackage(std::string packageName, sol::object package)
     {
-        if (!package.is<sol::function>())
+        const bool factory = package.is<sol::function>();
+        if (!factory)
             package = makeReadOnly(std::move(package));
-        mCommonPackages.insert_or_assign(std::move(packageName), std::move(package));
+        const auto it = mCommonPackages.insert_or_assign(std::move(packageName), std::move(package)).first;
+        ++mCommonPackageGeneration;
+        if (mPackageDescriptorReuse)
+        {
+            try
+            {
+                if (factory) mCommonFactoryDescriptors.insert_or_assign(it->first, &it->second);
+                else mCommonFactoryDescriptors.erase(it->first);
+            }
+            catch (const std::bad_alloc&)
+            {
+                // Registration succeeded; metadata allocation must not make a
+                // registered package unavailable or bypass the original path.
+                mCommonFactoryDescriptors.clear();
+                mPackageDescriptorReuse = false;
+            }
+        }
+    }
+
+    void LuaState::setPackageDescriptorReuse(bool enabled)
+    {
+        mPackageDescriptorReuse = false;
+        mCommonFactoryDescriptors.clear();
+        if (!enabled) return;
+        try
+        {
+            for (const auto& [name, package] : mCommonPackages)
+                if (package.is<sol::function>())
+                    mCommonFactoryDescriptors.emplace(name, &package);
+            mPackageDescriptorReuse = true;
+        }
+        catch (const std::bad_alloc&)
+        {
+            mCommonFactoryDescriptors.clear();
+        }
     }
 
     sol::protected_function_result LuaState::runInNewSandbox(const VFS::Path::Normalized& path,
         const std::string& envName, const std::map<std::string, sol::main_object>& packages,
-        const sol::main_object& hiddenData, const sol::main_table* packagePrototype, ScriptId scriptId)
+        const sol::main_object& hiddenData, const sol::main_table* packagePrototype, ScriptId scriptId,
+        bool additionalPackagesReadOnly)
     {
         sol::protected_function script;
         {
             Debug::V36LuaAddScriptTrace::PhaseScope v36CachedChunk(
                 Debug::V36LuaAddScriptTrace::Phase::CachedChunkLoad);
-            script = loadScriptAndCache(path);
+            script = loadDirectScriptAndCache(path);
         }
 
-        const auto v36EnvironmentStart = Debug::V3Diagnostics::Clock::now();
+        const auto v36EnvironmentStart = Debug::V36LuaAddScriptTrace::startPhase();
         sol::environment env(mSol, sol::create, mSandboxEnv);
         env["print"] = mSol["printGen"](envName + ":");
         env["_G"] = env;
@@ -431,16 +747,45 @@ namespace LuaUtil
             {
                 Debug::V36LuaAddScriptTrace::PhaseScope v36CommonPackages(
                     Debug::V36LuaAddScriptTrace::Phase::CommonPackages);
-                for (const auto& [key, value] : mCommonPackages)
-                    if (value.is<sol::function>())
-                        loaded[key] = maybeRunLoader(value);
+                if (mPackageDescriptorReuse)
+                {
+                    auto it = mCommonFactoryDescriptors.begin();
+                    while (it != mCommonFactoryDescriptors.end())
+                    {
+                        // Names remain owned by mCommonPackages. A native loader
+                        // may register/replace a package reentrantly; do not hold
+                        // a classification iterator across that call. The next
+                        // key follows the same ordered-map semantics as control.
+                        const std::string_view key = it->first;
+                        const sol::function loader = it->second->as<sol::function>();
+                        loaded[key] = call(scriptId, loader, hiddenData);
+                        if (!mPackageDescriptorReuse)
+                        {
+                            // Reentrant disable/allocation failure falls back
+                            // for the remainder without dropping factory calls.
+                            for (auto legacy = mCommonPackages.upper_bound(std::string(key));
+                                legacy != mCommonPackages.end(); ++legacy)
+                                if (legacy->second.is<sol::function>())
+                                    loaded[legacy->first] = maybeRunLoader(legacy->second);
+                            break;
+                        }
+                        it = mCommonFactoryDescriptors.upper_bound(key);
+                    }
+                }
+                else
+                {
+                    for (const auto& [key, value] : mCommonPackages)
+                        if (value.is<sol::function>())
+                            loaded[key] = maybeRunLoader(value);
+                }
             }
             {
                 Debug::V36LuaAddScriptTrace::PhaseScope v36ContainerPackages(
                     Debug::V36LuaAddScriptTrace::Phase::ContainerPackages);
-                for (const auto& [key, value] : packages)
-                    if (value.is<sol::function>())
-                        loaded[key] = maybeRunLoader(value);
+                if (!mPackageDescriptorReuse || !additionalPackagesReadOnly)
+                    for (const auto& [key, value] : packages)
+                        if (value.is<sol::function>())
+                            loaded[key] = maybeRunLoader(value);
             }
         }
         else
@@ -455,7 +800,8 @@ namespace LuaUtil
                 Debug::V36LuaAddScriptTrace::PhaseScope v36ContainerPackages(
                     Debug::V36LuaAddScriptTrace::Phase::ContainerPackages);
                 for (const auto& [key, value] : packages)
-                    loaded[key] = maybeRunLoader(value);
+                    loaded[key] = mPackageDescriptorReuse && additionalPackagesReadOnly ? sol::object(value)
+                        : maybeRunLoader(value);
             }
         }
         {
@@ -598,11 +944,311 @@ namespace LuaUtil
         return sol::main_table(prototype);
     }
 
-    sol::function LuaState::loadScriptAndCache(const VFS::Path::Normalized& path)
+    bool LuaState::configurePreparedScriptRoots(PreparedScriptRootLimits limits)
     {
+        if (mPreparingScriptRoot || !mActiveScriptIdStack.empty() || !mVFS || !mConf)
+        {
+            ++mPreparedScriptRootStats.mContextRefusals;
+            return false;
+        }
+        discardPreparedScriptRoots();
+        mPreparedScriptRootLimits = {};
+        if (!limits.mEnabled)
+            return true;
+#if LUA_VERSION_NUM != 501
+        // The preparation entry relies on the real 5.1 protected C call, not
+        // a push-before-pcall compatibility emulation on another Lua runtime.
+        ++mPreparedScriptRootStats.mUnsupportedVmRefusals;
+        return false;
+#endif
+        if (mPreparedScriptRootEpochExhausted)
+        {
+            ++mPreparedScriptRootStats.mGenerationRefusals;
+            return false;
+        }
+        if (!limits.mMaxRoots || limits.mMaxRoots > sMaxPreparedScriptRoots || !limits.mMaxPositiveBytes)
+        {
+            ++mPreparedScriptRootStats.mCapacityRefusals;
+            return false;
+        }
+        mPreparedScriptRootLimits = limits;
+        return true;
+    }
+
+    std::size_t LuaState::preparedScriptRootMetadataBytes() const
+    {
+        // Logical fixed native storage, not an estimate of OS allocation size.
+        return sizeof(mPreparedScriptRoots);
+    }
+
+    void LuaState::discardPreparedScriptRoots()
+    {
+        if (!mPreparedScriptRootStats.mPendingRoots)
+            return;
+        for (auto& root : mPreparedScriptRoots)
+        {
+            if (!root.mFunction)
+                continue;
+            root.mFunction.reset();
+            root.mPath = nullptr;
+            root.mBytecode = nullptr;
+            root.mCacheEpoch = root.mVfsEpoch = root.mPositiveBytes = 0;
+            ++mPreparedScriptRootStats.mDiscarded;
+        }
+        mPreparedScriptRootStats.mPendingRoots = 0;
+        mPreparedScriptRootStats.mPendingPositiveBytes = 0;
+    }
+
+    void LuaState::discardStalePreparedScriptRoots()
+    {
+        if (!mPreparedScriptRootStats.mPendingRoots)
+            return;
+        const auto vfsEpoch = mVFS->getIndexGeneration();
+        for (const auto& root : mPreparedScriptRoots)
+            if (root.mFunction && (root.mCacheEpoch != mScriptCacheEpoch || root.mVfsEpoch != vfsEpoch))
+            {
+                ++mPreparedScriptRootStats.mStaleRefusals;
+                discardPreparedScriptRoots();
+                return;
+            }
+    }
+
+    void LuaState::dropScriptCache()
+    {
+        // Discard borrowed entry/key addresses BEFORE clearing their map. A
+        // preparation in flight owns its input copy and fails the epoch check.
+        discardPreparedScriptRoots();
+        if (mScriptCacheEpoch == std::numeric_limits<std::uint64_t>::max())
+        {
+            mPreparedScriptRootEpochExhausted = true;
+            mPreparedScriptRootLimits.mEnabled = false;
+            ++mPreparedScriptRootStats.mGenerationRefusals;
+        }
+        else
+            ++mScriptCacheEpoch;
+        mCompiledScripts.clear();
+    }
+
+    std::size_t LuaState::prepareScriptRoots(const VFS::Path::Normalized& path, std::size_t count)
+    {
+        if (!mPreparedScriptRootLimits.mEnabled || !count)
+            return 0;
+        if (mPreparingScriptRoot || !mActiveScriptIdStack.empty())
+        {
+            ++mPreparedScriptRootStats.mContextRefusals;
+            return 0;
+        }
+        void* allocatorOwner = nullptr;
+        if (lua_getallocf(mLuaState.get(), &allocatorOwner) != &trackingAllocator || allocatorOwner != this)
+        {
+            ++mPreparedScriptRootStats.mUntrackedRefusals;
+            return 0;
+        }
+        discardStalePreparedScriptRoots();
+        std::size_t created = 0;
+        // At most the fixed slot count, regardless of a caller's requested count.
+        for (std::size_t attempt = 0; attempt < count && attempt < sMaxPreparedScriptRoots; ++attempt)
+        {
+            if (mPreparedScriptRootStats.mPendingRoots >= mPreparedScriptRootLimits.mMaxRoots)
+            {
+                ++mPreparedScriptRootStats.mCapacityRefusals;
+                break;
+            }
+            const auto iter = mCompiledScripts.find(path);
+            if (iter == mCompiledScripts.end())
+            {
+                ++mPreparedScriptRootStats.mMissingBytecodeRefusals;
+                break;
+            }
+            const auto cacheEpoch = mScriptCacheEpoch;
+            const auto vfsEpoch = mVFS->getIndexGeneration();
+            const std::size_t codeSize = iter->second.size();
+            const std::size_t nameSize = iter->first.value().size();
+            const auto remaining = mPreparedScriptRootLimits.mMaxPositiveBytes
+                - mPreparedScriptRootStats.mPendingPositiveBytes;
+            if (!codeSize || nameSize == std::numeric_limits<std::size_t>::max()
+                || codeSize > remaining || nameSize + 1 > remaining - codeSize)
+            {
+                ++mPreparedScriptRootStats.mBudgetRefusals;
+                break;
+            }
+            const std::uint64_t nativeBytes = std::uint64_t(codeSize) + std::uint64_t(nameSize) + 1;
+            std::unique_ptr<char[]> code, name;
+            try
+            {
+                // Exact requested array sizes, including temporary overlap. The
+                // ordinary bytecode cache remains unchanged. GC/native reentry
+                // can clear that cache without invalidating this reader's bytes.
+                code = std::make_unique<char[]>(codeSize);
+                mPreparedScriptRootStats.mPreparationNativeBytes += codeSize;
+                name = std::make_unique<char[]>(nameSize + 1);
+                mPreparedScriptRootStats.mPreparationNativeBytes += nameSize + 1;
+            }
+            catch (const std::bad_alloc&)
+            {
+                ++mPreparedScriptRootStats.mFailures;
+                break;
+            }
+            std::memcpy(code.get(), iter->second.data(), codeSize);
+            std::memcpy(name.get(), iter->first.value().data(), nameSize);
+            name[nameSize] = '\0';
+            sol::function candidate;
+            const int originalTop = lua_gettop(mLuaState.get());
+            mPreparingScriptRoot = true;
+            mPreparedAllocationLimit = remaining - nativeBytes;
+            mPreparedAllocationGrowth = 0;
+            mPreparedAllocationDenied = false;
+            mPreparedAllocationActive = true;
+            mPreparedAllocationMayDeny = true;
+            bool failed = false;
+#if LUA_VERSION_NUM == 501
+            struct PreparationCall
+            {
+                const char* mCode;
+                std::size_t mCodeSize;
+                const char* mName;
+                sol::function* mCandidate;
+                std::uint64_t* mLoads;
+                bool mCppFailure = false;
+            } job{ code.get(), codeSize, name.get(), &candidate,
+                &mPreparedScriptRootStats.mPreparationBytecodeLoads };
+            try
+            {
+                // Unlike protectedCall, lua_cpcall also protects allocation of
+                // its C entry closure and userdata argument. The exact 5.1 API
+                // contains both optional-budget and global VM OOM failures.
+                const int status = lua_cpcall(mLuaState.get(), [](lua_State* state) -> int {
+                    auto* call = static_cast<PreparationCall*>(lua_touserdata(state, 1));
+                    try
+                    {
+                        ++*call->mLoads;
+                        if (luaL_loadbufferx(state, call->mCode, call->mCodeSize, call->mName, "b") == LUA_OK)
+                            *call->mCandidate = sol::stack::get<sol::function>(state, -1);
+                        lua_pop(state, 1); // loaded function or optional load error
+                    }
+                    catch (const std::exception&)
+                    {
+                        call->mCppFailure = true;
+                    }
+                    return 0;
+                }, &job);
+                failed = status != LUA_OK || job.mCppFailure;
+            }
+            catch (...)
+            {
+                failed = true;
+            }
+#else
+            failed = true; // configuration refuses this unsupported VM above
+#endif
+            // These flags live outside the Lua C frame: a longjmp/OOM cannot
+            // leave preparation admission active for ordinary script execution.
+            mPreparedAllocationMayDeny = false;
+            mPreparedAllocationActive = false;
+            mPreparingScriptRoot = false;
+            lua_settop(mLuaState.get(), originalTop);
+            const auto luaBytes = mPreparedAllocationGrowth;
+            mPreparedScriptRootStats.mPreparationPositiveLuaBytes += luaBytes;
+            if (mPreparedAllocationDenied || luaBytes > remaining - nativeBytes)
+            {
+                ++mPreparedScriptRootStats.mBudgetRefusals;
+                break;
+            }
+            if (failed || !candidate.valid())
+            {
+                ++mPreparedScriptRootStats.mFailures;
+                break;
+            }
+            if (cacheEpoch != mScriptCacheEpoch || vfsEpoch != mVFS->getIndexGeneration()
+                || !mPreparedScriptRootLimits.mEnabled)
+            {
+                ++mPreparedScriptRootStats.mStaleRefusals;
+                break;
+            }
+            auto slot = std::find_if(mPreparedScriptRoots.begin(), mPreparedScriptRoots.end(),
+                [](const PreparedScriptRoot& root) { return !root.mFunction; });
+            // Moves transfer a registry reference without another Lua allocation.
+            slot->mFunction.emplace(std::move(candidate));
+            slot->mPath = &iter->first;
+            slot->mBytecode = &iter->second;
+            slot->mCacheEpoch = cacheEpoch;
+            slot->mVfsEpoch = vfsEpoch;
+            slot->mPositiveBytes = nativeBytes + luaBytes;
+            mPreparedScriptRootStats.mPendingPositiveBytes += slot->mPositiveBytes;
+            ++mPreparedScriptRootStats.mPendingRoots;
+            ++mPreparedScriptRootStats.mCreated;
+            mPreparedScriptRootStats.mPeakPendingPositiveBytes = (std::max)(
+                mPreparedScriptRootStats.mPeakPendingPositiveBytes, mPreparedScriptRootStats.mPendingPositiveBytes);
+            ++created;
+        }
+        return created;
+    }
+
+    std::size_t LuaState::prepareConfiguredScriptRoots(std::size_t rootsPerScript)
+    {
+        if (!mPreparedScriptRootLimits.mEnabled || mPreparingScriptRoot || !mActiveScriptIdStack.empty()
+            || !mVFS || !mConf)
+            return 0;
+        std::size_t created = 0;
+        const auto epoch = mScriptCacheEpoch;
+        for (std::size_t i = 0; i < mConf->size(); ++i)
+        {
+            const auto& entry = (*mConf)[i];
+            if (entry.mFlags & (ESM::LuaScriptCfg::sGlobal | ESM::LuaScriptCfg::sMenu
+                    | ESM::LuaScriptCfg::sLoad | ESM::LuaScriptCfg::sPlayer))
+                continue;
+            created += prepareScriptRoots(entry.mScriptPath, rootsPerScript);
+            if (epoch != mScriptCacheEpoch || mPreparedScriptRootEpochExhausted
+                || mPreparedScriptRootStats.mPendingRoots >= mPreparedScriptRootLimits.mMaxRoots)
+                break;
+        }
+        return created;
+    }
+
+    sol::function LuaState::loadDirectScriptAndCache(const VFS::Path::Normalized& path)
+    {
+        if (mPreparedScriptRootLimits.mEnabled)
+        {
+            discardStalePreparedScriptRoots();
+            if (mPreparingScriptRoot || !mActiveScriptIdStack.empty())
+                ++mPreparedScriptRootStats.mContextRefusals;
+            else
+            {
+                const auto entry = mCompiledScripts.find(path);
+                if (entry != mCompiledScripts.end())
+                    for (auto& root : mPreparedScriptRoots)
+                        if (root.mFunction && root.mBytecode == &entry->second && root.mPath == &entry->first)
+                        {
+                            sol::function result(std::move(*root.mFunction));
+                            root.mFunction.reset();
+                            --mPreparedScriptRootStats.mPendingRoots;
+                            mPreparedScriptRootStats.mPendingPositiveBytes -= root.mPositiveBytes;
+                            mPreparedScriptRootStats.mTransferredPositiveBytes += root.mPositiveBytes;
+                            root.mPath = nullptr;
+                            root.mBytecode = nullptr;
+                            root.mCacheEpoch = root.mVfsEpoch = root.mPositiveBytes = 0;
+                            ++mPreparedScriptRootStats.mConsumed;
+                            return result;
+                        }
+            }
+        }
+        return loadScriptAndCache(path, true);
+    }
+
+    sol::function LuaState::loadScriptAndCache(const VFS::Path::Normalized& path, bool direct)
+    {
+        if (mPreparedScriptRootLimits.mEnabled)
+        {
+            if (direct) ++mPreparedScriptRootStats.mOrdinaryDirectLoads;
+            else ++mPreparedScriptRootStats.mOrdinaryModuleLoads;
+        }
+        Debug::HitchTrace::Scope cached("lua.chunk_cache", {}, path.value());
         auto iter = mCompiledScripts.find(path);
+        cached.setMetric(0, "cache_hit", iter != mCompiledScripts.end());
         if (iter != mCompiledScripts.end())
         {
+            if (mPreparedScriptRootLimits.mEnabled)
+                ++mPreparedScriptRootStats.mOrdinaryBytecodeLoads;
             sol::load_result res = mSol.load(iter->second.as_string_view(), path.value(), sol::load_mode::binary);
             // Unless we have memory corruption issues, the bytecode is valid at this point, but loading might still
             // fail because we've hit our Lua memory cap
@@ -617,7 +1263,9 @@ namespace LuaUtil
 
     sol::function LuaState::loadFromVFS(const VFS::Path::Normalized& path)
     {
+        Debug::HitchTrace::Scope load("lua.source_read_compile", {}, path.value());
         std::string fileContent(std::istreambuf_iterator<char>(*mVFS->get(path)), {});
+        load.setMetric(0, "source_bytes", fileContent.size());
         sol::load_result res = mSol.load(fileContent, path.value(), sol::load_mode::text);
         if (!res.valid())
             throw std::runtime_error(std::string("Lua error: ") += res.get<sol::error>().what());

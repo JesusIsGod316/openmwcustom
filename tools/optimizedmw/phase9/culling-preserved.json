@@ -1,15 +1,81 @@
 {
-  "base": "bb4876a6ea287745c8f535f5525c5381a631a24c",
-  "scope": "This checkpoint preserves the audited visibility policies byte-for-byte. Not a new culling implementation.",
+  "base": "199d844b492cbceb7b8a8f44bd981abc18986108",
+  "scope": "Exact source seal of the audited current culling and paging paths. Admission retry changes preserve control visibility, shadow and secondary original fallback; optional LOD/ownership changes are covered by real paging-chain tests. This is not gameplay visual or performance acceptance.",
+  "diagnostic_checkpoint": {
+    "base": "f41483382291fa16f2afacbe7a7b9cfb7ae6252c",
+    "scope": "Bounded L1 post-optimizer cutoff receipts only. Independent source review preserves contributor acceptance, root state, material ownership, private drawable and certification guards. No culling, visibility, shadow or ordinary control behavior changed. Real optimizer ancestry fixtures remain separate from actual runtime engagement."
+  },
+  "active_lod_checkpoint": {
+    "base": "673b1dda1dde7df5743dd4042e78fe57b0751489",
+    "scope": "Independently reviewed default-off active-grid L1 extension. Ordinary strong preparation remains outside experimental admission on every bounded retry; exact existing prepare/spatial/P3 ownership is required before asset cooking. Certified STAT/STAT4 non-occluder, private graph/material ownership, source epochs, actual ICO readiness, main-camera pixel error, shadow/secondary/update/intersection original paths and memory/VRAM guards remain intact. Canonical active RefnumSet is attached before retained host receipts. Explicit active-origin cook/draw counters do not change selection. Focused real paging tests and natural full-mod outdoor consumption are separate required validation layers; this seal alone does not qualify runtime or performance."
+  },
+  "prepared_active_tail_checkpoint": {
+    "base": "b3ff9fa8676f666283a67eba6f5653c308345c98",
+    "scope": "Independently reviewed partial active L1 handoff. The small optional asset scope may only cook an exact current-source owner with existing normal prepare/spatial/P3 quality; missing or stale quality returns no current owner, and a current weak control is retained unchanged. This guard precedes stale cache removal and upgrade claims. The ordinary 128 MiB preparation path and exact candidate/control/host/GPU admission remain unchanged. Required/demand, distant, MSOC, shader epochs, original shadows/picking and readiness guards remain intact. Focused mixed-owner chain proof and natural full-mod runtime consumption remain mandatory; this source seal makes no performance claim."
+  },
+  "historical_checkpoint": {
+    "base": "bb4876a6ea287745c8f535f5525c5381a631a24c",
+    "scope": "This checkpoint preserves the audited visibility policies byte-for-byte. Not a new culling implementation.",
+    "sha256": {
+      "apps/openmw/mwrender/occlusionculling.cpp": "da207b32db657cbe92ea19e4414dbed57de9fd11308cd4d2ff947148d2f4f4ea",
+      "apps/openmw/mwrender/occlusionculling.hpp": "3e4039257ed9585677afd4d8db527b1d015246bdb8dcd63e08054debf554f624",
+      "apps/openmw/mwrender/objectpaging.cpp": "2ef2c43e70718aa812b7772d3a777ed37aa6b4501781aaf554b014bb5782d6ba",
+      "apps/openmw/mwrender/groundcover.cpp": "10e1f1de1a38fcd34288ac98df09d20eb6e596ce9f42b8abb9d5bd6f2982bddd",
+      "apps/openmw/mwrender/objects.cpp": "9bf5045f1c8c4323b2cc286c2912b5fef73ff813f5e472929ec4be79829f7935",
+      "components/sceneutil/occlusionculling.cpp": "1aa1ebea417b9b4eff232d78fbf29b78cae92b68e23e0f8ba8b5ac1b46f6c19f",
+      "components/sceneutil/groundcoverbatch.hpp": "377ed69299f6c3bdc9f9ff9fa75c3ccf8c3f46ed9a819966eafe497d3b2da564",
+      "components/sceneutil/groundcoverpolicy.hpp": "1b0bc6969f8f13550abb9d64d3bdb20e692eeae57096d6bc95679d2675cd2d4c",
+      "components/sceneutil/mwshadowtechnique.cpp": "4e7808cb4669f6e405ff3c70c3ff64f6eee5f40bf8cbb264b00e8e2cd59eec69"
+    }
+  },
+  "active_owner_priority_checkpoint": {
+    "base": "e650d8ab24524fbf55dc9ab294d320c6addf9e7f",
+    "scope": "Independent source review authorizes existing NearFuture admission only for the strict L1-only active tail after an exact current cached ordinary strong owner is proved. Aggregate preflight permits traversal only; advisory and actual per-chunk child permits precede construction. Nested stages and extensions share the same child permit, common debt, retained and scratch limits, growth accounting, concurrency, and unchanged NearFuture physical and commit floors. Caution intentionally retains the existing NearFuture critical floors; Recovering retains its existing reserve floors. Critical and Degraded remain denied. Missing, weak, stale, distant and default experiment paths retain their controls and Background policy. No MSOC, culling, selection, interaction, shadow or pixel-error gate changes. Source seal and controlled/native tests do not prove natural engagement or performance."
+  },
+  "asset_compile_owner_checkpoint": {
+    "base": "d8b83b23a332eca45c5a9b236f0c54850decf278",
+    "scope": "Independent source review repairs actual cache-only loss of optional geometry preparation with a separate full resource-only compile lifetime. Final selectors retain exact canonical Program/import recipes, actual drawable/index and texture operations, bounded original template and host leases, and graph-root cancellation without a graph retention cycle. The ordinary whole-chunk queue and pruning predicate remain unchanged; its callback is observation-only and cannot grant asset readiness. One actual context, current source/material guards, real complete resource operations, safe sampler variant preparation, existing experimental/common admission and additional bounded metadata remain required. Active owner priority, culling, original population/picking, shadows/secondary fallback, MSOC and pixel-error guards are preserved. Controlled real queue/variant/retirement tests and natural full-mod actual draw proof remain separate mandatory gates; this seal makes no performance claim."
+  },
+  "live_owner_adoption_checkpoint": {
+    "base": "284473c6fac6c58dbb55ca661a5bd2bb2108920e",
+    "scope": "Independent source review repairs late adoption of actual winning immutable asset owners by already rendered terrain views. Dedicated cache-publication serials are sampled before owner binding. Cache-only refresh requires the exact key, current source/VFS/shader epochs, existing normal prepare/spatial/P3 quality, completed nontransient asset preparation, actual GL readiness and unchanged active canonical RefnumSet. Pending owners retain an unconsumed serial; unrelated, absent, stale, disabled or incompatible owners preserve the live control without construction. Each view shallow-copies only its outer PAT and replaces the exact prepared child, preserving terrain/groundcover identity and order, transforms, existing wrappers, weak bookkeeping and original picking/shadow/secondary fallbacks. No world reset, worker-side view mutation, optional build on demand, admission/floor change or visibility/error-policy relaxation. Real unchanged-World pending-to-ready adoption, cache-only negatives, original picking, actual tagged draw and final natural numeric-profile engagement remain required; this source seal alone makes no runtime or performance claim."
+  },
   "sha256": {
-    "apps/openmw/mwrender/occlusionculling.cpp": "da207b32db657cbe92ea19e4414dbed57de9fd11308cd4d2ff947148d2f4f4ea",
+    "apps/openmw/mwrender/occlusionculling.cpp": "bb94963259469055744e8654fe3cdc3c69c6990af1a41160f37bafa4cd7f011e",
     "apps/openmw/mwrender/occlusionculling.hpp": "3e4039257ed9585677afd4d8db527b1d015246bdb8dcd63e08054debf554f624",
-    "apps/openmw/mwrender/objectpaging.cpp": "2ef2c43e70718aa812b7772d3a777ed37aa6b4501781aaf554b014bb5782d6ba",
+    "apps/openmw/mwrender/objectpaging.cpp": "23971969a6f2017161af078fd3c4287095b45caf4103a0c6cffaa8e7cc3a42f9",
     "apps/openmw/mwrender/groundcover.cpp": "10e1f1de1a38fcd34288ac98df09d20eb6e596ce9f42b8abb9d5bd6f2982bddd",
-    "apps/openmw/mwrender/objects.cpp": "9bf5045f1c8c4323b2cc286c2912b5fef73ff813f5e472929ec4be79829f7935",
+    "apps/openmw/mwrender/objects.cpp": "406986e3e17a96cff8198dc02587ec2c3d4034d3fd4b0be42f8bbcb92b27faa2",
     "components/sceneutil/occlusionculling.cpp": "1aa1ebea417b9b4eff232d78fbf29b78cae92b68e23e0f8ba8b5ac1b46f6c19f",
     "components/sceneutil/groundcoverbatch.hpp": "377ed69299f6c3bdc9f9ff9fa75c3ccf8c3f46ed9a819966eafe497d3b2da564",
     "components/sceneutil/groundcoverpolicy.hpp": "1b0bc6969f8f13550abb9d64d3bdb20e692eeae57096d6bc95679d2675cd2d4c",
-    "components/sceneutil/mwshadowtechnique.cpp": "4e7808cb4669f6e405ff3c70c3ff64f6eee5f40bf8cbb264b00e8e2cd59eec69"
+    "components/sceneutil/mwshadowtechnique.cpp": "4e7808cb4669f6e405ff3c70c3ff64f6eee5f40bf8cbb264b00e8e2cd59eec69",
+    "components/terrain/quadtreeworld.cpp": "23538fa133529df6c951fed88f54066da80c0f0defff95933210e385f10875fd",
+    "components/terrain/quadtreeworld.hpp": "6441b6f9615aeae121f303bf1d71a7afb0b91dbe8e4c734bfd62d13a68d2fd37",
+    "components/terrain/viewdata.cpp": "f868a452c557c4f7c53003ccb06e211f9d3cec525ff088aada3759bbc7e2c633",
+    "components/terrain/viewdata.hpp": "4581625ee1d1b8f8e34de0f8befbd8ee29e088d169b28b4c988c63872d41a731",
+    "components/sceneutil/ownedcellcull.hpp": "3a87e02624c68340f3c0ed95f531c000bbe6bbcf08fc417528819dee9fe8a06d"
+  },
+  "source_index_retention_checkpoint": {
+    "base": "3a8a3b06ff8b7e812a99ee3cc5153b42696db003",
+    "implementation": "4dff1788350cd829a4b95ac0d51105a85597715a",
+    "scope": "Source review limits ObjectPaging changes to forwarding the independently default-off lod retain source indices setting at its two existing L1 cook calls. Eligibility, active/distant ownership, source epochs, main-camera selection, pixel error, shadows, picking, required readiness, admission and ordinary fallback policies are unchanged. Native real-corpus miss/hit checks compare exact reduced indices and unchanged source array/VBO/EBO identities. The production active paging-chain fixture uses the actual loader, optimizer, OpenMW ICO and reduced draws and checks invalidation, exact resource completion, shader changes and original picking/shadow paths. This source audit is separate from live-route adoption and gameplay/performance promotion."
+  },
+  "nested_indirect_checkpoint": {
+    "base": "b46dbea321f2b0662aa3442685a3a1f7e8b03c59",
+    "scope": "Source review connects original-before-CopyOp certified private ordinary paging geometry under retained Geodes and relative transforms to the existing default-off G16/G32 callback. The existing ordinary opaque packets/G4 gate, whole-population ancestry proof, source and shader certificates, command shape, quotas/fences and ordinary mutation fallback remain. The call is after original shadow certification and before retained packet row capture. It excludes asset-owned LOD/HLOD and post-optimized L1 paths. No MSOC, chunk membership, quality/error thresholds, RefnumSet, source epoch, required readiness, allocation floors or source-control selection changes.",
+    "validation": "NATIVE_COMPILE_AND_ACTUAL_NESTED_GPU_PIXEL_OWNERSHIP_CHECKS_PASSED; natural paging engagement and game performance pending. Source seal is not runtime or performance acceptance."
+  },
+  "owned_cell_snapshot_checkpoint": {
+    "base": "b3a046917ab6baef4086078b2b8d98ffc980512f",
+    "scope": "Reviewed bounded default-off exact root cull snapshots. Ordinary MSOC pass tests/order and live child fallback retained. Generation/topology/dirty/callback changes immediately invalidate reuse. Compatible single cull-owner threading only; child and 8 MiB metadata caps refuse admission. Actual OSG mutation, immutable publication, callback, clone, cap/release and transform fixtures pass. Source/correctness seal is not gameplay visual or performance acceptance.",
+    "native_fixture": "tools/optimizedmw/phase9/owned-cell-cull-tests.cpp",
+    "validation": "BuildB_20261011/GAME-NATIVE-SUITE-RESULTS.xml and NATIVE-SUITE-RESULTS.xml"
+  },
+  "static_vertex_array_checkpoint": {
+    "engine_source_commit": "212c9a293c4c066f54ca0fd97513c3490f2526f3",
+    "base": "403cc61199979766c6d73c50f9bfece93ec8024e",
+    "scope": "Root and independent source review limits ObjectPaging changes to the staticvaogeometry include and independently default-off install after ordinary optimizer and original certification. Asset-owned, post-optimized, retained and indirect paths are excluded. No chunk selection, culling, MSOC, source RefnumSet, paging eligibility, pixel error, shadows or picking policy changes. Actual native Geometry pixel, mutation, resource recreation and compile-state restoration proofs passed. Source seal is not natural-route engagement, visual acceptance or performance promotion.",
+    "validation": "BuildC_20261011/NATIVE-SUITERepair1-RESULTS.xml; Suite_STATIC-VAOAgentProductionProof; StaticVaoCompileProof/RUN-FreshCompileProof; 108 intact draw checks and 54 actual compile restoration checks"
   }
 }

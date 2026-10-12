@@ -110,6 +110,7 @@ namespace MWLua
                 }));
 
         api["castRay"] = [](const osg::Vec3f& from, const osg::Vec3f& to, sol::optional<sol::table> options) {
+            Debug::HitchTrace::Scope apiScope("lua.api.nearby.cast_ray", Debug::HitchTrace::CpuTiming::WallEnvelope);
             std::vector<MWWorld::ConstPtr> ignore;
             int collisionType = MWPhysics::CollisionType_Default;
             float radius = 0;
@@ -120,6 +121,9 @@ namespace MWLua
                 radius = options->get<sol::optional<float>>("radius").value_or(0);
             }
             const MWPhysics::RayCastingInterface* rayCasting = MWBase::Environment::get().getWorld()->getRayCasting();
+            apiScope.setMetric(0, "ignore_count", ignore.size());
+            apiScope.setMetric(1, "sphere", radius > 0);
+            Debug::HitchTrace::Scope physicsScope("lua.api.nearby.physics_query", Debug::HitchTrace::CpuTiming::WallEnvelope);
             if (radius <= 0)
             {
                 return rayCasting->castRay(from, to, ignore, {}, collisionType);
@@ -152,6 +156,7 @@ namespace MWLua
         };*/
         api["castRenderingRay"] = [manager = context.mLuaManager](const osg::Vec3f& from, const osg::Vec3f& to,
                                       const sol::optional<sol::table>& options) {
+            Debug::HitchTrace::Scope apiScope("lua.api.nearby.render_ray", Debug::HitchTrace::CpuTiming::WallEnvelope);
             if (!manager->isProcessingInputEvents())
             {
                 throw std::logic_error(
@@ -166,11 +171,13 @@ namespace MWLua
             }
 
             MWPhysics::RayCastingResult res;
+            apiScope.setMetric(0, "ignore_count", ignore.size());
             MWBase::Environment::get().getWorld()->castRenderingRay(res, from, to, false, false, false, ignore);
             return res;
         };
         api["asyncCastRenderingRay"] = [context](const sol::table& callback, const osg::Vec3f& from,
                                            const osg::Vec3f& to, const sol::optional<sol::table>& options) {
+            Debug::HitchTrace::Scope queueScope("lua.api.nearby.render_ray_queue", Debug::HitchTrace::CpuTiming::WallEnvelope);
             std::vector<MWWorld::Ptr> ignore;
             if (options.has_value())
             {
@@ -179,6 +186,8 @@ namespace MWLua
 
             context.mLuaManager->addAction(
                 [context, ignore = std::move(ignore), callback = LuaUtil::Callback::fromLua(callback), from, to] {
+                    Debug::HitchTrace::Scope apiScope("lua.api.nearby.render_ray_async", Debug::HitchTrace::CpuTiming::WallEnvelope);
+                    apiScope.setMetric(0, "ignore_count", ignore.size());
                     MWPhysics::RayCastingResult res;
                     MWBase::Environment::get().getWorld()->castRenderingRay(res, from, to, false, false, false, ignore);
                     context.mLuaManager->queueCallback(
@@ -286,10 +295,17 @@ namespace MWLua
 
                   std::vector<osg::Vec3f> path;
 
-                  const DetourNavigator::Status status = DetourNavigator::findPath(
-                      *MWBase::Environment::get().getWorld()->getNavigator(), agentBounds, source, destination,
-                      includeFlags, areaCosts, destinationTolerance, checkpoints, std::back_inserter(path));
+                  DetourNavigator::Status status;
+                  {
+                      Debug::HitchTrace::Scope query("lua.api.nearby.find_path", Debug::HitchTrace::CpuTiming::WallEnvelope);
+                      query.setMetric(0, "checkpoint_count", checkpoints.size());
+                      status = DetourNavigator::findPath(
+                          *MWBase::Environment::get().getWorld()->getNavigator(), agentBounds, source, destination,
+                          includeFlags, areaCosts, destinationTolerance, checkpoints, std::back_inserter(path));
+                      query.setMetric(1, "path_count", path.size());
+                  }
 
+                  Debug::HitchTrace::Scope resultScope("lua.api.nearby.path_result", Debug::HitchTrace::CpuTiming::WallEnvelope);
                   sol::table result(lua, sol::create);
                   LuaUtil::copyVectorToTable(path, result);
                   return std::make_tuple(status, result);

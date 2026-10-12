@@ -31,6 +31,7 @@ namespace VFS
 {
     class Manager;
 }
+namespace SDLUtil { class ExternalWindowCloseAuthority; }
 
 namespace Compiler
 {
@@ -134,6 +135,7 @@ namespace OMW
     class Engine
     {
         SDL_Window* mWindow;
+        std::unique_ptr<SDLUtil::ExternalWindowCloseAuthority> mDiagnosticWindowClose;
         std::unique_ptr<VFS::Manager> mVFS;
 #if defined(OPENMW_ENABLE_V4_VULKAN_RUNTIME)
         std::unique_ptr<MWRender::V4EngineRenderBridge> mV4RenderBridge;

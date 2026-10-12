@@ -1,0 +1,199 @@
+"""Seal finished real adapter and negative-control evidence; never launches a process."""
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+
+
+def read_json(path: Path):
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def digest(path: Path):
+    result = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            result.update(block)
+    return {"path": str(path.resolve()), "bytes": path.stat().st_size, "sha256": result.hexdigest()}
+
+
+def records(path: Path):
+    return [json.loads(line) for line in path.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
+
+
+def checked_run(directory: Path, negative: bool):
+    inputs = read_json(directory / "INPUTS.json")
+    receipt = read_json(directory / "Desktop" / "DESKTOP-RECEIPT.json")
+    assert inputs["negative_control"] is negative and inputs["profile_mutex_held"]
+    assert not inputs["game_package_changed"]
+    assert receipt["state"] == "exited" and receipt["exit_code"] == 0 and not receipt["timed_out"]
+    assert not receipt["desktop_switched"] and receipt["input_desktop_unchanged"]
+    assert not receipt["input_desktop_owned_visible_windows"]
+    for source in inputs["source_files"]:
+        assert digest(Path(source["path"]))["sha256"] == source["sha256"], "Source changed since native proof"
+    evidence = records(directory / "adapter-evidence.jsonl")
+    # On the expected negative rejection, main's exception handler emits the
+    # final marker to stdout after the evidence stream closes. Keep and check
+    # both raw artifacts; a native exit code alone is never sufficient proof.
+    stdout = records(directory / "Desktop" / "stdout.log")
+    assert all(row.get("status") != "fail" for row in evidence + stdout)
+    device = [r for r in evidence if r["check"] == "same_device_real_ngx"]
+    assert len(device) == 1 and device[0]["same_device"] and device[0]["window_hidden"]
+    assert device[0]["device_node_mask"] and device[0]["actual_ngx_backend"] == "D3D11"
+    gpu = inputs.get("gpu_transfers", False)
+    source = inputs.get("source_textures", False)
+    assert not source or gpu, "Private source import requires the GPU path"
+    assert device[0].get("gpu_transfers", False) is gpu
+    assert device[0].get("source_textures", False) is source
+    if source:
+        borrowed = [r for r in evidence if r["check"] == "borrowed_gl_source_import_qualified"]
+        assert len(borrowed) == (1 if negative else 12)
+        for row in borrowed:
+            assert all(row[field] for field in ("exact_frame_lease", "wrong_owner_context_refused",
+                "borrowed_source_overwrite_retirement_refused", "fallback_image_untouched", "adversarial_gl_state_restored"))
+        imported = [r for r in evidence if r["check"] == "source_pre_evaluation_pixels"]
+        assert len(imported) == (1 if negative else 12)
+        assert all(row["color_depth_motion_exact"] for row in imported)
+        if not negative:
+            isolated = [r for r in evidence if r["check"] == "isolated_legacy_consumer_state"]
+            assert [row["trial"] for row in isolated] == list(range(16))
+            assert all(row["mismatched_components"] >= 0 for row in isolated)
+            completed = [r for r in evidence if r["check"] == "isolated_legacy_consumer_complete"]
+            assert len(completed) == 1 and completed[0]["trials"] == 16
+            assert completed[0]["actual_ngx_output_unchanged"]
+            assert completed[0]["failing_states"] == sum(row["mismatched_components"] > 0 for row in isolated)
+    if negative:
+        assert not any(r["check"] == "real_dlss_evaluated" for r in evidence + stdout)
+        marker = [r for r in stdout if r["check"] == "negative_no_evaluation"]
+        assert len(marker) == 1 and marker[0]["status"] == "pass"
+        assert marker[0]["untouched_output_rejected"] and marker[0]["actual_dlss_evaluations"] == 0
+    else:
+        markers = [r for r in evidence if r["check"] == "adapter_complete"]
+        assert len(markers) == 1 and markers[0]["status"] == "pass"
+        assert markers[0]["actual_evaluations"] == 12 and markers[0]["retired_generations"] == 3
+        assert not markers[0]["game_dlss_enabled"] and not markers[0]["dense_game_motion_proved"]
+        assert markers[0].get("gpu_transfers", False) is gpu
+        assert markers[0].get("source_textures", False) is source
+        created = [r for r in evidence if r["check"] == "real_feature_created"]
+        assert len(created) == 3
+        assert [(r["output_width"], r["output_height"]) for r in created] == (
+            [(1920, 1080), (1600, 900), (1920, 1080)] if gpu else [(640, 360), (800, 448), (640, 360)])
+        for row in created:
+            assert row.get("source_textures", False) is source
+            if source:
+                assert row["private_source_formats"] == ["RGBA16F", "DEPTH_COMPONENT32F", "RG16F"]
+        evaluations = [r for r in evidence if r["check"] == "real_dlss_evaluated"]
+        assert len(evaluations) == 12
+        assert [(r["generation"], r["sequence"]) for r in evaluations] == [
+            (generation, 4 * (generation - 1) + sequence)
+            for generation in range(1, 4) for sequence in range(1, 5)]
+        for row in evaluations:
+            assert row["status"] == "pass" and row["exact_input_pixels"] and row["exact_cross_api_output"]
+            assert row["exact_exposure_pixel"]
+            if gpu:
+                assert row["gpu_produced_inputs"] and row["exact_graphics_consumer_pixels"]
+            assert row.get("source_textures", False) is source
+            if source:
+                assert row["exact_private_source_pixels"]
+                assert row["source_stale_frame_generation_extent_refused"] and row["source_destination_alias_refused"]
+                assert all(row[field] for field in ("exact_frame_source_lease",
+                    "source_overwrite_retirement_while_borrowed_refused", "actual_wrong_context_import_refused",
+                    "ordinary_fallback_image_untouched_on_refusal", "borrowed_gl_import_state_restored",
+                    "borrowed_gl_consumer_state_restored"))
+                extent = created[row["generation"] - 1]
+                moving = row["sequence"] % 4 in (2, 0)
+                assert row["nonzero_motion_pixels"] == (
+                    extent["input_width"] * extent["input_height"] if moving else 0)
+            assert row["reset"] is (row["sequence"] % 4 in (1, 3)) and row["maximum_patch_error"] < .15
+        for check in ("feature_retirement_gpu_complete", "feature_retirement_sdk_released",
+                      "feature_retirement_resources_released"):
+            assert len([r for r in evidence if r["check"] == check and r["status"] == "pass"]) == 3
+        if source:
+            assert all(row["retired_source_import_refused"] for row in evidence
+                if row["check"] == "feature_retirement_resources_released")
+    return inputs, receipt, evidence, [digest(directory / relative) for relative in (
+        "INPUTS.json", "adapter-evidence.jsonl", "Desktop/stdout.log", "Desktop/stderr.log",
+        "Desktop/DESKTOP-RECEIPT.json")]
+
+
+def normalized(path: str):
+    return os.path.normcase(os.path.normpath(path))
+
+
+def qualify(positive: Path, negative: Path, binary: Path):
+    actual, actual_receipt, evidence, raw_actual = checked_run(positive, False)
+    control, control_receipt, _, raw_control = checked_run(negative, True)
+    for field in ("fixture_sha256", "runtime_sha256", "sdk_commit", "source_files", "gpu_transfers", "source_textures"):
+        if field in ("gpu_transfers", "source_textures"):
+            assert actual.get(field, False) is control.get(field, False)
+            continue
+        assert actual[field] == control[field], "Positive and negative inputs differ"
+    native = digest(binary / "p9-dlss-d3d11-adapter.exe")
+    snippet = digest(binary / "nvngx_dlss.dll")
+    assert native["sha256"] == actual["fixture_sha256"] and snippet["sha256"] == actual["runtime_sha256"]
+    log = (positive / "Desktop" / "stderr.log").read_text(encoding="utf-8-sig")
+    loaded = re.findall(r"Loaded library from path \(([^\r\n]+)\)", log)
+    assert any(normalized(p) == normalized(snippet["path"]) for p in loaded), "Pinned SDK snippet not loaded"
+    assert re.search(r"Snippet version\s*:\s*310\.9\.1(?:,|\s)", log)
+    drivers = set(re.findall(r"Driver version\s*:\s*([\d.]+)", log))
+    assert len(drivers) == 1
+    models = sorted({p for p in loaded if p.lower().endswith(".bin")})
+    assert models, "No actual model provenance in SDK callback"
+    # Hash the installed files in place. Never duplicate driver/model caches.
+    core_paths = {r["actual_ngx_core"] for r in evidence if r["check"] == "real_feature_created"}
+    assert len(core_paths) == 1
+    core = digest(Path(next(iter(core_paths))))
+    model_files = [digest(Path(path)) for path in models]
+    return {
+        "schema": 1, "qualified_utc": datetime.now(timezone.utc).isoformat(),
+        "qualification": "REAL_DLSS_SHARED_TEXTURE_ADAPTER_NATIVE_PROOF",
+        "source_inputs": actual["source_files"], "sdk_commit": actual["sdk_commit"],
+        "binary": native, "configured_and_loaded_sdk_snippet": snippet,
+        "observed_ngx_core": core, "observed_model_files": model_files,
+        "provenance_limit": "Post-run hashes of callback-identified installed core/model files; not a loader-time attestation",
+        "driver_version": next(iter(drivers)), "actual_evaluations": 12, "retired_generations": 3,
+        "gpu_transfers": actual.get("gpu_transfers", False),
+        "source_textures": actual.get("source_textures", False),
+        "private_source_formats": ["RGBA16F", "DEPTH_COMPONENT32F", "RG16F"] if actual.get("source_textures", False) else [],
+        "evaluations_with_nonzero_motion": sum(row.get("nonzero_motion_pixels", 0) > 0
+            for row in evidence if row["check"] == "real_dlss_evaluated"),
+        "synchronous_exact_frame_lease_proved": actual.get("source_textures", False),
+        "adversarial_borrowed_gl_state_proved": actual.get("source_textures", False),
+        "legacy_consumer_inherited_state_trials": [row for row in evidence
+            if row["check"] == "isolated_legacy_consumer_state"],
+        "feature_extents": [{k: row[k] for k in ("generation", "input_width", "input_height", "output_width", "output_height")}
+            for row in evidence if row["check"] == "real_feature_created"],
+        "negative_control": "Untouched output rejected by the same real output validator; zero evaluations",
+        "positive_run": str(positive.resolve()), "negative_run": str(negative.resolve()),
+        "private_desktops": [actual_receipt["desktop"], control_receipt["desktop"]],
+        "input_desktop_unchanged": True, "visible_input_desktop_windows": [],
+        "raw_evidence": raw_actual + raw_control,
+        "limits": [
+            ("Separate owned GL color/depth/motion with synthetic translation and reset, zero jitter and controlled exposure; not dense game coverage."
+             if actual.get("source_textures", False) else "Synthetic images, zero motion/jitter and controlled exposure; not dense game coverage."),
+            "Source import/consumer restore the tested borrowed GL state on private owners; production OSG ownership/cache integration and async leases are not proved.",
+            "Costs include synthetic production, completion observation and readback; not gameplay or isolated GPU timing.",
+            "No in-game DLSS/jitter/frame generation enabled and no performance promotion.",
+            "Signed runtime input validated by the launcher; SDK source or compilation alone is not runtime proof."
+        ],
+        "next_gate": "Owned exact-frame game inputs and complete motion coverage, then synchronous draw-owner fallback integration."
+    }
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--positive", type=Path, required=True)
+    parser.add_argument("--negative", type=Path, required=True)
+    parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    assert not args.output.exists(), "Preserve prior qualification"
+    result = qualify(args.positive, args.negative, args.binary)
+    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({key: result[key] for key in (
+        "qualification", "actual_evaluations", "retired_generations", "driver_version", "next_gate")}, indent=2))

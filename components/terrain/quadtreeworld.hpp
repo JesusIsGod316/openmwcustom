@@ -4,8 +4,10 @@
 #include "terraingrid.hpp"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 #include <components/esm/refid.hpp>
 
@@ -74,6 +76,15 @@ namespace Terrain
             virtual unsigned int getNodeMask() { return 0; }
             virtual bool supportsStrongPagingUpgrade() const { return false; }
             virtual bool supportsDistantStrongPagingUpgrade() const { return false; }
+            // Optional immutable cache publication is independent of world/LOD
+            // invalidation. The default manager never requests a live refresh.
+            virtual std::uint64_t getRenderingRevision() const { return 0; }
+            virtual osg::ref_ptr<osg::Node> refreshPreparedChunk(osg::Node&, float,
+                const osg::Vec2f&, bool, bool& pending) const
+            {
+                pending = false;
+                return nullptr;
+            }
 
             void setViewDistance(float viewDistance) { mViewDistance = viewDistance; }
             float getViewDistance() const { return mViewDistance; }
@@ -95,6 +106,8 @@ namespace Terrain
         void ensureQuadTreeBuilt();
         void loadRenderingNode(
             ViewDataEntry& entry, ViewData* vd, float cellWorldSize, const osg::Vec4i& gridbounds, bool compile);
+        void refreshRenderingNode(ViewDataEntry& entry, const osg::Vec4i& gridbounds,
+            const std::vector<std::uint64_t>& revisions, bool& pending);
 
         osg::ref_ptr<RootNode> mRootNode;
 

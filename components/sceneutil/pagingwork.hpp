@@ -3,15 +3,56 @@
 
 #include <atomic>
 #include <exception>
+#include <cstdint>
 
 namespace osg { class Node; }
 namespace SceneUtil
 {
+    struct ExactPagingWorkCounters
+    {
+        inline static std::atomic_uint64_t runs{0}, triangles{0}, scoreUpdates{0}, scoreReuses{0};
+        inline static std::atomic_uint64_t heapComparisons{0}, unchangedHeapUpdates{0};
+        inline static std::atomic_uint64_t scoreTableRuns{0}, scoreTableHits{0};
+        inline static std::atomic_uint64_t scoreTableComputations{0}, scoreTableUncached{0};
+    };
+    // Configured once before paging workers start; independent of triangle
+    // rescoring/heap reduction and never enabled by changing a draw policy.
+    inline std::atomic_bool reusePagingScoreValues{false};
     class PagingWorkCancelled final : public std::exception
     {
     public:
         const char* what() const noexcept override { return "Obsolete paging preparation cancelled"; }
     };
+    // A required private view may be invalidated by a concurrent source/shader
+    // recipe change while a loading listener renders. It must be rebuilt in
+    // full before publication, rather than treating that epoch change as an
+    // actual abort. No other cancellation or exception authorizes a retry.
+    inline constexpr unsigned RequiredPagingMaximumAttempts = 3;
+    template <class ReadEpoch, class Prepare, class Retried>
+    bool prepareFreshRequiredPaging(const std::atomic<bool>& abort, ReadEpoch&& readEpoch,
+        Prepare&& prepare, Retried&& retried)
+    {
+        for (unsigned attempt = 0; attempt < RequiredPagingMaximumAttempts; ++attempt)
+        {
+            if (abort.load(std::memory_order_acquire)) return false;
+            const auto before = readEpoch(); // empty: required world no longer matches
+            if (!before) return false;
+            try
+            {
+                prepare(); // caller resets every private view and establishes a fresh required scope
+                return !abort.load(std::memory_order_acquire);
+            }
+            catch (const PagingWorkCancelled&)
+            {
+                const auto after = readEpoch();
+                if (abort.load(std::memory_order_acquire) || !after || *after == *before
+                    || attempt + 1 == RequiredPagingMaximumAttempts)
+                    return false;
+                retried(*before, *after, attempt + 1);
+            }
+        }
+        return false;
+    }
     // Scoped to a terrain WORK ITEM. No setting reads or graph metadata on
     // render traversal; a disabled scope preserves the inherited optimizer.
     class PagingWorkScope

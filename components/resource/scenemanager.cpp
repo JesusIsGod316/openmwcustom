@@ -1,6 +1,10 @@
+#include <components/debug/hitchtrace.hpp>
 #include "scenemanager.hpp"
+#include "templatecoalescing.hpp"
+#include "materialimagedependencies.hpp"
 #include "sharedstatecache.hpp"
 #include "hostmemorybudget.hpp"
+#include "programvariantcompile.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -48,6 +52,7 @@
 #include <components/sceneutil/clone.hpp>
 #include <components/sceneutil/controller.hpp>
 #include <components/sceneutil/depth.hpp>
+#include <components/sceneutil/generatedstaticlod.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/optimizer.hpp>
 #include <components/sceneutil/riggeometryosgaextension.hpp>
@@ -194,6 +199,76 @@ namespace Resource
         mObjects.emplace_back(node);
     }
 
+
+    void SceneManager::configureMaterialImagePreparation(bool enabled, unsigned budgetMiB)
+    {
+        mPrepareMaterialImages = enabled;
+        mMaterialImageBudget = std::clamp(budgetMiB, 16u, 256u) * SpeculativeBudget::MiB;
+        mImageManager->setPreciseRawDdsPreload(enabled);
+    }
+
+    void SceneManager::prepareMaterialImages(const osg::Node& sceneTemplate,
+        std::vector<ObjectCacheLease>& owners, std::uint64_t& ownedBytes)
+    {
+        if (!mPrepareMaterialImages || !SpeculativeScope::active()
+            || ownedBytes >= mMaterialImageBudget || owners.size() >= 64) return;
+        struct Inputs final : SceneUtil::ControllerVisitor
+        {
+            std::vector<std::string> diffuse;
+            void visit(osg::Node&, SceneUtil::Controller& ctrl) override
+            {
+                if (auto* flip = dynamic_cast<NifOsg::FlipController*>(&ctrl))
+                    for (const auto& texture : flip->getTextures())
+                    {
+                        if (diffuse.size() >= 64) return;
+                        const auto* image = texture ? texture->getImage(0) : nullptr;
+                        if (image && !image->getFileName().empty()
+                            && std::find(diffuse.begin(), diffuse.end(), image->getFileName()) == diffuse.end())
+                            diffuse.push_back(image->getFileName());
+                    }
+            }
+        } inputs;
+        // ControllerVisitor reads the immutable template controller's texture
+        // sequence. No callback, frame, shader, material or GL state is changed.
+        try { const_cast<osg::Node&>(sceneTemplate).accept(inputs); }
+        catch (const std::exception&) { ++mMaterialPreparationStats.deferred; return; }
+        mMaterialPreparationStats.animatedSources += inputs.diffuse.size();
+        Debug::ResourceLifecycle::PreparationScope preparation("material_image_dependencies", 0);
+        const auto prepare = [&](const VFS::Path::Normalized& path) {
+            if (owners.size() >= 64 || ownedBytes >= mMaterialImageBudget) return;
+            ++mMaterialPreparationStats.discovered;
+            try
+            {
+                auto existing = mImageManager->getImageLease(path);
+                if (existing && std::any_of(owners.begin(), owners.end(), [&](const auto& owner) {
+                        return owner.mValue == existing.mValue && owner.mRevision == existing.mRevision;
+                    })) return;
+                // Admission remains under the shared future/scratch budgets.
+                // This maximum is an estimate guard, not added capacity.
+                auto lease = mImageManager->prepareImage(path, 256 * SpeculativeBudget::MiB, mMaterialImageBudget - ownedBytes);
+                if (lease.bytes() > mMaterialImageBudget - ownedBytes) { ++mMaterialPreparationStats.deferred; return; }
+                // All fallible vector allocation occurs before accounting.
+                owners.push_back(lease);
+                ownedBytes += lease.bytes();
+                ++mMaterialPreparationStats.ready;
+                if (!existing) ++mMaterialPreparationStats.decoded;
+            }
+            catch (const SpeculativeDeferred&) { ++mMaterialPreparationStats.deferred; }
+            catch (const std::exception&) { ++mMaterialPreparationStats.deferred; }
+        };
+        for (const auto& diffuse : inputs.diffuse)
+        {
+            try
+            {
+                if (mAutoUseNormalMaps)
+                    if (auto dependency = materialNormalDependency(*mVFS, diffuse, mNormalHeightMapPattern, mNormalMapPattern))
+                        prepare(dependency->path);
+                if (mAutoUseSpecularMaps)
+                    if (auto dependency = materialImageCompanion(*mVFS, diffuse, mSpecularMapPattern)) prepare(*dependency);
+            }
+            catch (const std::exception&) { ++mMaterialPreparationStats.deferred; }
+        }
+    }
 
     /// Set texture filtering settings on textures contained in a FlipController.
     class SetFilterSettingsControllerVisitor : public SceneUtil::ControllerVisitor
@@ -515,31 +590,37 @@ namespace Resource
 
     void SceneManager::setAutoUseNormalMaps(bool use)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mAutoUseNormalMaps = use;
     }
 
     void SceneManager::setNormalMapPattern(const std::string& pattern)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mNormalMapPattern = pattern;
     }
 
     void SceneManager::setNormalHeightMapPattern(const std::string& pattern)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mNormalHeightMapPattern = pattern;
     }
 
     void SceneManager::setAutoUseSpecularMaps(bool use)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mAutoUseSpecularMaps = use;
     }
 
     void SceneManager::setSpecularMapPattern(const std::string& pattern)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mSpecularMapPattern = pattern;
     }
 
     void SceneManager::setSupportsClusteredLighting(bool supported)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mSupportsClusteredLighting = supported;
     }
 
@@ -550,16 +631,19 @@ namespace Resource
 
     void SceneManager::setConvertAlphaTestToAlphaToCoverage(bool convert)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mConvertAlphaTestToAlphaToCoverage = convert;
     }
 
     void SceneManager::setAdjustCoverageForAlphaTest(bool adjustCoverage)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mAdjustCoverageForAlphaTest = adjustCoverage;
     }
 
     void SceneManager::setOpaqueDepthTex(osg::ref_ptr<osg::Texture> texturePing, osg::ref_ptr<osg::Texture> texturePong)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mOpaqueDepthTex = { texturePing, texturePong };
     }
 
@@ -571,6 +655,11 @@ namespace Resource
     SceneManager::~SceneManager()
     {
         // this has to be defined in the .cpp file as we can't delete incomplete types
+        if (Debug::ResourceLifecycle::enabled())
+            for (const auto& [path, instances] : mPreparedInstances)
+                for (const auto& instance : instances)
+                    Debug::ResourceLifecycle::retire(instance.mLifecycle, instance.mNode.get(),
+                        Debug::ResourceLifecycle::Retirement::CacheDestroyed, instance.mNode->referenceCount());
     }
 
     Shader::ShaderManager& SceneManager::getShaderManager()
@@ -580,6 +669,7 @@ namespace Resource
 
     void SceneManager::setShaderPath(const std::filesystem::path& path)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mShaderManager->setShaderPath(path);
     }
 
@@ -987,12 +1077,22 @@ namespace Resource
     osg::ref_ptr<const osg::Node> SceneManager::getTemplate(
         VFS::Path::NormalizedView path, bool compile, V321CompileClass compileClass)
     {
+        Debug::HitchTrace::Scope hitchTemplate("resource.scene_template", {}, path.value());
+        Debug::ResourceLifecycle::RequestScope lifecycle(Debug::ResourceLifecycle::Kind::Template,
+            path.value(), mVFS, SpeculativeScope::active(), mCache.get());
         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(path);
         if (obj)
             return osg::ref_ptr<const osg::Node>(static_cast<osg::Node*>(obj.get()));
         else
         {
             Debug::V3Diagnostics::TraceScope trace("render", "scene_template_miss", path.value(), 0.1);
+            const bool coalesce = TemplateCoalescing::enabled.load(std::memory_order_relaxed);
+            const auto epoch = [&] {
+                return TemplateCoalescing::Epoch{this, mTemplatePublicationEpoch.load(std::memory_order_acquire),
+                    mVFS->getIndexGeneration(), mShaderManager->assetGeneration()};
+            };
+            const auto before = coalesce ? epoch() : TemplateCoalescing::Epoch{};
+            bool loadedOriginal = true;
             Debug::V3Diagnostics::ScopedCsvTimer timer(
                 Debug::V3Diagnostics::renderWriter(), "scene_template_miss", path.value(), 0.25);
             auto claim = SpeculativeScope::claim(SpeculativeScope::active()
@@ -1003,24 +1103,43 @@ namespace Resource
             osg::ref_ptr<osg::Node> loaded;
             try
             {
+                Debug::HitchTrace::Scope hitchLoad("resource.scene_load", {}, path.value());
                 loaded = load(path, mVFS, mImageManager, mNifFileManager, mBgsmFileManager);
             }
             catch (const SpeculativeDeferred&) { throw; }
             catch (const std::exception& e)
             {
+                loadedOriginal = false;
                 Log(Debug::Error) << "Failed to load '" << path << "': " << e.what() << ", using marker_error instead";
                 loaded = cloneErrorMarker();
             }
 
+            // No waits or second decoder. Another existing producer may have
+            // finished during this read. Reuse only its exact stable epoch and
+            // skip our remaining filter/shader/optimizer work in that case.
+            if (coalesce && loadedOriginal && before == epoch())
+            {
+                auto ready = mCache->getRefFromObjectCache(path);
+                if (TemplateCoalescing::matches(ready.get(), before) && before == epoch())
+                {
+                    ++TemplateCoalescing::Counters::afterLoadReuses;
+                    return osg::ref_ptr<const osg::Node>(static_cast<const osg::Node*>(ready.get()));
+                }
+            }
+
             // set filtering settings
-            SetFilterSettingsVisitor setFilterSettingsVisitor(mMinFilter, mMagFilter, mMaxAnisotropy);
-            loaded->accept(setFilterSettingsVisitor);
-            SetFilterSettingsControllerVisitor setFilterSettingsControllerVisitor(
-                mMinFilter, mMagFilter, mMaxAnisotropy);
-            loaded->accept(setFilterSettingsControllerVisitor);
+            {
+                Debug::HitchTrace::Scope filters("resource.template_filters", {}, path.value());
+                SetFilterSettingsVisitor setFilterSettingsVisitor(mMinFilter, mMagFilter, mMaxAnisotropy);
+                loaded->accept(setFilterSettingsVisitor);
+                SetFilterSettingsControllerVisitor setFilterSettingsControllerVisitor(
+                    mMinFilter, mMagFilter, mMaxAnisotropy);
+                loaded->accept(setFilterSettingsControllerVisitor);
+            }
 
             osg::ref_ptr<Shader::ShaderVisitor> shaderVisitor(createShaderVisitor());
-            loaded->accept(*shaderVisitor);
+            { Debug::HitchTrace::Scope hitchShaders("resource.shader_setup", {}, path.value());
+              loaded->accept(*shaderVisitor); }
 
             if (canOptimize(path.value()))
             {
@@ -1031,14 +1150,29 @@ namespace Resource
                 static const unsigned int options
                     = getOptimizationOptions() | SceneUtil::Optimizer::SHARE_DUPLICATE_STATE;
 
+                Debug::HitchTrace::Scope hitchOptimize("resource.scene_optimize", {}, path.value());
                 optimizer.optimize(loaded, options);
             }
             else
+            {
+                Debug::HitchTrace::Scope sharedState("resource.template_shared_state", {}, path.value());
                 shareState(loaded);
+            }
 
             if (compile && mIncrementalCompileOperation)
             {
-                if (compileClass != V321CompileClass::Unknown)
+                if (Shader::exactProgramVariantsEnabled())
+                {
+                    osg::ref_ptr<osgUtil::IncrementalCompileOperation::CompileSet> compileSet
+                        = compileClass != V321CompileClass::Unknown
+                        ? new V321ClassifiedCompileSet(loaded, compileClass)
+                        : new osgUtil::IncrementalCompileOperation::CompileSet(loaded);
+                    compileSet->_markerObject = mIncrementalCompileOperation->getMarkerObject();
+                    compileSet->buildCompileMap(mIncrementalCompileOperation->getContextSet());
+                    installExactProgramVariants(*compileSet, *loaded, mIncrementalCompileOperation->getContextSet());
+                    mIncrementalCompileOperation->add(compileSet, false);
+                }
+                else if (compileClass != V321CompileClass::Unknown)
                 {
                     auto compileSet = new V321ClassifiedCompileSet(loaded, compileClass);
                     mIncrementalCompileOperation->add(compileSet);
@@ -1047,8 +1181,23 @@ namespace Resource
                     mIncrementalCompileOperation->add(loaded);
             }
             else
+            {
+                Debug::HitchTrace::Scope bounds("resource.template_bounds", {}, path.value());
                 loaded->getBound();
+            }
 
+            if (coalesce && loadedOriginal && before == epoch())
+            {
+                TemplateCoalescing::mark(*loaded, before);
+                auto [canonical, inserted] = mCache->getOrInsert(path.value(), loaded);
+                if (TemplateCoalescing::matches(canonical.get(), before) && before == epoch())
+                {
+                    if (inserted) ++TemplateCoalescing::Counters::publications;
+                    else ++TemplateCoalescing::Counters::publishReuses;
+                    return osg::ref_ptr<const osg::Node>(static_cast<const osg::Node*>(canonical.get()));
+                }
+            }
+            if (coalesce) ++TemplateCoalescing::Counters::changedEpochs;
             mCache->addEntryToObjectCache(path.value(), loaded);
             return loaded;
         }
@@ -1056,6 +1205,9 @@ namespace Resource
 
     osg::ref_ptr<osg::Node> SceneManager::getInstance(VFS::Path::NormalizedView path)
     {
+        Debug::HitchTrace::Scope hitchInstance("resource.scene_instance", {}, path.value());
+        Debug::ResourceLifecycle::RequestScope lifecycle(Debug::ResourceLifecycle::Kind::PreparedInstance,
+            path.value(), mVFS, SpeculativeScope::active(), this);
         Debug::V3Diagnostics::TraceScope trace("render", "scene_instance", path.value(), 0.1);
         Debug::V3Diagnostics::ScopedCsvTimer timer(
             Debug::V3Diagnostics::renderWriter(), "scene_instance", path.value(), 0.25);
@@ -1067,7 +1219,14 @@ namespace Resource
                 const auto found = mPreparedInstances.find(path);
                 if (found != mPreparedInstances.end() && !found->second.empty())
                 {
-                    osg::ref_ptr<osg::Node> prepared = std::move(found->second.front());
+                    auto& entry = found->second.front();
+                    if (Debug::ResourceLifecycle::enabled())
+                    {
+                        Debug::ResourceLifecycle::observe(entry.mLifecycle, this, entry.mNode.get());
+                        Debug::ResourceLifecycle::retire(entry.mLifecycle, entry.mNode.get(),
+                            Debug::ResourceLifecycle::Retirement::PoolConsumed, entry.mNode->referenceCount());
+                    }
+                    osg::ref_ptr<osg::Node> prepared = std::move(entry.mNode);
                     found->second.pop_front();
                     --mPreparedInstanceCount;
                     ++mPreparedInstanceHits;
@@ -1096,7 +1255,11 @@ namespace Resource
             {
                 while (!it->second.empty() && mPreparedInstanceCount > mPreparedInstanceLimit)
                 {
-                    released.push_back(std::move(it->second.front()));
+                    auto& entry = it->second.front();
+                    if (Debug::ResourceLifecycle::enabled())
+                        Debug::ResourceLifecycle::retire(entry.mLifecycle, entry.mNode.get(),
+                            Debug::ResourceLifecycle::Retirement::Pressure, entry.mNode->referenceCount());
+                    released.push_back(std::move(entry.mNode));
                     it->second.pop_front();
                     --mPreparedInstanceCount;
                 }
@@ -1110,6 +1273,8 @@ namespace Resource
 
     bool SceneManager::prepareInstance(VFS::Path::NormalizedView path)
     {
+        Debug::ResourceLifecycle::RequestScope lifecycle(Debug::ResourceLifecycle::Kind::PreparedInstance,
+            path.value(), mVFS, true, this);
         if (mHostMemoryBudget && mHostMemoryBudget->pressure() != HostMemoryPressure::Normal)
             return false;
         if (!mPreparedInstanceEnabled.load(std::memory_order_acquire))
@@ -1149,7 +1314,9 @@ namespace Resource
         if (generation != mPreparedInstanceGeneration || mPreparedInstanceLimit == 0
             || mPreparedInstanceCount >= mPreparedInstanceLimit)
             return false;
-        mPreparedInstances[VFS::Path::Normalized(path)].push_back(std::move(prepared));
+        auto& instances = mPreparedInstances[VFS::Path::Normalized(path)];
+        instances.push_back({std::move(prepared), 0});
+        instances.back().mLifecycle = Debug::ResourceLifecycle::publish(this, instances.back().mNode.get());
         ++mPreparedInstanceCount;
         ++mPreparedInstanceAdded;
         return true;
@@ -1159,7 +1326,24 @@ namespace Resource
     {
         Debug::V3Diagnostics::ScopedCsvTimer timer(
             Debug::V3Diagnostics::renderWriter(), "scene_clone", base ? base->getName() : std::string(), 0.25);
-        SceneUtil::CopyOp copyop;
+        // Forward every operation to the production CopyOp. Counters describe
+        // actual copy requests, including shallow drawables, not allocation bytes.
+        struct MeasuredCopyOp final : SceneUtil::CopyOp
+        {
+            const bool measured = Debug::HitchTrace::requested();
+            mutable std::uint64_t nodes = 0, drawables = 0, callbacks = 0;
+            using SceneUtil::CopyOp::operator();
+            osg::Node* operator()(const osg::Node* node) const override
+            { if (measured && node) ++nodes; return SceneUtil::CopyOp::operator()(node); }
+            osg::Drawable* operator()(const osg::Drawable* drawable) const override
+            { if (measured && drawable) ++drawables; return SceneUtil::CopyOp::operator()(drawable); }
+            osg::Callback* operator()(const osg::Callback* callback) const override
+            { if (measured && callback) ++callbacks; return SceneUtil::CopyOp::operator()(callback); }
+        };
+        SceneUtil::CopyOp controlCopyOp;
+        std::optional<MeasuredCopyOp> measuredCopyOp;
+        if (Debug::HitchTrace::requested()) measuredCopyOp.emplace();
+        SceneUtil::CopyOp& copyop = measuredCopyOp ? static_cast<SceneUtil::CopyOp&>(*measuredCopyOp) : controlCopyOp;
         if (const osg::Drawable* drawable = base->asDrawable())
         {
             if (drawable->asGeometry())
@@ -1170,24 +1354,40 @@ namespace Resource
                     copyop.getCopyFlags() | osg::CopyOp::DEEP_COPY_ARRAYS | osg::CopyOp::DEEP_COPY_PRIMITIVES);
             }
         }
-        osg::ref_ptr<osg::Node> cloned = static_cast<osg::Node*>(base->clone(copyop));
+        osg::ref_ptr<osg::Node> cloned;
+        {
+            Debug::HitchTrace::Scope copy("resource.clone_copy", {}, base->getName());
+            cloned = static_cast<osg::Node*>(base->clone(copyop));
+            copy.setMetric(0, "node_requests", measuredCopyOp ? measuredCopyOp->nodes : 0);
+            copy.setMetric(1, "drawable_requests", measuredCopyOp ? measuredCopyOp->drawables : 0);
+            copy.setMetric(2, "callback_requests", measuredCopyOp ? measuredCopyOp->callbacks : 0);
+            copy.setMetric(3, "update_children", base->getNumChildrenRequiringUpdateTraversal());
+        }
 
-        copyop.remapControllerTargets();
+        {
+            Debug::HitchTrace::Scope targets("resource.clone_target_remap");
+            copyop.remapControllerTargets();
+        }
 
         // add a ref to the original template to help verify the safety of shallow cloning operations
         // in addition, if this node is managed by a cache, we hint to the cache that it's still being used and should
         // be kept in cache
-        cloned->getOrCreateUserDataContainer()->addUserObject(new TemplateRef(base));
+        {
+            Debug::HitchTrace::Scope pin("resource.clone_template_pin");
+            cloned->getOrCreateUserDataContainer()->addUserObject(new TemplateRef(base));
+        }
         return cloned;
     }
 
     osg::ref_ptr<osg::Node> SceneManager::getInstance(const osg::Node* base)
     {
+        Debug::HitchTrace::Scope hitchClone("resource.scene_clone");
         osg::ref_ptr<osg::Node> cloned = cloneNode(base);
         // we can skip any scene graphs without update callbacks since we know that particle emitters will have an
         // update callback set
         if (cloned->getNumChildrenRequiringUpdateTraversal() > 0)
         {
+            Debug::HitchTrace::Scope particles("resource.clone_particle_init");
             InitParticlesVisitor visitor(mParticleSystemMask);
             cloned->accept(visitor);
         }
@@ -1242,12 +1442,14 @@ namespace Resource
 
     void SceneManager::setParticleSystemMask(unsigned int mask)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mParticleSystemMask = mask;
     }
 
     void SceneManager::setFilterSettings(
         const std::string& magfilter, const std::string& minfilter, const std::string& mipmap, float maxAnisotropy)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         osg::Texture::FilterMode min = osg::Texture::LINEAR;
         osg::Texture::FilterMode mag = osg::Texture::LINEAR;
 
@@ -1298,6 +1500,7 @@ namespace Resource
 
     void SceneManager::setUnRefImageDataAfterApply(bool unref)
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         mUnRefImageDataAfterApply = unref;
     }
 
@@ -1316,24 +1519,89 @@ namespace Resource
         if (mIncrementalCompileOperation)
         {
             osgUtil::IncrementalCompileOperation::CompileSets releasedCompiles;
-            std::lock_guard<OpenThreads::Mutex> lock(*mIncrementalCompileOperation->getToCompiledMutex());
-            osgUtil::IncrementalCompileOperation::CompileSets& sets = mIncrementalCompileOperation->getToCompile();
-            for (osgUtil::IncrementalCompileOperation::CompileSets::iterator it = sets.begin(); it != sets.end();)
             {
-                if (auto* budget = CacheMaintenanceScope::current(); budget && !budget->scan()) break;
-                int refcount = (*it)->_subgraphToCompile->referenceCount();
-                if ((*it)->_subgraphToCompile->asDrawable())
-                    refcount -= 1; // ref by CompileList.
-                if (refcount <= 2 && (!CacheMaintenanceScope::current() || CacheMaintenanceScope::current()->release())) // cache + compile
+                std::lock_guard<OpenThreads::Mutex> lock(*mIncrementalCompileOperation->getToCompiledMutex());
+                osgUtil::IncrementalCompileOperation::CompileSets& sets = mIncrementalCompileOperation->getToCompile();
+                for (osgUtil::IncrementalCompileOperation::CompileSets::iterator it = sets.begin(); it != sets.end();)
                 {
-                    // no other ref = not needed anymore.
-                    auto released = it++;
-                    releasedCompiles.splice(releasedCompiles.end(), sets, released);
+                    if (auto* budget = CacheMaintenanceScope::current(); budget && !budget->scan()) break;
+                    bool unused = !*it;
+                    bool cacheOnlyPolicy = false;
+                    bool resourceOnlyPolicy = false;
+                    int cacheOnlyReferences = 0;
+                    if (*it)
+                    {
+                        const auto* classified = dynamic_cast<const V321ClassifiedCompileSet*>(it->get());
+                        if (classified && classified->resourceOnly())
+                        {
+                            unused = !classified->resourceCompilePending();
+                            resourceOnlyPolicy = unused;
+                        }
+                        else if (const auto* subgraph = (*it)->_subgraphToCompile.get())
+                        {
+                            int refcount = subgraph->referenceCount();
+                            if (subgraph->asDrawable())
+                                refcount -= 1; // ref by CompileList.
+                            unused = refcount <= 2; // cache + compile
+                            cacheOnlyPolicy = unused;
+                            cacheOnlyReferences = refcount;
+                        }
+                        // Unknown resource-only sets keep their ordinary ICO
+                        // completion owner. A missing scene node proves neither
+                        // cancellation nor permission to discard their resources.
+                    }
+                    if (unused && (!CacheMaintenanceScope::current() || CacheMaintenanceScope::current()->release()))
+                    {
+                        if(resourceOnlyPolicy)
+                            SceneUtil::GeneratedStaticLod::noteAssetResourceCompilePruned(**it);
+                        if (cacheOnlyPolicy)
+                            if (auto* callback = dynamic_cast<SceneUtil::GeneratedStaticLod::CompileCompleted*>(
+                                    (*it)->_compileCompletedCallback.get()))
+                                callback->noteCacheOnlyPruned(cacheOnlyReferences, **it);
+                        // Producer retired, or scene no longer externally owned.
+                        // Destruction stays outside the shared compile-queue lock.
+                        auto released = it++;
+                        releasedCompiles.splice(releasedCompiles.end(), sets, released);
+                    }
+                    else
+                        ++it;
                 }
-                else
-                    ++it;
             }
+            // Observe actual removals only; no graph census, GL lookup or log
+            // allocation is performed while holding the shared queue lock.
+            for (const auto& retired : releasedCompiles)
+                if (retired)
+                {
+                    SceneUtil::GeneratedStaticLod::reportAssetResourceCompilePruned(*retired);
+                    if (const auto* callback = dynamic_cast<const SceneUtil::GeneratedStaticLod::CompileCompleted*>(
+                            retired->_compileCompletedCallback.get()))
+                        callback->reportCacheOnlyPruned(*retired);
+                }
         }
+    }
+
+    SceneManager::VisualHandoffResult SceneManager::retireUnusedVisualHandoff()
+    {
+        VisualHandoffResult result;
+        {
+            CacheMaintenanceBudget budget(128, 4, std::chrono::microseconds(1000));
+            CacheMaintenanceScope scope(budget);
+            // TemplateRef pins from live clones, prepared instances and ICO
+            // owners remain ordinary strong references. A recent hit gets
+            // the existing second chance; destruction occurs outside cache locks.
+            result.templates = ResourceManager::trimCache(4);
+            result.scanned += budget.scanned;
+        }
+        std::vector<osg::ref_ptr<osg::Object>> release;
+        {
+            CacheMaintenanceBudget budget(128, 8, std::chrono::microseconds(1000));
+            std::lock_guard lock(mSharedStateMutex);
+            mSharedStateManager->pruneBudgeted(release, budget);
+            result.states = release.size(); result.scanned += budget.scanned;
+        }
+        // Neither shared-state mutex is held during final state/texture release.
+        release.clear();
+        return result;
     }
 
     std::size_t SceneManager::trimCache(std::size_t maximum)
@@ -1350,7 +1618,11 @@ namespace Resource
                 while (!it->second.empty() && release.size() < maximum)
                 {
                     if (auto* budget = CacheMaintenanceScope::current(); budget && !budget->release()) break;
-                    release.push_back(std::move(it->second.front()));
+                    auto& entry = it->second.front();
+                    if (Debug::ResourceLifecycle::enabled())
+                        Debug::ResourceLifecycle::retire(entry.mLifecycle, entry.mNode.get(),
+                            Debug::ResourceLifecycle::Retirement::Pressure, entry.mNode->referenceCount());
+                    release.push_back(std::move(entry.mNode));
                     it->second.pop_front();
                     --mPreparedInstanceCount;
                 }
@@ -1359,10 +1631,13 @@ namespace Resource
             }
         }
         const auto prepared = release.size();
-        release.clear(); // outside the pool lock; drops TemplateRef owners first
+        { Debug::HitchTrace::Scope finalRelease("resource.prepared_owner_release");
+          finalRelease.setMetric(0, "owners", prepared);
+          release.clear(); } // outside the pool lock; drops TemplateRef owners first
         const auto templates = ResourceManager::trimCache(maximum);
         std::vector<osg::ref_ptr<osg::Object>> releasedState;
         {
+            Debug::HitchTrace::Scope prune("resource.shared_state_prune");
             std::lock_guard lock(mSharedStateMutex);
             if (auto* budget = CacheMaintenanceScope::current()) mSharedStateManager->pruneBudgeted(releasedState, *budget);
             else mSharedStateManager->prune();
@@ -1372,14 +1647,21 @@ namespace Resource
 
     void SceneManager::clearCache()
     {
+        mTemplatePublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
         decltype(mPreparedInstances) released;
         {
             std::lock_guard<std::mutex> lock(mPreparedInstanceMutex);
             ++mPreparedInstanceGeneration;
+            if (Debug::ResourceLifecycle::enabled())
+                for (const auto& [path, instances] : mPreparedInstances)
+                    for (const auto& instance : instances)
+                        Debug::ResourceLifecycle::retire(instance.mLifecycle, instance.mNode.get(),
+                            Debug::ResourceLifecycle::Retirement::Cleared, instance.mNode->referenceCount());
             released.swap(mPreparedInstances);
             mPreparedInstanceCount = 0;
         }
-        released.clear();
+        { Debug::HitchTrace::Scope finalRelease("resource.prepared_owner_release");
+          finalRelease.setMetric(0, "asset_keys", released.size()); released.clear(); }
         ResourceManager::clearCache();
 
         auto releasedShared = [&] {

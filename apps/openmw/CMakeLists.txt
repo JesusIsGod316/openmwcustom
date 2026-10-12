@@ -240,6 +240,134 @@ endif()
 
 # Sound stuff - here so CMake doesn't stupidly recompile EVERYTHING
 # when we change the backend.
+if (OPENMW_PHASE9_BUILD_NATIVE_GAME_TESTS)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    find_package(OpenGL REQUIRED)
+    find_package(OpenSceneGraph REQUIRED COMPONENTS osgViewer)
+    foreach(asset_fixture generated-static-lod selective-hlod-corpus asset-shader-contract asset-material-runtime asset-admission material-image-dependencies buffer-preparation-state)
+        add_executable(p9-${asset_fixture} ../../tools/optimizedmw/phase9/${asset_fixture}-tests.cpp)
+        target_include_directories(p9-${asset_fixture} PRIVATE ${PROJECT_SOURCE_DIR})
+        target_link_libraries(p9-${asset_fixture} PRIVATE components ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
+    endforeach()
+    add_test(NAME p9-asset-admission COMMAND p9-asset-admission)
+    add_test(NAME p9-material-image-dependencies COMMAND p9-material-image-dependencies)
+    add_test(NAME p9-buffer-preparation-state COMMAND p9-buffer-preparation-state)
+    set_tests_properties(p9-buffer-preparation-state PROPERTIES TIMEOUT 45)
+    set_tests_properties(p9-asset-admission PROPERTIES TIMEOUT 45)
+    add_executable(p9-temporal-asset-producer ../../tools/optimizedmw/phase9/temporal-dynamic-tests.cpp
+        mwrender/temporalmotion.cpp)
+    target_include_directories(p9-temporal-asset-producer PRIVATE ${PROJECT_SOURCE_DIR})
+    target_link_libraries(p9-temporal-asset-producer PRIVATE components glm::glm ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
+    target_compile_definitions(p9-temporal-asset-producer PRIVATE P9_ASSET_PRODUCER_FIXTURE=1
+        P9_VERTEX="${PROJECT_SOURCE_DIR}/files/shaders/compatibility/temporal_camera_motion.vert"
+        P9_FRAGMENT="${PROJECT_SOURCE_DIR}/files/shaders/compatibility/temporal_camera_motion.frag"
+        P9_DYNAMIC_VERTEX="${PROJECT_SOURCE_DIR}/files/shaders/compatibility/temporal_dynamic_motion.vert"
+        P9_DYNAMIC_FRAGMENT="${PROJECT_SOURCE_DIR}/files/shaders/compatibility/temporal_dynamic_motion.frag")
+    target_compile_definitions(p9-asset-material-runtime PRIVATE P9_SOURCE="${PROJECT_SOURCE_DIR}")
+    add_executable(p9-terrain-texture-handoff ../../tools/optimizedmw/phase9/terrain-texture-handoff-tests.cpp)
+    target_include_directories(p9-terrain-texture-handoff PRIVATE ${PROJECT_SOURCE_DIR})
+    target_compile_definitions(p9-terrain-texture-handoff PRIVATE P9_SOURCE="${PROJECT_SOURCE_DIR}")
+    target_link_libraries(p9-terrain-texture-handoff PRIVATE components ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
+    foreach(mask 0 4 8 12)
+        add_test(NAME p9-terrain-texture-handoff-${mask} COMMAND p9-terrain-texture-handoff ${mask})
+        set_tests_properties(p9-terrain-texture-handoff-${mask} PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77
+            ENVIRONMENT "OPENMW_P9_DERIVED_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/terrain-texture-handoff-cache-${mask}")
+    endforeach()
+    foreach(mask 4 8)
+        add_test(NAME p9-terrain-texture-cold-${mask} COMMAND p9-terrain-texture-handoff ${mask} --cold-visible)
+        set_tests_properties(p9-terrain-texture-cold-${mask} PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77
+            ENVIRONMENT "OPENMW_P9_DERIVED_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/terrain-texture-cold-cache-${mask}")
+    endforeach()
+    foreach(mask 8 12)
+        add_test(NAME p9-terrain-texture-threaded-${mask} COMMAND p9-terrain-texture-handoff ${mask} --threaded)
+        set_tests_properties(p9-terrain-texture-threaded-${mask} PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77
+            ENVIRONMENT "OPENMW_P9_DERIVED_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/terrain-texture-threaded-cache-${mask}")
+    endforeach()
+    add_test(NAME p9-terrain-texture-composite COMMAND p9-terrain-texture-handoff 4 --composite)
+    add_test(NAME p9-terrain-texture-cancel COMMAND p9-terrain-texture-handoff 8 --cancel)
+    set_tests_properties(p9-terrain-texture-composite p9-terrain-texture-cancel PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77
+        ENVIRONMENT "OPENMW_P9_DERIVED_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/terrain-texture-purpose-cache")
+    add_executable(p9-asset-paging-chain ../../tools/optimizedmw/phase9/asset-paging-chain-tests.cpp
+        mwrender/objectpaging.cpp mwrender/occlusionculling.cpp mwbase/environment.cpp)
+    target_include_directories(p9-asset-paging-chain PRIVATE ${PROJECT_SOURCE_DIR})
+    target_compile_definitions(p9-asset-paging-chain PRIVATE OPENMW_ASSET_PAGING_TEST_HOOKS=1
+        P9_SOURCE="${PROJECT_SOURCE_DIR}")
+    target_link_libraries(p9-asset-paging-chain PRIVATE components ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL)
+    add_executable(p9-keyframe-ready-lease ../../tools/optimizedmw/phase9/keyframe-ready-lease-tests.cpp)
+    target_include_directories(p9-keyframe-ready-lease PRIVATE ${PROJECT_SOURCE_DIR})
+    target_link_libraries(p9-keyframe-ready-lease PRIVATE components)
+    foreach(mode control lifetime warm)
+        add_test(NAME p9-keyframe-ready-lease-${mode} COMMAND p9-keyframe-ready-lease ${mode})
+        set_tests_properties(p9-keyframe-ready-lease-${mode} PROPERTIES TIMEOUT 45)
+    endforeach()
+    set_tests_properties(p9-keyframe-ready-lease-control PROPERTIES ENVIRONMENT
+        "OPENMW_HITCH_ANIMATION_PRELOAD=0;OPENMW_HITCH_ANIMATION_LIFETIME=0;OPENMW_HITCH_ANIMATION_WARM_LEASE=1")
+    set_tests_properties(p9-keyframe-ready-lease-lifetime PROPERTIES ENVIRONMENT
+        "OPENMW_HITCH_ANIMATION_PRELOAD=1;OPENMW_HITCH_ANIMATION_LIFETIME=1;OPENMW_HITCH_ANIMATION_WARM_LEASE=0")
+    set_tests_properties(p9-keyframe-ready-lease-warm PROPERTIES ENVIRONMENT
+        "OPENMW_HITCH_ANIMATION_PRELOAD=1;OPENMW_HITCH_ANIMATION_LIFETIME=1;OPENMW_HITCH_ANIMATION_WARM_LEASE=1")
+    add_executable(p9-worker-attribution ../../tools/optimizedmw/phase9/worker-attribution-tests.cpp)
+    target_include_directories(p9-worker-attribution PRIVATE ${PROJECT_SOURCE_DIR})
+    target_link_libraries(p9-worker-attribution PRIVATE components)
+    add_test(NAME p9-worker-attribution COMMAND p9-worker-attribution
+        ${CMAKE_CURRENT_BINARY_DIR}/worker-attribution.csv armed)
+    add_test(NAME p9-worker-attribution-off COMMAND p9-worker-attribution
+        ${CMAKE_CURRENT_BINARY_DIR}/worker-attribution-off.csv unarmed)
+    set_tests_properties(p9-worker-attribution p9-worker-attribution-off PROPERTIES TIMEOUT 45)
+    add_executable(p9-ui-reflow ../../tools/optimizedmw/phase9/ui-reflow-tests.cpp)
+    target_include_directories(p9-ui-reflow PRIVATE ${PROJECT_SOURCE_DIR})
+    target_link_libraries(p9-ui-reflow PRIVATE openmw-lib)
+    if(WIN32)
+        target_link_libraries(p9-ui-reflow PRIVATE dbghelp)
+    endif()
+    target_compile_definitions(p9-ui-reflow PRIVATE P9_SOURCE="${PROJECT_SOURCE_DIR}")
+    add_test(NAME p9-ui-reflow COMMAND ${Python3_EXECUTABLE}
+        ${PROJECT_SOURCE_DIR}/tools/optimizedmw/phase9/verify-ui-reflow.py
+        $<TARGET_FILE:p9-ui-reflow> ${CMAKE_CURRENT_BINARY_DIR}/ui-reflow-fixture)
+    set_tests_properties(p9-ui-reflow PROPERTIES TIMEOUT 180)
+    if(BUILD_COMPONENTS_TESTS)
+        add_test(NAME p9-lua-api-attribution COMMAND ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tools/optimizedmw/phase9/verify-lua-api-attribution.py
+            $<TARGET_FILE:components-tests> ${CMAKE_CURRENT_BINARY_DIR}/lua-api-fixture)
+        set_tests_properties(p9-lua-api-attribution PROPERTIES TIMEOUT 120)
+        add_test(NAME p9-resource-lifecycle COMMAND ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tools/optimizedmw/phase9/verify-resource-lifecycle.py
+            $<TARGET_FILE:components-tests> ${CMAKE_CURRENT_BINARY_DIR}/resource-lifecycle-fixture)
+        set_tests_properties(p9-resource-lifecycle PROPERTIES TIMEOUT 180)
+        add_test(NAME p9-lua-allocator-gc COMMAND ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tools/optimizedmw/phase9/verify-lua-allocator-gc.py
+            $<TARGET_FILE:components-tests> ${CMAKE_CURRENT_BINARY_DIR}/lua-allocator-gc-fixture)
+        set_tests_properties(p9-lua-allocator-gc PROPERTIES TIMEOUT 180)
+        add_test(NAME p9-lua-container-attribution COMMAND ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tools/optimizedmw/phase9/verify-lua-container-attribution.py
+            $<TARGET_FILE:components-tests> ${CMAKE_CURRENT_BINARY_DIR}/lua-container-attribution-fixture)
+        set_tests_properties(p9-lua-container-attribution PROPERTIES TIMEOUT 60)
+    endif()
+    add_executable(p9-owned-postpasses ../../tools/optimizedmw/phase9/owned-postpasses-tests.cpp)
+    target_include_directories(p9-owned-postpasses PRIVATE ${PROJECT_SOURCE_DIR})
+    target_link_libraries(p9-owned-postpasses PRIVATE openmw-lib)
+    add_test(NAME p9-owned-postpasses COMMAND p9-owned-postpasses)
+    set_tests_properties(p9-owned-postpasses PROPERTIES TIMEOUT 45 SKIP_RETURN_CODE 77)
+    add_executable(p9-compile-cache ../../tools/optimizedmw/phase9/compile-cache-integration-tests.cpp)
+    target_include_directories(p9-compile-cache PRIVATE ${PROJECT_SOURCE_DIR})
+    target_link_libraries(p9-compile-cache PRIVATE components)
+    add_test(NAME p9-compile-cache COMMAND p9-compile-cache)
+    add_test(NAME p9-compile-cache-lifecycle COMMAND p9-compile-cache --cache-only)
+    set_tests_properties(p9-compile-cache PROPERTIES TIMEOUT 45 SKIP_RETURN_CODE 77)
+    set_tests_properties(p9-compile-cache-lifecycle PROPERTIES TIMEOUT 45)
+    add_executable(p9-postfx-ownership ../../tools/optimizedmw/phase9/postfx-owner-tests.cpp)
+    target_include_directories(p9-postfx-ownership PRIVATE ${PROJECT_SOURCE_DIR})
+    target_link_libraries(p9-postfx-ownership PRIVATE openmw-lib)
+    target_compile_definitions(p9-postfx-ownership PRIVATE P9_SOURCE="${PROJECT_SOURCE_DIR}")
+    add_test(NAME p9-postfx-ownership COMMAND p9-postfx-ownership)
+    add_test(NAME p9-postfx-ownership-threaded COMMAND p9-postfx-ownership --threaded)
+    add_test(NAME p9-postfx-ownership-uniforms COMMAND p9-postfx-ownership --no-ubo)
+    add_test(NAME p9-postfx-ownership-uniforms-threaded COMMAND p9-postfx-ownership --no-ubo --threaded)
+    set_tests_properties(p9-postfx-ownership p9-postfx-ownership-threaded
+        p9-postfx-ownership-uniforms p9-postfx-ownership-uniforms-threaded
+        PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+endif()
+
 include_directories(
     ${FFmpeg_INCLUDE_DIRS}
 )

@@ -2,17 +2,41 @@
 #define OPENMW_COMPONENTS_RESOURCE_OPENMWCOMPILEOPERATION_H
 
 #include "p4compilepolicy.hpp"
+#include "p9discretionaryadmission.hpp"
+#include "p9deleteadmission.hpp"
+#include "speculativebudget.hpp"
 
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <unordered_map>
+#include <memory>
 
 #include <osgUtil/IncrementalCompileOperation>
 
 namespace Resource
 {
+    // Producer-owned composite dependencies share the existing ICO queue and
+    // its observed cost buckets; this marker also carries live demand/cancel
+    // state while a map is temporarily outside the renderer's queue.
+    class OpenMWCompositeCompileOp : public osgUtil::IncrementalCompileOperation::CompileOp
+    {
+    public:
+        enum class Kind { Texture, Program, Target };
+        virtual Kind kind() const = 0;
+        virtual std::size_t resourceBytes() const = 0;
+        virtual bool required() const = 0;
+        virtual bool cancelled() const = 0;
+        virtual bool reusable(const osgUtil::IncrementalCompileOperation::CompileInfo&) const { return false; }
+        // A successful completion may update only CPU bookkeeping. It must
+        // revalidate the exact owner and never fall back to a GL call.
+        virtual bool tryCompleteWithoutGL(osgUtil::IncrementalCompileOperation::CompileInfo&) { return false; }
+        // Narrow producer-owned target/FBO bootstrap, rechecked at dispatch.
+        // The implementation owns identity/pressure proof; ICO owns headroom
+        // and the shared once-per-owner-frame exceptional service token.
+        virtual bool bootstrapReady(const osgUtil::IncrementalCompileOperation::CompileInfo&) const { return false; }
+    };
     // Marker base for custom ICO operations that retain Drawable/VBO cost
     // characteristics after a producer has split a monolithic drawable compile.
     class OpenMWDrawableCompileOp : public osgUtil::IncrementalCompileOperation::CompileOp
@@ -48,6 +72,9 @@ namespace Resource
         double mHeavyMinHeadroomMs = 5.0;
         double mTerrainDrawablePriorMs = 8.0;
         int mResidencySchedulerMode = 0;
+        bool mCompositePreparation = false;
+        bool mDeleteAdmission = false;
+        SpeculativeScope::Context mPressureContext;
     };
 
     class OpenMWIncrementalCompileOperation final : public osgUtil::IncrementalCompileOperation
@@ -60,8 +87,15 @@ namespace Resource
         static void publishRenderingTraversalMs(double value) noexcept;
         static double lastRenderingTraversalMs() noexcept;
 
+        std::shared_ptr<P9DiscretionaryAdmission> compositeAdmission() const { return mCompositeAdmission; }
+        unsigned compositeMaxQueueAge() const { return std::max(1u, mConfig.mMaxQueueAgeFrames); }
+        double compositeBudgetMs() const { return mConfig.mMaxBudgetMs; }
+        double compositeHeadroomRatio() const { return mConfig.mHeadroomRatio; }
+        double compositeTargetFrameMs() const { return 1000.0 / std::max(1.0, mConfig.mTargetFrameRate); }
+        bool progressRepairEnabled() const { return mProgressRepairEnabled; }
+
     protected:
-        ~OpenMWIncrementalCompileOperation() override = default;
+        ~OpenMWIncrementalCompileOperation() override;
 
     private:
         enum class CompileKind : unsigned char
@@ -115,12 +149,18 @@ namespace Resource
         static const char* compileKindName(CompileKind kind);
 
         OpenMWCompileSchedulerConfig mConfig;
+        bool mProgressRepairEnabled = false;
         P4CompilePolicyState mPolicyState;
         std::array<CostState, sCompileClassCount * sCompileKindCount * sCompileSizeTierCount> mCosts{};
         std::unordered_map<const CompileSet*, SeenState> mSeen;
         std::unordered_map<const CompileSet*, PredictionCacheEntry> mPredictionCache;
         std::size_t mLastQueueDepth = 0;
         unsigned int mSmoothFrames = 0;
+        std::shared_ptr<P9DiscretionaryAdmission> mCompositeAdmission;
+        P9DeleteAdmission mDeleteAdmission;
+        double mDeletePredictionMs = 0.15;
+        struct TraceState;
+        std::unique_ptr<TraceState> mCompileTrace;
 
         inline static std::atomic<double> sLastRenderingTraversalMs{ 0.0 };
     };

@@ -129,11 +129,11 @@ add_component_dir (vfs
 
 add_component_dir (resource
     scenemanager keyframemanager imagemanager animblendrulesmanager bulletshapemanager bulletshape niffilemanager objectcache multiobjectcache resourcesystem
-    resourcemanager stats animation foreachbulletobject errormarker selectionmarker cachestats bgsmfilemanager openmwcompileoperation
+    resourcemanager stats animation foreachbulletobject errormarker selectionmarker cachestats bgsmfilemanager openmwcompileoperation coldimage nativetexture texturestreaming
     )
 
 add_component_dir (shader
-    shadermanager shadervisitor removedalphafunc
+    shadermanager shadervisitor removedalphafunc programvariant assetgeometrycontract
     )
 
 add_component_dir (sceneutil
@@ -142,7 +142,7 @@ add_component_dir (sceneutil
     detourdebugdraw navmesh agentpath animblendrules shadow mwshadowtechnique recastmesh shadowsbin osgacontroller rtt
     screencapture depth color riggeometryosgaextension extradata unrefqueue lightcommon clearcolor
     cullsafeboundsvisitor keyframe nodecallback textkeymap glextensions fog texmat material occlusionculling
-    shadowproxygroup
+    shadowproxygroup generatedstaticlod selectivehlod assetpaging
     )
 
 add_component_dir (nif
@@ -312,7 +312,7 @@ add_component_dir (stereo
     )
 
 add_component_dir (debug
-    debugging debuglog gldebug debugdraw writeflags runtimeprocessmemory
+    debugging debuglog gldebug debugdraw writeflags runtimeprocessmemory hitchtrace diagnosticobserver
     )
 
 IF(NOT WIN32 AND NOT APPLE)
@@ -644,6 +644,7 @@ endif()
 
 target_link_libraries(components ${BULLET_LIBRARIES})
 target_link_libraries(components maskedoc)
+target_link_libraries(components openmw-asset-backends)
 
 if (USE_QT)
     add_library(components_qt STATIC ${COMPONENT_QT_FILES})

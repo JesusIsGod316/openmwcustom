@@ -1,0 +1,182 @@
+{
+  "schema": 1,
+  "stock_revision": "52761bedc0f369bd37ceb17eaeaf53701f2ed551",
+  "overlay_sha256": "6f42a686e2a6a9038bbd4a9e2d0d1be6d8812b9b3e681d8b569560c2fe110255",
+  "roots": [
+    "compatibility/objects.vert",
+    "compatibility/objects.frag"
+  ],
+  "include_and_all_link_branches": true,
+  "records": [
+    {
+      "path": "compatibility/fog.glsl",
+      "stock": "fc72d8c989c0e348caa3938fda0833dcda69c1ff535aabc14338c9107c418643",
+      "pbr": "08682439013534d4034501bdd154fb33338a6aa9d14d14f3c4477759a729ce20"
+    },
+    {
+      "path": "compatibility/lighting.glsl",
+      "stock": "",
+      "pbr": "62ec99085ad6586311b8cc9a70efbc841b341cc42145ee5ef06b55b63bec0fad"
+    },
+    {
+      "path": "compatibility/normals.glsl",
+      "stock": "906b3ebe387956e8c99082e64d357cce9cf62cfd9804c2dd64b446a3928337fb",
+      "pbr": "906b3ebe387956e8c99082e64d357cce9cf62cfd9804c2dd64b446a3928337fb"
+    },
+    {
+      "path": "compatibility/objects.frag",
+      "stock": "35355ad03ca89d0f3e384b8658adc1fff7dfa28548882d440dc02573ea50373b",
+      "pbr": "b9971f272d79d9da1b4d25b8b76dff1f5765a4a42b57d3e7e1cca06beed26bb4"
+    },
+    {
+      "path": "compatibility/objects.vert",
+      "stock": "c5f257107b4b861706213dc75e7736924e0ef0eae8dde5864b085f542106f1c4",
+      "pbr": "9642441ea8f6cb33ccb25cdc3dc96b18b857431ad4ed5994b37ec6f0f0c54c50"
+    },
+    {
+      "path": "compatibility/shadows_fragment.glsl",
+      "stock": "782a9b478354c845df6d6d920d5af60579300c17acc03c447b00d245ad1a7392",
+      "pbr": "32cb1e088066fb6fb2d305a3be360955a0f001184d264d5509e72df7efd0664b"
+    },
+    {
+      "path": "compatibility/shadows_vertex.glsl",
+      "stock": "da5b304a6c6aa5fc79055bdf3fbb422cd0515b1eac0d006200494bd31894ee61",
+      "pbr": "da5b304a6c6aa5fc79055bdf3fbb422cd0515b1eac0d006200494bd31894ee61"
+    },
+    {
+      "path": "lib/core/fragment.glsl",
+      "stock": "bdb15935a77d009298f7a7c8279301d5825e79165df942af903b1d28b83fc2cc",
+      "pbr": "bdb15935a77d009298f7a7c8279301d5825e79165df942af903b1d28b83fc2cc"
+    },
+    {
+      "path": "lib/core/fragment.h.glsl",
+      "stock": "61c72855fdb5d29ff7e03b3a140fc77744e125fca3379f5bccaf46ed6d94b446",
+      "pbr": "f941b6b91a4c4a73cab1ad0870753ba3d61e3a753b7292ad2cfea732787974e1"
+    },
+    {
+      "path": "lib/core/fragment_multiview.glsl",
+      "stock": "58b5721b95bb8526d4c9bd12482e0cc8759806656a184185f96b482ec4c78249",
+      "pbr": "58b5721b95bb8526d4c9bd12482e0cc8759806656a184185f96b482ec4c78249"
+    },
+    {
+      "path": "lib/core/lighting_fragment.glsl",
+      "stock": "af068b626815c66fdf4343a9f9c7989ea63998a71bdd0c9c78031112548cab44",
+      "pbr": "af068b626815c66fdf4343a9f9c7989ea63998a71bdd0c9c78031112548cab44"
+    },
+    {
+      "path": "lib/core/lighting_fragment_impl.glsl",
+      "stock": "236f81e4bdaefdf8edd40a95b297f2b5ce9d3ec17065e8f7225d0e797d9d0d3b",
+      "pbr": "afca96654da7da7a00b2f6a8d339ce9cc3edf69ffcd969454c6791ebd5502628"
+    },
+    {
+      "path": "lib/core/lighting_fragment_legacy.glsl",
+      "stock": "a5f7a34699345f07d1ce1fba88aeb9b10a3d239b12eacac0744164511da65173",
+      "pbr": "a5f7a34699345f07d1ce1fba88aeb9b10a3d239b12eacac0744164511da65173"
+    },
+    {
+      "path": "lib/core/lighting_vertex.glsl",
+      "stock": "166bca9a1122e75596857f134ac09ef63d51c0ee7447e460eac78a7091966882",
+      "pbr": "166bca9a1122e75596857f134ac09ef63d51c0ee7447e460eac78a7091966882"
+    },
+    {
+      "path": "lib/core/lighting_vertex_impl.glsl",
+      "stock": "707f70d24fa182cec02b7490f9e5e6a71c12ed42869b34563db0ba5120a5deed",
+      "pbr": "1c02586413d78a98c5c69e39a7a14fe3e0096127b01e15cdb9d1f89ee66787d1"
+    },
+    {
+      "path": "lib/core/lighting_vertex_legacy.glsl",
+      "stock": "cc649e754258b1bd49d12e20844b8b27338061c5863aaf50b51ee5b9cf1821f3",
+      "pbr": "cc649e754258b1bd49d12e20844b8b27338061c5863aaf50b51ee5b9cf1821f3"
+    },
+    {
+      "path": "lib/core/vertex.glsl",
+      "stock": "02ea202ccf4cedddf63a14cfd47cf58946242d2b7718c0ddac9f07e5bf1f9309",
+      "pbr": "02ea202ccf4cedddf63a14cfd47cf58946242d2b7718c0ddac9f07e5bf1f9309"
+    },
+    {
+      "path": "lib/core/vertex.h.glsl",
+      "stock": "9145794c79a802f2f029e54e3fa05be83aa22424cc170c7daeabc89c93bb26d9",
+      "pbr": "e5b27a8421507230553f32d5709e09b0bff01bec1906c56489fd3a830d3ee0cd"
+    },
+    {
+      "path": "lib/core/vertex_multiview.glsl",
+      "stock": "ab0403506e419071bd376bf8b8d45dccbe2a93d25eb095e5fc74770d691b84e4",
+      "pbr": "ab0403506e419071bd376bf8b8d45dccbe2a93d25eb095e5fc74770d691b84e4"
+    },
+    {
+      "path": "lib/light/bindings-legacy.glsl",
+      "stock": "cdd00935443dfb4a7a32931da1c167e72c680452e1d70c05aceaad75bca38429",
+      "pbr": "cdd00935443dfb4a7a32931da1c167e72c680452e1d70c05aceaad75bca38429"
+    },
+    {
+      "path": "lib/light/bindings.glsl",
+      "stock": "511704d65e0f480153ac58fca5f0e43ca2cd005953e23936128508b66e32aec9",
+      "pbr": "511704d65e0f480153ac58fca5f0e43ca2cd005953e23936128508b66e32aec9"
+    },
+    {
+      "path": "lib/light/clamp.glsl",
+      "stock": "161ef2c5e3fc8a72a52a5aa51000b59e262edc080d647cbf18185bee7f551b9f",
+      "pbr": "161ef2c5e3fc8a72a52a5aa51000b59e262edc080d647cbf18185bee7f551b9f"
+    },
+    {
+      "path": "lib/light/struct.glsl",
+      "stock": "fda8b4c0a44fd2681fccb4e04a12facf7cc7575b477831fc8140214b7bee60b1",
+      "pbr": "fda8b4c0a44fd2681fccb4e04a12facf7cc7575b477831fc8140214b7bee60b1"
+    },
+    {
+      "path": "lib/light/util.glsl",
+      "stock": "5cf36cce1f4bcc0fad1567f5775658caaa62536b76d47af9e4b2bcbb790bd47f",
+      "pbr": "5cf36cce1f4bcc0fad1567f5775658caaa62536b76d47af9e4b2bcbb790bd47f"
+    },
+    {
+      "path": "lib/material/alpha.glsl",
+      "stock": "b8534ff28d451fe0edfd744d622929997b34cd251dea4a9b7c380d8ca64b0e4e",
+      "pbr": "b8534ff28d451fe0edfd744d622929997b34cd251dea4a9b7c380d8ca64b0e4e"
+    },
+    {
+      "path": "lib/material/colormodes.glsl",
+      "stock": "4f18296c008f5b91ff6f0a3b9a1f35b5bd777850fcc34c639c20a21c933b5a00",
+      "pbr": "4f18296c008f5b91ff6f0a3b9a1f35b5bd777850fcc34c639c20a21c933b5a00"
+    },
+    {
+      "path": "lib/material/parallax.glsl",
+      "stock": "214da0fca4ada810ead9bd8e75fb5296eafd96b3f72d630cd71d389ea176a0c7",
+      "pbr": "b0c9e78d61ed223f34e207dc954037af7d2fd9f5763b2e5a8a21d1cc22dffd4c"
+    },
+    {
+      "path": "lib/material/struct.glsl",
+      "stock": "b15b6985821047326cbfece5e7ed885aeb5eb8ec163df98df5acdb3de1035fab",
+      "pbr": "b15b6985821047326cbfece5e7ed885aeb5eb8ec163df98df5acdb3de1035fab"
+    },
+    {
+      "path": "lib/material/vertexcolors.glsl",
+      "stock": "8f00c1f72fa1f0b94c4c2960cb3a1c43c49277c1726de0c80c056f2e9b0021be",
+      "pbr": "8f00c1f72fa1f0b94c4c2960cb3a1c43c49277c1726de0c80c056f2e9b0021be"
+    },
+    {
+      "path": "lib/particle/occlusion.glsl",
+      "stock": "e43e7667296fdce096f3cd0368ced0d6830efbf51f7d1217643fa5205562d2c8",
+      "pbr": "e43e7667296fdce096f3cd0368ced0d6830efbf51f7d1217643fa5205562d2c8"
+    },
+    {
+      "path": "lib/particle/soft.glsl",
+      "stock": "cec0e797c39df706136056260d417ef831809045708aad0e1e180bc9bbc60e5b",
+      "pbr": "cec0e797c39df706136056260d417ef831809045708aad0e1e180bc9bbc60e5b"
+    },
+    {
+      "path": "lib/util/distortion.glsl",
+      "stock": "ebbc4b72c29f05163fe57564465f1f98c8ac2bc5c462537cfad80cae1083b457",
+      "pbr": "ebbc4b72c29f05163fe57564465f1f98c8ac2bc5c462537cfad80cae1083b457"
+    },
+    {
+      "path": "lib/util/quickstep.glsl",
+      "stock": "209a85ccb0a71381d04952f623ea863bbb1a5fd2a600992b8e5cb4343dcf35c2",
+      "pbr": "209a85ccb0a71381d04952f623ea863bbb1a5fd2a600992b8e5cb4343dcf35c2"
+    },
+    {
+      "path": "lib/view/depth.glsl",
+      "stock": "715f9d58896cfe0e89e9d9f4ddc6d031cff61959dc234d45c5dfb700e258c9ef",
+      "pbr": "715f9d58896cfe0e89e9d9f4ddc6d031cff61959dc234d45c5dfb700e258c9ef"
+    }
+  ]
+}

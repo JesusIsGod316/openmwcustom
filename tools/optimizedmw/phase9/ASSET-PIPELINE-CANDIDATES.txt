@@ -1,0 +1,229 @@
+OPTIMIZEDMW ASSET PIPELINE CANDIDATES
+
+Use START-OptimizedMW-Test.bat in C:\OptimizedMW_Test. Category 12 contains
+the new mechanisms. Pick a numbered optimization, then 1 for Normal or 2
+for Deep. Windows recording is optional after choosing Deep.
+
+12 / 1: retained foundation, all new asset mechanisms off.
+12 / 2: L1 generated static visual LOD, active grid plus distant.
+12 / 3: H1 selective HLOD atlas and merged proxy, runtime unqualified.
+12 / 4: L1 plus H1; the H1 component remains runtime unqualified.
+12 / 5: T1 native mip preparation and covered static color conversion.
+12 / 6: T2 coarse-to-fine terrain diffuse texture streaming.
+12 / 7: T2 plus idle texture demotion.
+12 / 8: T1 plus T2.
+12 / 9: all five asset switches; H1 remains runtime unqualified.
+12 / 10: individual asset toggles. Demotion enables streaming; disabling
+streaming also disables demotion. Category 8 can mix these with existing
+RAM, renderer, animation and terrain mechanisms.
+
+First run one short Normal smoke for the selected mechanism and quit
+normally. ASSET-ENGAGEMENT.txt in its benchmark ZIP must report actual
+consumption before running a comparison matrix. Prepared/built-only,
+missing proof and a crash cannot pass. No eligible work means the route
+did not test that feature; it is not proof of an engine defect or a win.
+Native composite-only use is identified separately from main terrain use.
+The Normal receipt freezes draw threads but does not freeze optional workers.
+Once actual use is verified, use the same save, view, route and frame cap.
+A -> B -> B -> A is the first comparison. A fresh
+process does not establish a cold OS or driver cache. Use the resulting
+ZIPs to verify execution counters and comparable gameplay intervals.
+Measure one mechanism before combined candidates. Deep runs diagnose
+ownership, preparation, first draw and retirement; they do not establish
+a Normal performance win. No mechanism is promoted by a passing fixture.
+Completed game captures and combined upload ZIPs are saved in the
+Benchmarks folder beside this launcher. Windows recorder archives stay in
+SystemTrace, and TestSessions retains the automatic session receipts.
+
+L1 alone: index-only, attribute-aware meshoptimizer simplification after the
+ordinary paging optimizer. Complete optimized children must contain only
+positively certified original static contributors. Ordinary batching is
+preserved; any shared unapproved material refuses the complete child.
+This path retains the control vertex streams and VBOs and charges only changed
+index buffers. Unchanged primitive sets retain their exact EBO identity.
+It allocates no private vertex-array copy or private vertex buffer. Display-list
+control and control without proved VBO ownership retain their original path.
+L1 combined with H1 retains the earlier bounded private partition path.
+The active-grid extension prepares only L1, including combined asset masks;
+it does not authorize H1 proxies in the active grid. Its independent canonical
+control is [Cells] generated static lod active grid. L1 benchmark selections
+set it true; control and H1-only selections set it false. Custom settings retain
+the value entered in Configuration/Optimizations.cfg. The current foundation
+already enables object paging active grid, paging optimizer/readiness split,
+active grid prepare mode and prepared chunk quality; those prerequisites stay
+independent. A disabled prerequisite can prevent the extension from engaging.
+An ordinary strong owner must publish before an optional active L1 tail.
+Pressure or experimental capacity refusal retains that exact strong control;
+future retries first refresh its ordinary preparation. Original reference and
+picking metadata, collision and the MSOC owner path remain authoritative.
+Tagged active build/actual draw counters distinguish this path from distant
+LOD consumption. Real active draws are still required before benchmarking;
+native chain success alone does not qualify the user's outdoor scene.
+The prepared active L1 tail can use the existing NearFuture admission policy
+only after its exact current strong ordinary owner is proved. Nested cooking
+shares the same experimental permit, child quota and common future debt.
+Missing, weak, stale and distant owners retain their original admission paths.
+Physical/commit safety floors and the one-job limit remain in force.
+
+Optional geometry preparation owns a separate resource-only compile lifetime.
+It keeps the actual drawable/index and texture operations and prepares the
+canonical shader variants with their certified imported defines. Ordinary
+chunk compilation and cache pruning keep their existing policy. Asset readiness
+requires actual resource completion, the exact context and current material
+guards; ordinary callback observations cannot grant it.
+Ordinary completion diagnostics read queue state only and never create shader
+objects. Root retirement cancels pending work. Queued leaves retain the source
+templates and their existing
+host charges until the resources retire. Metadata has an additional global
+4 MiB and 512-recipe bound within the experimental/common accounting; this is
+not another independent payload allowance. With the child cache disabled,
+preparation still reserves and retains its actual common-ledger charge.
+Multiple/unqualified contexts and unsafe relinks keep the original geometry.
+Preparing these resources does not
+guarantee that subsequent driver calls cannot stall.
+
+H1 has not produced a proxy draw in the actual current Seyda Neen captures.
+Its separate switch remains diagnostic; no H1 performance result is claimed.
+Existing authored LOD,
+controllers, transparent/cutout materials, unknown draw semantics,
+occluder owners, unsupported transforms and unsafe layouts retain control.
+Main-view projection and hysteresis select the tier only after a real
+incremental compile completion receipt. Secondary/shadow views retain
+original geometry. The selector recognizes the renderer's exact reversed-depth
+GPU/culling projection split; arbitrary projection or clip-control changes
+retain control. Original vertex/material streams are immutable and
+shared with the derived indices. Cache identity includes winning source
+contents, actual geometry streams and a pinned backend/recipe.
+
+L1-only optional control work starts with an 8 MiB bounded metadata allowance
+and reserves a conservative graph/stream/index/optimizer census before each
+actual source instance is allocated. This replaces the unconditional 128 MiB
+request while retaining the 128 MiB request and 256 MiB aggregate limits.
+Held construction estimates transfer to retained graph ownership; they are
+not treated as reclaimed operating-system memory. Pressure, unsupported
+source layouts and finite retry exhaustion keep the exact weak control.
+Normal capture receipts include exact build-failure stages and GPU admission
+predicates with their sampler observation and reservation debt. Overlapping
+refusal predicates count attempts, not distinct assets or resident VRAM.
+
+H1: separate, narrowly eligible static material atlas/proxy preparation.
+Admission requires fewer real submissions than the optimized control.
+Existing strong merging is the comparison baseline. Material families,
+transforms, UV domains, source sampler and stock/PBR asset shader contract must be
+supported. Co-registered diffuse, linear normal and linear specular maps
+retain separate atlases and their original tangent/scalar semantics.
+Parallax, extra roles and controllers take their original path. A current
+view population check preserves each control member's ordinary rejection.
+Cross-partition material conflicts return to whole-chunk strong merging.
+Atlas preparation alone is not proof that a proxy was drawn. Eligibility
+and consumption depend on the user's actual winning asset loadout.
+
+The geometry asset contract is separate from GPU indirect visibility and
+temporal input authorization. Its reviewed stock and composed Rafael PBR
+families pin consumed source/include/link dependencies and actual expanded
+stages, sampler bindings, imported defines and shader-manager generation.
+Changed source/linked stages/bindings/defines/material inputs reject a
+published candidate and return to the retained original population.
+PBR H1 support covers opaque co-registered diffuse/normal/specular maps;
+parallax and extra effects retain their ordinary path. Specular RGBA, linear
+normal/specular values and tangent handedness preserve their source meaning.
+Admission metadata is bounded to 4 MiB globally and 64 KiB per record.
+
+Release qualification must use an exact private copy of the assembled
+package's shaders and the captured effective settings, including real light
+and shadow defines. It requires actual candidate draws, shadow/secondary
+fallback and shader mutation rejection; stock-only default fixtures cannot
+qualify the PBR package. Package inputs and restored mutation files are
+hash-checked. This local fixture does not reproduce your full gameplay route.
+
+T1: one bounded worker reuses complete legacy BC1/BC2/BC3 DDS chains with
+their original blocks and data-alpha semantics. Covered opaque 24-bit TGA
+diffuse inputs up to 2048 square can produce CPU mips and BC1 using pinned
+DirectXTex. Unsupported formats, transfer/role ambiguity, stale winners,
+pressure and failed preparation use the original image. DDS cache entries
+hold a compact checked descriptor instead of duplicating the source body.
+Composite preparation can reuse exact DDS blocks; TGA composite-source
+inputs retain their ordinary colors without the lossy conversion.
+
+T2: main terrain diffuse resources have separate complete coarse and fine
+raw GL backing allocations. Publication happens at a context-owned boundary
+before the complete renderer operation and remains frozen across that
+frame's sub-cameras. Composite-source textures remain full quality. Small
+compressed upload packets are ordered in the owning GL context. A visible
+first use that lacks a prepared/admitted backing safely allocates the
+ordinary texture and remains on that path. Optional ICO texture applies
+defer to the owner; explicit force-download ICO retains ordinary effects.
+
+Demotion is independent. Quality holds prevent oscillation; old allocations
+retain their GPU/host debt until a final-use fence permits targeted deletion.
+The pipeline tracks actual terrain draws, first draws, publications and
+deleted bytes separately. Estimated backing bytes are allocation accounting,
+not exact physical VRAM residency. A bounded byte packet cannot guarantee a
+maximum driver-call duration. Stereo and unqualified contexts fall back.
+
+Bounds: derived disk namespace <=2 GiB, 20 GiB free-space reserve; CPU
+transient admission <=256 MiB; native retained payloads <=64 MiB; streaming
+backings including construction/retirement <=128 MiB; one new backing at
+most 32 MiB per owner boundary; two upload packets each <=512 KiB. Aggregate
+new GPU debt <=256 MiB and admission requires a fresh comfortable adapter
+sample with 512 MiB reserve. OSG-pooled private geometry/atlas allocation
+debt remains conservatively held until its context closes.
+Geometry scratch is conservatively estimated from the actual private graph,
+including simultaneous clone, simplifier and cache ownership. Transient
+denial has at most three attempts per lane/generation with a five-second
+cooldown; terminal refusal and exhaustion retain the ordinary chunk.
+Native tickets preserve Pending, Ready, transient and terminal outcomes
+through terrain cache realization. Producer-triggered retries are bounded
+to three attempts with a 100-ms cooldown. An ordinary allocated backing is
+a permanent cutoff; a late worker cannot replace or retain its unused payload.
+T1 full-quality handoff and T2 streaming use one context owner before all
+sub-cameras, within the same original upload and debt bounds.
+
+Temporal progress: index-only LOD pairs carry an immutable vertex lineage.
+The motion overlay can use the prior transform across tier changes only
+while that lineage remains intact. Replacements or changed arrays reset
+local history. Current indices determine current coverage. This does not
+mark disocclusions valid, complete cutout/wind/actor coverage, enable camera
+jitter or provide a playable DLSS upscaler. The existing DLSS runtime gate
+remains unavailable until those separate production milestones qualify.
+
+The prior exact-shader-readiness experiment remains unavailable because its
+driver crash is unresolved. New combined presets do not re-enable it.
+No package, fixture or runtime counter is a claim of higher FPS, fewer
+hitches or accepted visual quality; those need controlled user captures.
+
+Engagement repair (October 2026)
+The L1 preparation path now resolves effective materials at actual geometry
+leaves, including inherited state and OSG override/protected precedence.
+Candidate-only material families can reunite across spatial buckets within
+the same original merge destination. Ordinary material owners still force
+the existing whole-chunk fallback. The control optimizer and H1 spatial
+policy are preserved. Release proof requires a mixed, multi-bucket scene,
+real derived draws/index reduction, and no added control submissions.
+
+Approved shader regeneration acquires a new exact source/program proof.
+Old candidate snapshots stay invalid. Identical global define maps avoid
+source regeneration and relinking. Paging quality includes shader generation
+so a stale cached candidate can be recooked in the new source cohort.
+
+Private graph admission reserves the estimated bytes of each copy before
+allocation instead of reserving the whole 32 MiB private ceiling up front.
+Outer 128 MiB, private 32 MiB and aggregate 256 MiB limits remain unchanged.
+Deferred optional terrain preparation can revisit completed weak views with
+a five-second cooldown and three attempts per identical target/source cohort.
+Demand readiness is already complete and never waits for those retries.
+Pending compilation, cooldown and coalesced observations preserve the retry
+signal without inventing another build attempt. Exhaustion stops scheduling;
+it does not prove an already queued compile will never finish.
+
+Normal receipts distinguish material ownership subtypes and exact overlapping
+CPU admission predicates. They do not sum source, chunk, instance and partition
+counts into one population, or equate released future debt with freed OS RAM.
+
+The separate opaque temporal domain uses exact stock/PBR source provenance
+and rejects shader cutouts, transparency and unproved effects. It retains
+canonical vertex identity through index-only LOD changes and checks current
+draw coverage before motion submission. Standalone dynamic-motion runs request
+source provenance without enabling LOD/HLOD. Full dense motion, cutout/wind/
+first-person coverage, asynchronous image ownership and a real DLSS consumer
+remain separate milestones. The runtime gate and camera jitter remain off.

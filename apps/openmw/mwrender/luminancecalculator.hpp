@@ -33,6 +33,8 @@ namespace MWRender
         void disable() { mEnabled = false; }
 
         void dirty(int w, int h);
+        // Caller is the serialized draw/context release owner.
+        void releaseGLObjects(osg::State* state = nullptr);
 
         osg::ref_ptr<osg::Texture2D> getLuminanceTexture(size_t frameId) const;
 

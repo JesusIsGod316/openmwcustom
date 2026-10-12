@@ -1,9 +1,12 @@
 #include "flex.hpp"
 
+#include <components/debug/hitchtrace.hpp>
+
 namespace LuaUi
 {
     void LuaFlex::updateProperties()
     {
+        Debug::HitchTrace::Scope properties("lua.ui.flex.properties", Debug::HitchTrace::CpuTiming::WallEnvelope);
         mGap = propertyValue("gap", 0);
         mWrap = propertyValue("wrap", false);
         mHorizontal = propertyValue("horizontal", false);
@@ -37,7 +40,12 @@ namespace LuaUi
 
     void LuaFlex::updateChildren()
     {
+        Debug::HitchTrace::Scope layout("lua.ui.flex.layout", Debug::HitchTrace::CpuTiming::WallEnvelope);
         const auto& flexChildren = children();
+        layout.setMetric(0, "child_count", flexChildren.size());
+        layout.setMetric(1, "auto_size", mAutoSized);
+        layout.setMetric(2, "wrap", mWrap);
+        std::size_t trackCount = 0;
 
         MyGUI::IntSize childrenSize;
         if (mAutoSized)
@@ -65,6 +73,7 @@ namespace LuaUi
 
         while (widgetIndex < flexChildren.size())
         {
+            ++trackCount;
             const size_t trackStart = widgetIndex;
             int primaryAxisSize = 0;
             int primaryAxisSizeRemaining = primary(flexSize);
@@ -141,6 +150,7 @@ namespace LuaUi
 
         mChildrenSize = childrenSize;
         WidgetExtension::updateChildren();
+        layout.setMetric(3, "track_count", trackCount);
     }
 
     MyGUI::IntSize LuaFlex::childScalingSize() const
@@ -165,6 +175,7 @@ namespace LuaUi
 
     void LuaFlex::updateCoord()
     {
+        Debug::HitchTrace::Scope coord("lua.ui.flex.coord", Debug::HitchTrace::CpuTiming::WallEnvelope);
         updateChildren();
         WidgetExtension::updateCoord();
     }

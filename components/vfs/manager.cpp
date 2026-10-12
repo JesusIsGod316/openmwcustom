@@ -1,4 +1,5 @@
 #include "manager.hpp"
+#include <components/debug/hitchtrace.hpp>
 
 #include <cassert>
 #include <limits>
@@ -57,6 +58,11 @@ namespace VFS
     Files::IStreamPtr Manager::get(Path::NormalizedView name) const
     {
         return getNormalized(name.value());
+    }
+    std::optional<SourceOpenEstimate> Manager::getOpenEstimate(Path::NormalizedView name) const
+    {
+        const auto found=mIndex.find(name);
+        return found==mIndex.end() ? std::nullopt : found->second->getOpenEstimate();
     }
 
     Files::IStreamPtr Manager::getNormalized(std::string_view normalizedName) const
@@ -142,9 +148,12 @@ namespace VFS
     Files::IStreamPtr Manager::findNormalized(std::string_view normalizedPath) const
     {
         assert(Path::isNormalized(normalizedPath));
-        const auto it = mIndex.find(normalizedPath);
+        Debug::HitchTrace::Scope lookup("vfs.resolve_open", {}, normalizedPath);
+        FileMap::const_iterator it;
+        { Debug::HitchTrace::Scope resolve("vfs.resolve"); it = mIndex.find(normalizedPath); }
         if (it == mIndex.end())
             return nullptr;
+        Debug::HitchTrace::Scope open("vfs.open", Debug::HitchTrace::CpuTiming::Scoped);
         return it->second->open();
     }
 }

@@ -1,0 +1,583 @@
+"""Sequential, muted private-desktop comparisons with pinned route/build inputs.
+
+Guided playback is a separate cohort. Functional completion never promotes a
+candidate, and deep captures are not used as performance comparisons.
+"""
+import argparse
+import bisect
+import csv
+from datetime import datetime, timedelta
+import hashlib
+import json
+import math
+from pathlib import Path
+import re
+import statistics
+import sys
+
+import benchmark_desktop
+import indirect_work
+import lua_protected_work
+import lua_vm_states
+import runtime_dependencies
+import image_publication_work
+
+
+def read_json(path):
+    return json.loads(Path(path).read_text(encoding='utf-8-sig'))
+
+
+def identity(path):
+    path = Path(path).resolve(strict=True)
+    with path.open('rb') as stream:
+        digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    return {'path': str(path), 'sha256': digest, 'bytes': path.stat().st_size}
+
+
+def verify(pins):
+    for pin in pins:
+        live = identity(pin['path'])
+        if live['sha256'].lower() != pin['sha256'].lower() or live['bytes'] != pin['bytes']:
+            raise ValueError('Pinned input changed: ' + pin['path'])
+
+
+def quantile(values, fraction):
+    values = sorted(values)
+    if not values:
+        return None
+    index = (len(values) - 1) * fraction
+    lower = int(index)
+    return values[lower] + (values[math.ceil(index)] - values[lower]) * (index - lower)
+
+
+def pacing(values):
+    if not values or any(not math.isfinite(v) or v < 0 for v in values):
+        raise ValueError('No valid frame-time observations')
+    median = statistics.median(values)
+    adjacent = [abs(a-b) for a,b in zip(values,values[1:])]
+    relative = []
+    history, ordered = [], []
+    for value in values:
+        if len(history) >= 15:
+            local = statistics.median(ordered)
+            if value > max(local*1.5, local+2):
+                relative.append(value-local)
+        bisect.insort(ordered,value); history.append(value)
+        if len(history) > 31:
+            old = history.pop(0); ordered.pop(bisect.bisect_left(ordered,old))
+    return {'frames': len(values), 'mean_ms': statistics.mean(values), 'median_ms': median,
+            'p90_ms': quantile(values,.90), 'p95_ms': quantile(values,.95),
+            'p99_ms': quantile(values,.99), 'p999_ms': quantile(values,.999),
+            'maximum_ms': max(values), 'stddev_ms': statistics.pstdev(values),
+            'mad_ms': statistics.median(abs(v-median) for v in values),
+            'iqr_ms': quantile(values,.75)-quantile(values,.25),
+            'adjacent_change_p95_ms': quantile(adjacent,.95),
+            'adjacent_change_p99_ms': quantile(adjacent,.99),
+            'relative_spikes': len(relative), 'relative_excess_ms': sum(relative),
+            'over_16_67': sum(v>16.67 for v in values), 'over_33_33': sum(v>33.33 for v in values),
+            'over_50': sum(v>50 for v in values)}
+
+
+def route_windows(profile, launch_utc):
+    """Join log-prefix wall time to frames; never join Lua boot time to epoch."""
+    day = datetime.fromisoformat(launch_utc.replace('Z','+00:00')).astimezone().date()
+    previous = None
+    result = {'start': None, 'movement': None, 'finish': None}
+    for line in (profile/'playback-stdout.log').read_text(encoding='utf-8-sig').splitlines():
+        if 'OMWPLAY|' not in line:
+            continue
+        match = re.match(r'^\[(\d\d:\d\d:\d\d\.\d{3}) ',line)
+        if not match:
+            continue
+        timestamp = datetime.combine(day,datetime.strptime(match[1],'%H:%M:%S.%f').time())
+        if previous and timestamp < previous-timedelta(hours=12):
+            day += timedelta(days=1); timestamp += timedelta(days=1)
+        previous = timestamp
+        record = json.loads(line.split('OMWPLAY|',1)[1])
+        epoch = timestamp.timestamp()*1000
+        if record['event'] == 'start':
+            result['start'] = epoch
+        guidance = record.get('guidance_command') or record.get('last_guidance_command') or {}
+        if result['start'] and not result['movement'] and (
+                abs(guidance.get('nominal_movement',0))+abs(guidance.get('nominal_side_movement',0)) > .01):
+            result['movement'] = epoch
+        if record['event'] == 'finish':
+            result['finish'] = epoch
+    if not result['start'] or not result['finish'] or result['finish'] <= result['start']:
+        raise ValueError('Cannot establish route wall-time boundaries')
+    return result
+
+
+def analyze(profile):
+    profile = Path(profile)
+    manifest = read_json(profile/'RUN-MANIFEST.json')
+    windows = route_windows(profile,manifest['process']['launch_utc'])
+    context = {}
+    with (profile/'benchmark-context.csv').open(newline='',encoding='utf-8-sig') as stream:
+        for row in csv.DictReader(stream):
+            context[int(row['frame'])] = row
+    groups = {'route_all_frames': [], 'route': [], 'fixed_view': [], 'moving': []}
+    excluded = 0
+    with (profile/'v3-frame.csv').open(newline='',encoding='utf-8-sig') as stream:
+        for row in csv.DictReader(stream):
+            epoch = float(row['epoch_ms'])
+            if not windows['start']+1000 <= epoch < windows['finish']-1000:
+                continue
+            groups['route_all_frames'].append(float(row['wall_ms']))
+            state = context.get(int(row['frame']))
+            if not state or any(int(state[k]) != 0 for k in ('begin_flags','end_flags','observed_flags')):
+                excluded += 1; continue
+            value = float(row['wall_ms']); groups['route'].append(value)
+            if windows['movement']:
+                groups['fixed_view' if epoch < windows['movement']-1000 else 'moving'].append(value)
+    result = {'schema': 1, 'phase_clock': 'approximate logged wall-time prefixes joined to system-clock frame starts',
+            'phase_limit': 'One-second boundary margins; buffered log delivery is not an exact CPU span join',
+            'context_limit': 'route_all_frames retains loading/UI deviations; route/fixed_view/moving require zero context flags',
+            'windows_epoch_ms': windows, 'excluded_context_frames': excluded,
+            'metrics': {key:pacing(values) for key,values in groups.items() if values}}
+    if (profile/'p9-indirect-work.csv').is_file():
+        result['indirect_interval_work'] = indirect_work.interval_work(profile, windows)
+    if (profile/'p9-lua-protected-work.csv').is_file():
+        result['lua_protected_interval_work'] = lua_protected_work.interval_work(profile, windows)
+    if (profile/'p9-lua-vm-states.csv').is_file():
+        result['lua_vm_states'] = lua_vm_states.qualify_vm_states(profile, windows)
+    return result
+
+
+def loading_nif_lifetime_work(text):
+    """Actual parsed-cache retirements; counters never claim resident RAM savings."""
+    rows = re.findall(r'OptimizedMW loading NIF maintenance:([^\r\n]*)', text)
+    if len(rows) != 1:
+        raise ValueError('Expected exactly one final loading NIF maintenance receipt')
+    fields = dict(re.findall(r'\b(\w+)=(\S+)', rows[0]))
+    names = ('enabled', 'requests', 'queued', 'completed', 'skipped', 'errors',
+             'scanned', 'removed', 'released_charge_bytes', 'enqueue_diagnostic_failures_all_queues')
+    counts = {}
+    for name in names:
+        value = fields.get(name, '')
+        if not re.fullmatch(r'\d+', value) or int(value) > (1 << 64)-1:
+            raise ValueError('Missing or malformed loading NIF count: '+name)
+        counts[name] = int(value)
+    if fields.get('scope') != 'parsed_cache_only_not_process_RAM' or counts['enabled'] not in (0, 1):
+        raise ValueError('Loading NIF receipt has an unknown scope or enabled state')
+    if (counts['queued'] > counts['requests'] or counts['completed']+counts['skipped'] > counts['queued']
+            or counts['removed'] > counts['completed']*8 or counts['scanned'] > counts['completed']*128):
+        raise ValueError('Loading NIF receipt has incoherent task or release counts')
+    return {'scope': 'game_lifetime_completed_parsed_cache_retirements', 'counts': counts,
+            'positive': bool(counts['enabled'] and counts['completed'] and counts['removed']
+                             and not counts['errors'] and not counts['enqueue_diagnostic_failures_all_queues']),
+            'limit': 'Cache entries and logical charges; independently sample process/system recovery and frame cost'}
+
+
+def engagement(profile, requested, asset_mask=0, architecture_mask=0, work=None, lua_work=None):
+    text = (profile/'openmw.log').read_text(encoding='utf-8-sig')
+    positive = {}
+    if requested.get('visual cache handoff') == 'true':
+        lines = re.findall(r'OptimizedMW unused visual handoff:([^\n]*)', text)
+        if len(lines) != 1:
+            raise ValueError('Visual cache handoff requires one terminal owner receipt')
+        fields = {key:int(value) for key,value in re.findall(r'\b(\w+)=(\d+)(?=\s|$)', lines[0])}
+        keys = ('enabled','queued','completed','skipped','errors','enqueue_errors','templates','shared_states','images','scanned')
+        if any(key not in fields or fields[key] > (1 << 64)-1 for key in keys):
+            raise ValueError('Visual cache handoff receipt has missing or invalid counts')
+        attempts = fields['completed'] + fields['errors']
+        if (fields['queued'] != attempts + fields['skipped'] or fields['scanned'] > attempts*384
+                or fields['templates'] > attempts*4 or fields['shared_states'] > attempts*8
+                or fields['images'] > attempts*4):
+            raise ValueError('Visual cache handoff receipt has incoherent bounded work')
+        # Lifetime retirement is a memory candidate prerequisite. It is not
+        # measured-route work reduction, recovered RAM or an FPS result.
+        positive['visual_handoff_cache_retirement'] = bool(fields['enabled'] and fields['completed']
+            and (fields['templates'] or fields['shared_states'] or fields['images'])
+            and not fields['errors'] and not fields['enqueue_errors'])
+    image_lifetime = None
+    nif_lifetime = None
+    if requested.get('loading nif maintenance') == 'true':
+        nif_lifetime = loading_nif_lifetime_work(text)
+        positive['loading_nif_maintenance'] = nif_lifetime['positive']
+    if requested.get('canonical image publication') == 'true':
+        image_lifetime = image_publication_work.lifetime_work(profile)
+        positive['canonical_image_publication'] = image_publication_work.positive_engagement(image_lifetime, requested=True)
+    if asset_mask & 1:
+        # A successful cook/cache lookup is not proof that visible LOD draws
+        # consumed the reduced product in the real active-grid renderer.
+        matches = re.findall(r'active_consumed_draws=(\d+)(?=\s|$)',text)
+        positive['active_grid_lod_draws'] = bool(matches and int(matches[-1])>0)
+    if requested.get('prepare material images') == 'true':
+        matches = re.findall(r'OptimizedMW material image preparation:.*?decoded=(\d+)(?=\s|$)',text)
+        positive['material_images'] = bool(matches and int(matches[-1])>0)
+    if requested.get('lod cache hit admission') == 'true':
+        matches = re.findall(r'cache_fast_hits=(\d+)(?=\s|$)',text)
+        positive['lod_cache_hit'] = bool(matches and int(matches[-1])>0)
+    if requested.get('lod retain source indices') == 'true':
+        matches = re.findall(r'primitive_clone_bytes_avoided=(\d+)(?=\s|$)',text)
+        positive['lod_source_index_reuse'] = bool(matches and int(matches[-1])>0)
+    if requested.get('ordinary opaque packets') == 'true':
+        matches = re.findall(r'ordinary_branches=(\d+)(?=\s|$)',text)
+        submitted = re.findall(r'OptimizedMW persistent opaque packets:.*?submitted=(\d+)(?=\s|$)',text)
+        positive['ordinary_packets'] = bool(matches and int(matches[-1])>0 and submitted and int(submitted[-1])>0)
+    if architecture_mask & (16 | 32):
+        lines = re.findall(r'OptimizedMW opaque indirect pipeline:([^\n]*)', text)
+        fields = {key:int(value) for key,value in re.findall(r'\b(\w+)=(\d+)(?=\s|$)', lines[-1])} if lines else {}
+        positive['indirect_draws'] = all(fields.get(key,0)>0 for key in ('built','draws','commands'))
+        if requested.get('ordinary opaque packets') == 'true':
+            positive['ordinary_nested_indirect'] = fields.get('nested_built',0)>0
+        if architecture_mask & 32:
+            positive['gpu_visibility_dispatches'] = fields.get('dispatches',0)>0
+        if work is not None:
+            positive['indirect_measured_interval'] = indirect_work.positive_counts(work, 'indirect_draws')
+            if architecture_mask & 32:
+                positive['gpu_measured_interval'] = indirect_work.positive_counts(work, 'gpu_dispatches')
+    if requested.get('indirect command reuse') == 'true':
+        matches = re.findall(r'command_uploads_avoided=(\d+)(?=\s|$)',text)
+        positive['indirect_command_reuse'] = bool(matches and int(matches[-1])>0)
+        if work is not None:
+            positive['indirect_command_reuse'] &= indirect_work.positive_counts(work, 'command_uploads_avoided')
+    if requested.get('indirect context capability reuse') == 'true':
+        matches = re.findall(r'OptimizedMW indirect context capability reuse:.*?draws=(\d+)(?=\s|$)',text)
+        positive['indirect_context_capability_reuse'] = bool(matches and int(matches[-1])>0 and work is not None
+            and indirect_work.positive_counts(work, 'capability_draws'))
+    if requested.get('gpu visibility opportunity filter') == 'true':
+        matches = re.findall(r'OptimizedMW gpu visibility opportunity:.*?original_draws=(\d+)(?=\s|$)',text)
+        positive['gpu_visibility_opportunity_filter'] = bool(matches and int(matches[-1])>0 and work is not None
+            and indirect_work.positive_counts(work, 'opportunity_original_draws'))
+    if requested.get('indirect projection proof reuse') == 'true':
+        matches = re.findall(r'OptimizedMW indirect projection proof reuse:.*?reuses=(\d+)(?=\s|$)',text)
+        positive['indirect_projection_proof_reuse'] = bool(matches and int(matches[-1])>0 and work is not None
+            and indirect_work.positive_counts(work, 'projection_proof_reuses'))
+    if requested.get('indirect early admission fallback') == 'true':
+        matches = re.findall(r'OptimizedMW indirect early admission fallback:.*?new_owner_refusals=(\d+).*?contended_inspections=(\d+)',text)
+        positive['indirect_early_admission_fallback'] = bool(matches and any(int(value)>0 for value in matches[-1])
+            and work is not None and (indirect_work.positive_counts(work, 'early_admission_fallbacks')
+                or indirect_work.positive_counts(work, 'early_busy_fallbacks')))
+    if requested.get('paging score value reuse') == 'true':
+        matches = re.findall(r'OptimizedMW paging score value reuse:.*?pow_reuses=(\d+)(?=\s|$)',text)
+        positive['paging_score_value_reuse'] = bool(matches and int(matches[-1])>0 and work is not None
+            and indirect_work.positive_counts(work, 'paging_pow_reuses'))
+    if requested.get('preload priority promotion') == 'true':
+        matches = re.findall(r'OptimizedMW preload priority promotion:.*?submitted=(\d+).*?promoted=(\d+).*?started=(\d+)', text)
+        positive['preload_priority_promotion'] = bool(matches and int(matches[-1][2]) > 0 and work is not None
+            and indirect_work.positive_counts(work, 'preload_priority_started')
+            and (indirect_work.positive_counts(work, 'preload_priority_promoted')
+                or indirect_work.positive_counts(work, 'preload_priority_submitted')))
+    if requested.get('owned cell cull snapshots') == 'true':
+        positive['owned_cell_cull_snapshots'] = bool(work and indirect_work.positive_counts(work, 'cull_bound_reads_avoided')
+            and indirect_work.positive_counts(work, 'cull_classification_visits_avoided'))
+    if requested.get('unchanged transform bounds') == 'true':
+        positive['unchanged_transform_bounds'] = bool(work and indirect_work.positive_counts(work, 'transform_dirty_calls_avoided'))
+    if requested.get('scene template coalescing') == 'true':
+        positive['scene_template_coalescing'] = bool(work and (indirect_work.positive_counts(work, 'template_after_load_reuses')
+            or indirect_work.positive_counts(work, 'template_publication_reuses')))
+    if requested.get('temporal history lookup') == 'true':
+        positive['temporal_history_lookup'] = bool(work and indirect_work.positive_counts(work, 'temporal_history_indexed_lookups'))
+    if requested.get('paged static vertex arrays') == 'true':
+        positive['paged_static_vertex_arrays'] = bool(work and indirect_work.positive_counts(work, 'static_vao_draws')
+            and indirect_work.positive_counts(work, 'static_vao_layout_reuses'))
+    if requested.get('protected call reuse') == 'true':
+        positive['lua_protected_call_reuse'] = bool(lua_work and lua_work['enabled']
+            and indirect_work.positive_counts(lua_work, 'reused_total'))
+    return {'positive_work': positive, 'all_requested_positive': all(positive.values()),
+            'image_publication_lifetime_work': image_lifetime,
+            'loading_nif_lifetime_work': nif_lifetime,
+            'limit': 'Preparation/dispatch engagement; visible resource adoption and performance require separate evidence'}
+
+
+def cell_crossings(profile, expected_count):
+    """Audit sampled boundary skew without hiding wrong-cell route excursions.
+
+    A physical follower can cross an exterior boundary a fraction of a second
+    before/after its reference. Preserve the mismatch, require the same ordered
+    cell itinerary, and bound BOTH positions and the observed mismatch span.
+    Bound each unobserved bracketing gap separately; two matching endpoints
+    are sampling uncertainty, not observations of a wrong cell. Preserve the
+    complete surrounding window rather than claiming exact transition timing.
+    Interior transitions, skipped cells, sustained mismatches and wider path
+    departures remain failures. This never claims frame-exact cell ownership.
+    """
+    if not expected_count:
+        return {'qualification':'EXACT_SAMPLED_CELLS','mismatch_checks':0}
+    if profile is None:
+        raise ValueError('Cell mismatch requires the complete route evidence')
+    with (Path(profile)/'playback.jsonl').open(encoding='utf-8-sig') as stream:
+        checks = [json.loads(line) for line in stream if line.strip()]
+    checks = [row for row in checks if row.get('event')=='check']
+    mismatches = [i for i,row in enumerate(checks) if not row.get('cell_matches')]
+    if len(mismatches)!=expected_count:
+        raise ValueError('Cell mismatch count does not match raw route checks')
+    def itinerary(key):
+        cells=[]
+        for row in checks:
+            if not cells or cells[-1]!=row[key]: cells.append(row[key])
+        return cells
+    if itinerary('actual_cell')!=itinerary('expected_cell'):
+        raise ValueError('Playback changed the ordered exterior cell itinerary')
+    def exterior(value):
+        match=re.fullmatch(r'Esm3ExteriorCell:(-?\d+):(-?\d+)',value)
+        if not match: raise ValueError('Interior or unknown cell mismatch')
+        return tuple(map(int,match.groups()))
+    windows=[]
+    reference_interpolation_skew=0
+    start=0
+    while start<len(mismatches):
+        end=start
+        while end+1<len(mismatches) and mismatches[end+1]==mismatches[end]+1: end+=1
+        first,last=mismatches[start],mismatches[end]
+        if first==0 or last==len(checks)-1:
+            raise ValueError('Unclosed cell-boundary mismatch')
+        span=checks[last]['t_wall']-checks[first]['t_wall']
+        before_gap=checks[first]['t_wall']-checks[first-1]['t_wall']
+        after_gap=checks[last+1]['t_wall']-checks[last]['t_wall']
+        duration=checks[last+1]['t_wall']-checks[first-1]['t_wall']
+        if not 0<=span<=.5 or not 0<before_gap<=.5 or not 0<after_gap<=.5:
+            raise ValueError('Cell mismatch span or bracketing sample gap exceeds half a second')
+        for i in mismatches[start:end+1]:
+            row=checks[i]; a=row['actual_position']; b=row['expected_position']
+            actual=exterior(row['actual_cell']); expected=exterior(row['expected_cell'])
+            if sum(abs(x-y) for x,y in zip(actual,expected))!=1:
+                raise ValueError('Cell mismatch is not one adjacent exterior boundary')
+            coordinates=lambda p:tuple(math.floor(p[axis]/8192) for axis in ('x','y'))
+            if coordinates(a)!=actual:
+                raise ValueError('Actual cell mismatch is not explained by its exterior coordinates')
+            if coordinates(b)!=expected:
+                # The replay interpolates reference POSITION between acquired
+                # samples but takes CELL ID from the earlier sample. Retain this
+                # protocol skew only at that same boundary and within one source
+                # sample's travel; the actual physical cell remains exact.
+                axis=next(i for i in range(2) if actual[i]!=expected[i])
+                name=('x','y')[axis]; boundary=max(actual[axis],expected[axis])*8192
+                interval=row.get('sample_interval',0); speed=(row.get('guidance_command') or {}).get('speed',0)
+                allowance=min(64,interval*speed+1)
+                if coordinates(b)!=actual or not 0<interval<=.1 or not 0<speed<=1000 or abs(b[name]-boundary)>allowance:
+                    raise ValueError('Reference cell mismatch exceeds recorded interpolation travel')
+                reference_interpolation_skew+=1
+            if math.hypot(a['x']-b['x'],a['y']-b['y'])>64 or abs(a['z']-b['z'])>32:
+                raise ValueError('Boundary mismatch exceeds the narrow physical path allowance')
+        windows.append({'first_seq':checks[first]['seq'],'last_seq':checks[last]['seq'],
+                        'observed_mismatch_seconds':span,
+                        'before_sample_gap_seconds':before_gap,
+                        'after_sample_gap_seconds':after_gap,
+                        'surrounding_sample_seconds':duration})
+        start=end+1
+    return {'qualification':'BOUNDED_EXTERIOR_BOUNDARY_SKEW','mismatch_checks':expected_count,
+            'same_ordered_cell_itinerary':True,'windows':windows,
+            'reference_interpolation_skew_checks':reference_interpolation_skew,
+            'limit':'Mismatch span and each bracketing gap are bounded separately; the complete surrounding window is sampling uncertainty, not frame-exact transition timing'}
+
+
+def route_quality(receipt, profile=None):
+    playback = receipt['playback']; finish = playback.get('finish') or {}
+    if not playback.get('playback_complete') or playback.get('errors'):
+        raise ValueError('Route did not complete cleanly')
+    policy = finish.get('policy') or {}
+    if not policy.get('qualified') or policy.get('combat_during_recording') or not finish.get('policy_observer_drained'):
+        raise ValueError('Actor/combat policy incomplete')
+    if finish.get('outside_position_tolerance_check_count',1):
+        raise ValueError('Playback changed the physical path cohort')
+    crossing=cell_crossings(profile,finish.get('cell_mismatch_check_count',1))
+    return {'lag_seconds':finish['reference_clock_lag'], 'hold_seconds':finish['reference_hold_seconds'],
+            'hold_count':finish['reference_hold_count'], 'maximum_xy':finish['maximum_horizontal_error'],
+            'maximum_z':finish['maximum_vertical_error'], 'route_wall_seconds':finish['t_wall'],
+            'physical_collision':finish['physical_state']['collision_enabled'],
+            'cell_crossings':crossing,
+            'scope':'guided route; input_replay_complete remains distinct'}
+
+
+def completed_run_receipts(directory, launcher_code):
+    directory = Path(directory)
+    desktop_path = directory/'Desktop'/'DESKTOP-RECEIPT.json'
+    desktop = read_json(desktop_path)
+    receipt_path = directory/'RUN.json'
+    if desktop.get('timed_out'):
+        raise ValueError('Private launcher timed out after '
+            + str(desktop.get('elapsed_seconds', 'unknown')) + ' seconds; preserved '
+            + str(desktop_path) + '; automatic run receipt '
+            + ('exists but is not qualified' if receipt_path.exists() else 'was not completed'))
+    if launcher_code or desktop.get('exit_code') != 0:
+        raise ValueError('Private launcher failed with exit code ' + str(launcher_code)
+            + '; desktop exit code ' + str(desktop.get('exit_code'))
+            + '; preserved ' + str(desktop_path))
+    if not receipt_path.exists():
+        raise ValueError('Private launcher exited without an automatic run receipt; preserved '
+            + str(desktop_path))
+    receipt = read_json(receipt_path)
+    if receipt.get('launch_failure') or receipt.get('exit_code') != 0:
+        raise ValueError('Game/launcher failed; preserved ' + str(receipt_path)
+            + '; game exit code ' + str(receipt.get('exit_code'))
+            + '; launcher error ' + str(receipt.get('launch_failure')))
+    return receipt, desktop
+
+
+def protected_input_qualification(receipt, allow_external_lua_storage_changes=False):
+    playback = receipt.get('playback') or {}
+    unchanged = playback.get('protected_inputs_unchanged') is True
+    review = playback.get('protected_input_review') or {}
+    if unchanged:
+        return {'unchanged': True, 'accepted': True, 'changes': []}
+    if not allow_external_lua_storage_changes:
+        raise ValueError('Original protected inputs changed without explicit external Lua-storage approval')
+    if (review.get('policy') != 'allow_external_regular_lua_storage_updates'
+            or review.get('accepted') is not True
+            or review.get('allow_external_lua_storage_changes') is not True
+            or review.get('isolated_private_profile') is not True
+            or review.get('unchanged') is not False
+            or review.get('blocked_change_count') != 0
+            or playback.get('protected_inputs_accepted') is not True):
+        raise ValueError('External Lua-storage changes lack an accepted isolated-profile review')
+    changes = review.get('changes')
+    if not isinstance(changes, list) or not changes:
+        raise ValueError('External Lua-storage review lacks exact changed identities')
+    for change in changes:
+        old, new = change.get('before') or {}, change.get('after') or {}
+        path = Path(old.get('path', ''))
+        if (change.get('accepted') is not True
+                or change.get('reason') != 'approved_external_lua_storage_update'
+                or path.name.lower() not in ('global_storage.bin', 'player_storage.bin')
+                or str(path).lower() != str(Path(new.get('path', ''))).lower()
+                or new.get('exists') is not True):
+            raise ValueError('External Lua-storage review contains an unapproved change')
+    return review
+
+
+def temporal_arguments(case):
+    mode = case.get('temporal_mode', 'Off')
+    if mode not in ('Off', 'Camera', 'Dynamic'):
+        raise ValueError('Unknown automatic temporal input mode: ' + str(mode))
+    return ['-AutomatedTemporalMode', mode] if mode != 'Off' else []
+
+
+def memory_diagnostic_arguments(case):
+    value=case.get('memory_diagnostics',False)
+    if not isinstance(value,bool):
+        raise ValueError('memory_diagnostics must be a JSON boolean')
+    guard=case.get('memory_guard',False)
+    if not isinstance(guard,bool) or (guard and not value):
+        raise ValueError('memory_guard must be a JSON boolean and requires memory_diagnostics')
+    return (['-MemoryDiagnostics'] if value else []) + (['-MemoryGuard'] if guard else [])
+
+
+def run_matrix(plan_path, output):
+    plan = read_json(plan_path); output = Path(output).resolve()
+    if output.exists():
+        raise ValueError('Preserving prior matrix output; choose a fresh directory')
+    output.mkdir(parents=True)
+    game = Path(plan['game_directory']).resolve(strict=True)
+    catalog = read_json(plan['route_catalog'])
+    routes = {route['id']:route for route in catalog['routes']}
+    tools = ('OptimizedMW_Test.ps1','OptimizedMW_RoutePlayback.ps1','OptimizedMW_RouteRecorder.ps1')
+    pins = [identity(game/'openmw.exe'),identity(plan['symbols']),identity(game/'BUILD-IDENTITY.json'),
+            identity(plan_path),identity(plan['route_catalog']),identity(__file__),identity(benchmark_desktop.__file__)]
+    pins.append(identity(indirect_work.__file__))
+    pins.append(identity(image_publication_work.__file__))
+    pins += [identity(lua_protected_work.__file__), identity(lua_vm_states.__file__)]
+    if plan.get('runtime_guard_checkpoint'):
+        pins.append(identity(game/'benchmark_supervisor.py'))
+    dependencies = runtime_dependencies.runtime_closure(game)
+    pins.append(identity(runtime_dependencies.__file__))
+    pins += [identity(path) for path in dependencies['files'] if Path(path) != game/'openmw.exe']
+    benchmark_desktop.save(output/'RUNTIME-DEPENDENCIES.json', dependencies)
+    pins += [identity(path) for path in sorted(game.glob('OptimizedMW_*.ps1'))]
+    pins += [identity(path) for path in sorted((game/'RoutePlayback').rglob('*')) if path.is_file()]
+    for route in routes.values():
+        pins += route['inputs']
+    verify(pins)
+    diagnostic_arguments=[memory_diagnostic_arguments(case) for case in plan['cases']]
+    allocation_diagnostic = any(diagnostic_arguments)
+    state = {'schema':1,'scope':('OFFSCREEN_MUTED_ALLOCATION_DIAGNOSTIC' if allocation_diagnostic else 'OFFSCREEN_MUTED_GUIDED_ROUTE_COMPARISON'),'pins':pins,'runs':[],
+             'performance_status':'CALIBRATION_REQUIRED','state':'running'}
+    benchmark_desktop.save(output/'MATRIX.json',state)
+    current_case = None
+    try:
+        for index,case in enumerate(plan['cases']):
+            if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}',case['id']):
+                raise ValueError('Invalid case name')
+            verify(pins)
+            directory = output/f'{index+1:02}_{case["id"]}'; directory.mkdir()
+            current_case = {'id':case['id'], 'route':case['route'], 'directory':str(directory),
+                'stage':'setup', 'receipt':str(directory/'RUN.json'),
+                'desktop_receipt':str(directory/'Desktop'/'DESKTOP-RECEIPT.json')}
+            route = routes[case['route']]
+            allow_external_lua = case.get('allow_external_lua_storage_changes', False)
+            if not isinstance(allow_external_lua, bool):
+                raise ValueError('allow_external_lua_storage_changes must be a JSON boolean')
+            settings = case.get('settings',[])
+            settings_path = directory/'requested-settings.json'; benchmark_desktop.save(settings_path,settings)
+            receipt_path = directory/'RUN.json'
+            args = ['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(game/'OptimizedMW_Test.ps1'),
+                    '-GameDirectory',str(game),'-AutomatedRouteCapture',route['pinned_acquisition'],
+                    '-AutomatedRouteName','balmora' if case['route']=='Balmora' else 'existing',
+                    '-AutomatedResultFile',str(receipt_path),'-ExperimentSettingsFile',str(settings_path),
+                    '-AutomatedDerivedCacheDirectory',str(output/'DerivedAssets'),
+                    '-NoPrompt','-AttackMask','1','-RamMask','4','-MemoryProfile','Headroom',
+                    '-ArchitectureMask',str(case.get('architecture_mask',0)),
+                    '-AssetMask',str(case.get('asset_mask',0)),'-TraceLevel',case.get('depth','Normal'),'-Candidate','CONTROL']
+            args += temporal_arguments(case)
+            args += diagnostic_arguments[index]
+            if plan.get('stop_request_file'):
+                args += ['-AutomatedStopFile',str(Path(plan['stop_request_file']).resolve())]
+            if allow_external_lua:
+                args.append('-AllowExternalLuaStorageChanges')
+            print(json.dumps({'case':case['id'],'route':case['route'],'state':'started'}),flush=True)
+            current_case['stage'] = 'private_launcher'
+            if plan.get('runtime_guard_checkpoint'):
+                # Recheck every launch, including between repeats. Imported host
+                # uses CIM so an unswitched private game is still occupied.
+                import benchmark_supervisor
+                checkpoint=Path(plan['runtime_guard_checkpoint'])
+                if (checkpoint.parent/'OVERNIGHT-HOLD.txt').exists() or not benchmark_supervisor.reservation(checkpoint):
+                    raise ValueError('Human runtime reservation or overnight hold; no game launched')
+                if benchmark_supervisor.occupied() or not benchmark_supervisor.memory_floor()['qualified']:
+                    raise ValueError('Occupied game/build or insufficient fresh memory margin; no game launched')
+            state['current_case']=current_case
+            benchmark_desktop.save(output/'MATRIX.json',state)
+            code = benchmark_desktop.launch(plan['powershell'],args,game,directory/'Desktop',plan.get('deadline',600))
+            current_case['stage'] = 'run_qualification'
+            receipt, desktop = completed_run_receipts(directory, code)
+            protected = protected_input_qualification(receipt, allow_external_lua)
+            if not desktop.get('owned_render_window_observed') or not desktop['input_desktop_unchanged'] or desktop.get('input_desktop_owned_visible_windows'):
+                raise ValueError('Private rendering isolation incomplete')
+            if not receipt['settings_restore_verified'] or not receipt['environment_restore_verified']:
+                raise ValueError('Restore qualification incomplete')
+            verify(pins+[receipt['zip']])
+            profile = Path(receipt['profile_directory'])
+            text = (profile/'openmw.log').read_text(encoding='utf-8-sig')
+            if 'OptimizedMW automatic benchmark: master_volume=0' not in text:
+                raise ValueError('Engine did not confirm actual muted settings')
+            quality = route_quality(receipt,profile)
+            requested = {entry['key']:entry['value'] for entry in settings
+                         if entry['section'] in ('Cells', 'Optimizations', 'Lua')}
+            metrics = analyze(profile)
+            engaged = engagement(profile,requested,case.get('asset_mask',0),case.get('architecture_mask',0),
+                metrics.get('indirect_interval_work'), metrics.get('lua_protected_interval_work'))
+            benchmark_desktop.save(directory/'ANALYSIS.json',metrics)
+            result = {'id':case['id'],'route':case['route'],'depth':case.get('depth','Normal'),
+                      'receipt':str(receipt_path),'zip':receipt['zip'],'route_quality':quality,
+                      'protected_input_review':protected,'engagement':engaged,'analysis':metrics}
+            state['runs'].append(result); benchmark_desktop.save(output/'MATRIX.json',state)
+            print(json.dumps({'case':case['id'],'state':'completed','positive':engaged}),flush=True)
+            if not engaged['all_requested_positive']:
+                raise ValueError('Candidate was inert; stop broad comparisons and inspect '+str(receipt_path))
+            current_case = None
+            state['current_case']=None
+        state['state']='completed'
+        # Calibration must be reviewed across repeats before accepting numerical
+        # A/B results. Deep rows are never pooled with ordinary performance.
+        state['performance_status']=('ALLOCATION_DIAGNOSTIC_NOT_PERFORMANCE' if allocation_diagnostic
+                                     else 'RAW_COMPARISONS_PENDING_REPEATABILITY_REVIEW')
+    except BaseException as error:
+        state['state']='failed'; state['error']=str(error)
+        if current_case:
+            failure = dict(current_case, state='FAILED_NOT_QUALIFIED', error=str(error),
+                receipt_exists=Path(current_case['receipt']).exists(),
+                desktop_receipt_exists=Path(current_case['desktop_receipt']).exists(),
+                performance_status='No performance acceptance for this failed case')
+            state['failed_run'] = failure
+            benchmark_desktop.save(Path(current_case['directory'])/'FAILED-RUN.json',failure)
+        raise
+    finally:
+        benchmark_desktop.save(output/'MATRIX.json',state)
+
+
+if __name__ == '__main__':
+    parser=argparse.ArgumentParser(); parser.add_argument('--plan',required=True);parser.add_argument('--output',required=True)
+    args=parser.parse_args()
+    run_matrix(args.plan,args.output)

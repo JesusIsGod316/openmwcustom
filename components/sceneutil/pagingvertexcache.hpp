@@ -35,6 +35,10 @@ namespace SceneUtil::PagingVertexCache
         std::uint64_t restartSelections = 0;
         std::uint64_t linearRestartVisits = 0;
         std::uint64_t heapComparisons = 0;
+        std::uint64_t scoreReuses = 0;
+        std::uint64_t unchangedHeapUpdates = 0;
+        std::uint64_t generationResets = 0;
+        std::uint64_t scoreTableHits = 0, scoreTableComputations = 0, scoreTableUncached = 0;
     };
     struct Vertex
     {
@@ -56,6 +60,65 @@ namespace SceneUtil::PagingVertexCache
                 : std::pow(1.f - (v.cachePosition - 3) * (1.f / 29.f), 1.5f);
         return result + 2.f * std::pow(static_cast<float>(v.active), -0.5f);
     }
+
+    // Owned by one optimization call. Reuse the actual float pow result for
+    // repeated integer inputs; retain the original expression order and tie
+    // policy. Large valences/unsupported positions still use ordinary pow.
+    // No table construction, allocation or math-policy change when disabled.
+    class ScoreTables
+    {
+    public:
+        static constexpr std::size_t MaximumValence = 256;
+        float evaluate(const Vertex& v, Statistics& stats)
+        {
+            if (!v.active) return -1.f;
+            float result = 0.f;
+            if (v.cachePosition >= 0)
+            {
+                if (v.cachePosition < 3) result = 0.75f;
+                else if (static_cast<unsigned>(v.cachePosition) < mPosition.size())
+                {
+                    const auto position = static_cast<unsigned>(v.cachePosition);
+                    if (mPositionReady[position]) ++stats.scoreTableHits;
+                    else
+                    {
+                        mPosition[position] = std::pow(1.f - (v.cachePosition - 3) * (1.f / 29.f), 1.5f);
+                        mPositionReady[position] = true;
+                        ++stats.scoreTableComputations;
+                    }
+                    result = mPosition[position];
+                }
+                else
+                {
+                    ++stats.scoreTableUncached;
+                    result = std::pow(1.f - (v.cachePosition - 3) * (1.f / 29.f), 1.5f);
+                }
+            }
+            float valence;
+            if (v.active <= MaximumValence)
+            {
+                if (mValenceReady[v.active]) ++stats.scoreTableHits;
+                else
+                {
+                    mValence[v.active] = std::pow(static_cast<float>(v.active), -0.5f);
+                    mValenceReady[v.active] = true;
+                    ++stats.scoreTableComputations;
+                }
+                valence = mValence[v.active];
+            }
+            else
+            {
+                ++stats.scoreTableUncached;
+                valence = std::pow(static_cast<float>(v.active), -0.5f);
+            }
+            return result + 2.f * valence;
+        }
+    private:
+        std::array<float, 32> mPosition;
+        std::array<float, MaximumValence + 1> mValence;
+        std::array<bool, 32> mPositionReady{};
+        std::array<bool, MaximumValence + 1> mValenceReady{};
+    };
 
     // Every triangle has exactly one heap entry. Completed triangles remain at
     // score -1; equal scores prefer the original triangle index, as max_element.
@@ -108,7 +171,8 @@ namespace SceneUtil::PagingVertexCache
 
     template<class Stop>
     Result optimize(std::span<const unsigned> input, std::size_t vertexCount,
-        std::vector<unsigned>& output, Stop stop, Statistics& stats)
+        std::vector<unsigned>& output, Stop stop, Statistics& stats, bool reduceExactWork = false,
+        std::uint64_t initialScoreGeneration = 1, bool reuseScoreValues = false)
     {
         // Output is transactional: invalid input or cancellation leaves it alone.
         if (input.size() % 3 || vertexCount > std::numeric_limits<unsigned>::max()) return Result::Invalid;
@@ -143,9 +207,31 @@ namespace SceneUtil::PagingVertexCache
             for (auto index : triangles[i].vertices)
             { auto& v = vertices[index]; adjacency[v.offset + v.active++] = i; }
         }
-        for (auto& v : vertices) { if (stop()) return Result::Cancelled; v.score = score(v); }
+        std::optional<ScoreTables> scoreTables;
+        if (reuseScoreValues) scoreTables.emplace();
+        const auto scoreVertex = [&](const Vertex& vertex) {
+            return scoreTables ? scoreTables->evaluate(vertex, stats) : score(vertex);
+        };
+        for (auto& v : vertices) { if (stop()) return Result::Cancelled; v.score = scoreVertex(v); }
         for (auto& t : triangles)
         { if (stop()) return Result::Cancelled; for (auto v : t.vertices) t.score += vertices[v].score; }
+        // A triangle can be reached through several vertices in the LRU cache.
+        // Its score depends only on the three vertex scores, which remain fixed
+        // throughout each selection/eviction phase. Reuse the exact value within
+        // that phase; do not eagerly refresh unrelated stale OSG scores.
+        std::uint64_t scoreGeneration = initialScoreGeneration ? initialScoreGeneration : 1;
+        std::vector<std::uint64_t> scoredAt;
+        if (reduceExactWork) scoredAt.assign(triangles.size(), scoreGeneration);
+        const auto advanceGeneration = [&] {
+            if (!reduceExactWork) return;
+            if (scoreGeneration == std::numeric_limits<std::uint64_t>::max())
+            {
+                std::fill(scoredAt.begin(), scoredAt.end(), 0);
+                scoreGeneration = 1;
+                ++stats.generationResets;
+            }
+            else ++scoreGeneration;
+        };
         // Connected meshes usually need only the first restart. Do not charge
         // heap maintenance to that common case; construct it only on the third
         // restart, using the exact then-current (including stale) OSG scores.
@@ -163,10 +249,21 @@ namespace SceneUtil::PagingVertexCache
                 if (stop()) { cancelled = true; break; }
                 const auto index = adjacency[i];
                 auto& t = triangles[index];
-                t.score = 0.f;
-                for (auto vertex : t.vertices) t.score += vertices[vertex].score;
-                ++stats.scoreUpdates;
-                if (heap) heap->changed(index);
+                if (reduceExactWork && scoredAt[index] == scoreGeneration)
+                    ++stats.scoreReuses;
+                else
+                {
+                    const float previous = t.score;
+                    t.score = 0.f;
+                    for (auto vertex : t.vertices) t.score += vertices[vertex].score;
+                    ++stats.scoreUpdates;
+                    if (reduceExactWork) scoredAt[index] = scoreGeneration;
+                    if (heap)
+                    {
+                        if (reduceExactWork && t.score == previous) ++stats.unchangedHeapUpdates;
+                        else heap->changed(index);
+                    }
+                }
                 if (t.score > bestScore) { bestScore = t.score; bestTriangle = index; }
             }
             return std::pair{bestTriangle, bestScore};
@@ -222,7 +319,8 @@ namespace SceneUtil::PagingVertexCache
             if (32 - cache.size() < 3)
             {
                 for (auto it = cache.end() - 3; it != cache.end(); ++it)
-                { vertices[*it].cachePosition = -1; vertices[*it].score = score(vertices[*it]); }
+                { vertices[*it].cachePosition = -1; vertices[*it].score = scoreVertex(vertices[*it]); }
+                advanceGeneration();
                 for (auto it = cache.end() - 3; it != cache.end(); ++it)
                 { update(vertices[*it]); if (cancelled) return Result::Cancelled; }
             }
@@ -240,7 +338,8 @@ namespace SceneUtil::PagingVertexCache
             }
             std::copy(t.vertices.begin(), t.vertices.end(), cache.begin());
             for (std::size_t i = 0; i < cache.size(); ++i)
-            { vertices[cache[i]].cachePosition = static_cast<int>(i); vertices[cache[i]].score = score(vertices[cache[i]]); }
+            { vertices[cache[i]].cachePosition = static_cast<int>(i); vertices[cache[i]].score = scoreVertex(vertices[cache[i]]); }
+            advanceGeneration();
         }
         if (stop()) return Result::Cancelled;
         output.swap(result);

@@ -1,14 +1,69 @@
 #include "terraindrawable.hpp"
 
+
+#include <algorithm>
 #include <osg/ClusterCullingCallback>
 #include <osgUtil/CullVisitor>
 
 #include <components/sceneutil/lightmanager.hpp>
+#include <components/sceneutil/drawphasetrace.hpp>
+#include <components/resource/texturestreaming.hpp>
+#include <components/resource/assetpolicy.hpp>
 
 #include "compositemaprenderer.hpp"
 
 namespace Terrain
 {
+    namespace
+    {
+        struct SampledPass
+        {
+            const TerrainDrawable* drawable = nullptr;
+            const osg::StateSet* pass = nullptr;
+        };
+        thread_local SampledPass sSampledPass;
+
+        class PassScope
+        {
+        public:
+            PassScope(const TerrainDrawable& drawable, const osg::StateSet* pass)
+                : mPrevious(sSampledPass)
+            {
+                sSampledPass = { &drawable, pass };
+            }
+            ~PassScope() { sSampledPass = mPrevious; }
+        private:
+            SampledPass mPrevious;
+        };
+
+        class PassDrawable final : public osg::Geometry
+        {
+        public:
+            PassDrawable(TerrainDrawable& drawable, const osg::StateSet* pass)
+                : osg::Geometry(drawable, osg::CopyOp::SHALLOW_COPY)
+                , mDrawable(&drawable), mPass(pass)
+            {
+                // The original manages its callback, VBO/VAO and display lists.
+                // This leaf contributes only retained ownership and exact pass.
+                // Shipped OSG's OSGUTIL_RENDERBACKEND_USE_REF_PTR RenderLeaf
+                // retains this adapter until submission reset; its strong
+                // original reference preserves geometry through that draw.
+                setDrawCallback(nullptr);
+                setUseDisplayList(false);
+                // Geometry's override may assign buffer objects to shared
+                // arrays, even when disabling VBOs. Do not mutate source data.
+                osg::Drawable::setUseVertexBufferObjects(false);
+                setUseVertexArrayObject(false);
+            }
+            void drawImplementation(osg::RenderInfo& info) const override { mDrawable->drawPass(info, mPass); }
+            void compileGLObjects(osg::RenderInfo& info) const override { mDrawable->compileGeometryGLObjects(info); }
+            void releaseGLObjects(osg::State* state) const override { mDrawable->releaseGLObjects(state); }
+            void resizeGLObjectBuffers(unsigned size) override { mDrawable->resizeGLObjectBuffers(size); }
+        private:
+            osg::ref_ptr<TerrainDrawable> mDrawable;
+            osg::ref_ptr<const osg::StateSet> mPass;
+        };
+    }
 
     TerrainDrawable::TerrainDrawable() {}
 
@@ -61,6 +116,7 @@ namespace Terrain
 
     void TerrainDrawable::cull(osgUtil::CullVisitor* cv)
     {
+        SceneUtil::DrawPhaseTrace::SubmissionScope submission(*cv, *this);
         const osg::BoundingBox& bb = getBoundingBox();
 
         if (_cullingActive && cv->isCulled(getBoundingBox()))
@@ -102,10 +158,26 @@ namespace Terrain
         if (stateset)
             cv->pushStateSet(stateset);
 
-        for (PassVector::const_iterator it = mPasses.begin(); it != mPasses.end(); ++it)
+        for (std::size_t i = 0; i < mPasses.size(); ++i)
         {
-            cv->pushStateSet(*it);
-            cv->addDrawableAndDepth(this, &matrix, depth);
+            cv->pushStateSet(mPasses[i]);
+            if (Resource::AssetPolicy::enabled(Resource::AssetPolicy::TexturePreparation
+                    | Resource::AssetPolicy::TextureStreaming))
+            {
+                osg::ref_ptr<osg::Geometry> drawable;
+                {
+                    std::lock_guard lock(mPassDrawableMutex);
+                    mPassDrawables.resize(mPasses.size());
+                    if (!mPassDrawables[i].lock(drawable))
+                    {
+                        drawable = new PassDrawable(*this, mPasses[i]);
+                        mPassDrawables[i] = drawable;
+                    }
+                }
+                cv->addDrawableAndDepth(drawable, &matrix, depth);
+            }
+            else
+                cv->addDrawableAndDepth(this, &matrix, depth);
             cv->popStateSet();
         }
 
@@ -123,6 +195,8 @@ namespace Terrain
     void TerrainDrawable::setPasses(const TerrainDrawable::PassVector& passes)
     {
         mPasses = passes;
+        std::lock_guard lock(mPassDrawableMutex);
+        mPassDrawables.clear();
     }
 
     void TerrainDrawable::setLightListCallback(SceneUtil::LightListCallback* lightListCallback)
@@ -152,6 +226,21 @@ namespace Terrain
     void TerrainDrawable::compileGeometryGLObjects(osg::RenderInfo& renderInfo) const
     {
         osg::Geometry::compileGLObjects(renderInfo);
+    }
+
+    void TerrainDrawable::drawImplementation(osg::RenderInfo& renderInfo) const
+    {
+        osg::Geometry::drawImplementation(renderInfo);
+        if(auto* state=renderInfo.getState();state && sSampledPass.drawable==this && sSampledPass.pass
+            && std::any_of(getPrimitiveSetList().begin(),getPrimitiveSetList().end(),
+            [](const auto& primitive) { return primitive && primitive->getNumIndices()>=3; }))
+            Resource::TextureStreaming::recordDrawUse(*state,sSampledPass.pass);
+    }
+
+    void TerrainDrawable::drawPass(osg::RenderInfo& renderInfo, const osg::StateSet* pass) const
+    {
+        PassScope scope(*this, pass);
+        draw(renderInfo);
     }
 
     void TerrainDrawable::compileGLObjects(osg::RenderInfo& renderInfo) const

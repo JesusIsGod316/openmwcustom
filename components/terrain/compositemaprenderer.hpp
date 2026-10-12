@@ -2,21 +2,38 @@
 #define OPENMW_COMPONENTS_TERRAIN_COMPOSITEMAPRENDERER_H
 
 #include <osg/Drawable>
+#include <osg/observer_ptr>
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <mutex>
 #include <set>
+#include <memory>
+#include <string_view>
+#include <vector>
+#include <components/resource/speculativebudget.hpp>
+#include "compositeprogress.hpp"
+
+namespace Resource
+{
+    class OpenMWIncrementalCompileOperation;
+    class P9DiscretionaryAdmission;
+}
 
 namespace osg
 {
     class FrameBufferObject;
     class RenderInfo;
     class Texture2D;
+    class State;
+    class GraphicsContext;
 }
 
 namespace Terrain
 {
+    struct CompositePreparation;
+    struct CompositeStepBudget;
 
     class CompositeMap : public osg::Referenced
     {
@@ -26,9 +43,34 @@ namespace Terrain
         std::vector<osg::ref_ptr<osg::Drawable>> mDrawables;
         osg::ref_ptr<osg::Texture2D> mTexture;
         size_t mCompiled;
+        // Private terrain producer contract, set before queue publication.
+        // Arbitrary external maps retain per-layer caller restoration.
+        bool mBatchingEligible = false;
         // Requiredness survives removal from the queue while the GL thread works.
         // The cull thread must not lose its promotion when a map is in flight.
         std::atomic_bool mRequired{false};
+        // Built/advanced on the owning draw context; demand is the only cull
+        // mutation. The generation rejects queued producers after cancellation.
+        std::shared_ptr<CompositePreparation> mPreparation;
+        std::atomic_uint64_t mPreparationGeneration{0};
+        // Immutable producer receipt. Zero outside Deep diagnostics.
+        std::uint64_t mPreparationReceipt = 0;
+        unsigned mQueuedFrame = 0;
+        bool mQueueFrameKnown = false;
+        // Only the draw owner reads/writes wait state. ICO completion publishes
+        // a generation through a weak map reference, without renderer locks.
+        std::atomic_uint64_t mProgressWake{1};
+        // Immutable publication or draw-owner timestamps, readable by cull for
+        // the one first-demand receipt. Zero means that stage is unobserved.
+        std::atomic_uint64_t mProgressAdmittedTick{0}, mProgressFirstLayerTick{0}, mProgressCompletedTick{0};
+        std::atomic_uint64_t mProgressReceiptGeneration{0};
+        CompositeProgressWait mProgressWait;
+        CompositeProgressWait::Reason mProgressRefusal = CompositeProgressWait::Reason::None;
+        // Last actual cached predicate check, never a later reconstructed OS
+        // sample. Producer writes occur before publication; then draw owns it.
+        CompositePressureEvidence mProgressPressure;
+        std::uint64_t mPressureReceiptGeneration = 0, mPressureReceiptSignature = 0;
+        bool mPressureReceiptKnown = false;
     };
 
     /**
@@ -47,6 +89,30 @@ namespace Terrain
         void drawImplementation(osg::RenderInfo& renderInfo) const override;
 
         void compile(CompositeMap& compositeMap, osg::RenderInfo& renderInfo) const;
+        void configurePreparation(Resource::OpenMWIncrementalCompileOperation* ico,
+            Resource::SpeculativeScope::Context pressure = {});
+        bool preparationEnabled() const { return mPreparationEnabled; }
+        bool producerPreparationEnabled() const { return mPreparationEnabled && mProducerPreparationEnabled; }
+        // Call only at the terrain producer seam, before queue publication and
+        // after its consumer StateSets own the output. This builds descriptors,
+        // not GL objects; the existing ICO executes them on its own context.
+        void prepareAtCreation(CompositeMap& map) const;
+        bool compositeBatchEnabled() const { return mCompositeBatchEnabled; }
+        void releaseGLObjects(osg::State* state = nullptr) const override;
+        struct PreparationStats
+        {
+            std::uint64_t scheduled = 0, invalidated = 0, cancelled = 0, requiredFallbacks = 0;
+            std::uint64_t ageProgress = 0, budgetYields = 0;
+            std::uint64_t dependencyWaves = 0, pressureYields = 0;
+            std::uint64_t descriptorBuilds = 0, capacityDeclines = 0, polls = 0, parkedSkips = 0;
+            std::uint64_t consumedLayers = 0, completedMaps = 0;
+            std::array<std::uint64_t, 10> pressureRefusals{};
+            std::array<std::uint64_t, 5> pressureStates{};
+            std::uint64_t pressureRefusalChecks = 0, pressureUnreportedState = 0;
+            std::size_t pendingBytes = 0;
+            double chargedMs = 0;
+        };
+        PreparationStats preparationStats() const;
 
         // Startup only. The limit is cooperative between drawables, not a
         // preemptive GL deadline; a single driver call can still overrun it.
@@ -80,7 +146,23 @@ namespace Terrain
         };
         void compileUntil(CompositeMap& compositeMap, osg::RenderInfo& renderInfo, Deadline deadline,
             CompileTelemetry* telemetry = nullptr) const;
+        bool prepare(CompositeMap& map, osg::RenderInfo& info) const;
+        bool schedulePreparation(CompositeMap& map, osg::GraphicsContext* context, bool atCreation = false) const;
+        bool scheduleStepPreparation(CompositeMap& map, osg::GraphicsContext* context, bool atCreation) const;
+        bool scheduleDependencyWave(CompositeMap& map, osg::GraphicsContext* context) const;
+        bool dependenciesReady(const CompositeMap& map, osg::State& state) const;
+        bool preparationSupported(const osg::State& state) const;
+        bool progressEnabled() const;
+        bool checkStepPressure(CompositeMap& map, const Resource::SpeculativeScope::Context& pressure,
+            std::string_view stage) const;
+        void advanceBackground(osg::RenderInfo& info, Deadline deadline, unsigned frame,
+            CompileTelemetry* telemetry, std::unique_lock<std::mutex>& lock) const;
+        void retirePreparations() const;
         bool mCooperativeBackgroundCompile = false;
+        const bool mCompositeBatchEnabled;
+        const bool mProducerPreparationEnabled;
+        const bool mIncrementalPreparationEnabled;
+        const bool mCpuMipUseEvidenceEnabled;
         mutable std::atomic_uint64_t mBackgroundYields{0};
         float mTargetFrameRate;
         double mMinimumTimeAvailable;
@@ -90,10 +172,32 @@ namespace Terrain
 
         mutable CompileSet mCompileSet;
         mutable CompileSet mImmediateCompileSet;
+        mutable osg::observer_ptr<CompositeMap> mProgressCursor;
 
         mutable std::mutex mMutex;
 
         osg::ref_ptr<osg::FrameBufferObject> mFBO;
+        bool mPreparationEnabled = false;
+        osg::ref_ptr<Resource::OpenMWIncrementalCompileOperation> mICO;
+        std::shared_ptr<Resource::P9DiscretionaryAdmission> mAdmission;
+        Resource::SpeculativeScope::Context mPressureContext;
+        std::shared_ptr<CompositeStepBudget> mStepBudget;
+        mutable std::vector<osg::observer_ptr<CompositeMap>> mPendingStepPreparations;
+        mutable std::vector<osg::ref_ptr<CompositeMap>> mPendingPreparations;
+        mutable std::mutex mPreparationMutex;
+        mutable std::atomic_size_t mPreparationBytes{0};
+        mutable std::atomic_uint64_t mPreparationScheduled{0};
+        mutable std::atomic_uint64_t mDependencyWaves{0}, mPressureYields{0};
+        mutable std::atomic_uint64_t mDescriptorBuilds{0}, mCapacityDeclines{0};
+        mutable PreparationStats mPreparationStats;
+        mutable double mBakeEmaMs = 0.25, mBakeRiskMs = 0.25;
+        mutable unsigned mBakeSamples = 0;
+        mutable double mFboEmaMs = 0.25, mFboRiskMs = 0.25;
+        mutable unsigned mFboSamples = 0;
+        mutable double mBatchCleanupEmaMs = 0.25, mBatchCleanupRiskMs = 0.25;
+        mutable unsigned mBatchCleanupSamples = 0;
+        static constexpr std::size_t sMaxPreparationBytes = 32u * 1024u * 1024u;
+        static constexpr std::size_t sMaxPreparationMaps = 8;
     };
 
 }

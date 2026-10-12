@@ -1,4 +1,5 @@
 #include "morphgeometry.hpp"
+#include "temporalmotionidentity.hpp"
 #include "dynamicstream.hpp"
 #include "deformationintersectionvisitor.hpp"
 
@@ -37,6 +38,8 @@ namespace SceneUtil
         mSourceGeometry = sourceGeom;
         mGeometryEvaluated = false;
         mDirty = true;
+        osg::ref_ptr<TemporalMotionIdentity> motionIdentity = temporalDynamicMotionEnabled()
+            ? new TemporalMotionIdentity : nullptr;
 
         for (unsigned int i = 0; i < 2; ++i)
         {
@@ -47,6 +50,7 @@ namespace SceneUtil
             // - Arrays that we add or replace in the cloned geometry must be explicitely forbidden from reusing
             // BufferObjects of the original geometry. (ensured by vbo below)
             mGeometry[i] = new osg::Geometry(*mSourceGeometry, osg::CopyOp::SHALLOW_COPY);
+            if (motionIdentity) installTemporalMotionIdentity(*mGeometry[i], motionIdentity);
             mGeometry[i]->getOrCreateUserDataContainer()->addUserObject(new Resource::TemplateRef(mSourceGeometry));
 
             const osg::Geometry& from = *mSourceGeometry;

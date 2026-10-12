@@ -135,6 +135,35 @@ local function updateSmoothedSpeed(dt)
 end
 
 local minDistance = 30
+local invalidZoomLimitReported = false
+
+local function validZoomLimit(value)
+    return type(value) == 'number' and value == value and value >= minDistance and value < math.huge
+end
+
+local function zoomLimitReady()
+    if validZoomLimit(maxDistance) then
+        invalidZoomLimitReported = false
+        return true
+    end
+    -- The player storage snapshot can precede registration/default propagation
+    -- from the menu script. Retry the actual value; never replace user settings
+    -- with a guessed default or overwrite permanent storage.
+    local observed = settings:get('maxDistance')
+    if validZoomLimit(observed) then
+        maxDistance = observed
+        invalidZoomLimitReported = false
+        return true
+    end
+    if not invalidZoomLimitReported then
+        local registered = storage.playerSection('OmwSettingGroups'):get('SettingsOMWCameraThirdPerson') ~= nil
+        print(('Camera zoom limit unavailable: cached=%s (%s), observed=%s (%s), registered=%s; '
+            .. 'distance adjustment deferred until storage is ready'):format(
+            tostring(maxDistance), type(maxDistance), tostring(observed), type(observed), tostring(registered)))
+        invalidZoomLimitReported = true
+    end
+    return false
+end
 
 local function zoom(delta)
     if not Player.getControlSwitch(self, Player.CONTROL_SWITCH.ViewMode) or
@@ -149,6 +178,7 @@ local function zoom(delta)
             primaryMode = MODE.FirstPerson
             camera.setMode(primaryMode)
         elseif delta > 0 or obstacleDelta < -delta then
+            if not zoomLimitReady() then return end
             third_person.baseDistance = util.clamp(third_person.baseDistance - delta - obstacleDelta, minDistance,
                 maxDistance)
         end

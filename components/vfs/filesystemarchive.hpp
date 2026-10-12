@@ -16,6 +16,7 @@ namespace VFS
         FileSystemArchiveFile(const std::filesystem::path& path);
 
         Files::IStreamPtr open() override;
+        std::optional<SourceOpenEstimate> getOpenEstimate() const override;
 
         std::filesystem::file_time_type getLastModified() const override;
         std::optional<std::filesystem::path> getMetadataPath() const override

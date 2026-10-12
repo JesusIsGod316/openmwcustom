@@ -1,9 +1,12 @@
 #include "scriptscontainer.hpp"
+#include <components/debug/hitchtrace.hpp>
 
 #include "scripttracker.hpp"
 
 #include <iomanip>
 #include <sstream>
+#include <cmath>
+#include <limits>
 
 #include <components/debug/v35lualoadtrace.hpp>
 #include <components/debug/v36luaaddscripttrace.hpp>
@@ -37,6 +40,7 @@ namespace LuaUtil
         LuaUtil::LuaState* lua, std::string_view namePrefix, ScriptTracker* tracker, bool load)
         : mNamePrefix(namePrefix)
         , mLua(*lua)
+        , mLazyInstructionStatistics(lua->getSettings().mLazyInstructionStatistics)
         , mThis(std::make_shared<ScriptsContainer*>(this))
         , mTracker(tracker)
     {
@@ -80,6 +84,7 @@ namespace LuaUtil
 
     void ScriptsContainer::addAutoStartedScripts()
     {
+        Debug::HitchTrace::Scope hitchAutostart("lua.container_autostart", mNamePrefix);
         mLua.protectedCall([&](LuaView& view) {
             for (const auto& [scriptId, data] : mAutoStartScripts)
             {
@@ -95,6 +100,8 @@ namespace LuaUtil
         LuaView& view, int scriptId, std::optional<sol::function>& onInit, std::optional<sol::function>& onLoad)
     {
         assert(scriptId >= 0 && scriptId < static_cast<int>(mLua.getConfiguration().size()));
+        Debug::HitchTrace::Scope hitchAdd("lua.add_script", Debug::HitchTrace::CpuTiming::Scoped, mNamePrefix,
+            Debug::HitchTrace::requested() ? scriptPath(scriptId).value() : std::string_view{});
         if (hasScript(scriptId))
             return false; // already present
 
@@ -109,13 +116,15 @@ namespace LuaUtil
         debugName.push_back(']');
 
         Debug::V36LuaAddScriptTrace::ScriptScope v36ScriptTrace(mNamePrefix, path.value());
-        const auto v36HiddenStart = Debug::V3Diagnostics::Clock::now();
+        const auto v36HiddenStart = Debug::V36LuaAddScriptTrace::startPhase();
         Script& script = data.mScripts[scriptId];
         script.mHiddenData = view.newTable();
         script.mHiddenData[sScriptIdKey] = ScriptId{ this, scriptId };
         script.mHiddenData[sScriptDebugNameKey] = debugName;
         script.mPath = path;
         script.mStats.mAvgInstructionCount = 0;
+        script.mStats.mFrameInstructionCount = 0;
+        script.mStatsFrame = mStatsFrame;
 
         const auto oldMemoryUsageIt = mRemovedScriptsMemoryUsage.find(scriptId);
         if (oldMemoryUsageIt != mRemovedScriptsMemoryUsage.end())
@@ -130,17 +139,35 @@ namespace LuaUtil
         try
         {
             const sol::main_table* packagePrototype = nullptr;
-            if (mLua.getPackagePrototypeReuse())
             {
-                if (!mV314PackagePrototype)
-                    mV314PackagePrototype.emplace(mLua.makePackagePrototype(mAPI));
-                packagePrototype = &*mV314PackagePrototype;
+                Debug::HitchTrace::Scope packages("lua.script.packages", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                    mNamePrefix, path.value());
+                if (mLua.getPackagePrototypeReuse())
+                {
+                    if (mLua.getPackageDescriptorReuse()
+                        && mPackagePrototypeCommonGeneration != mLua.commonPackageGeneration())
+                        mV314PackagePrototype.reset();
+                    if (!mV314PackagePrototype)
+                    {
+                        mV314PackagePrototype.emplace(mLua.makePackagePrototype(mAPI));
+                        mPackagePrototypeCommonGeneration = mLua.commonPackageGeneration();
+                    }
+                    packagePrototype = &*mV314PackagePrototype;
+                }
             }
-            sol::object scriptOutput = mLua.runInNewSandbox(
-                path, debugName, mAPI, script.mHiddenData, packagePrototype, ScriptId{ this, scriptId });
+            sol::object scriptOutput;
+            {
+                Debug::HitchTrace::Scope sandbox("lua.script.sandbox", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                    mNamePrefix, path.value());
+                scriptOutput = mLua.runInNewSandbox(
+                    path, debugName, mAPI, script.mHiddenData, packagePrototype, ScriptId{ this, scriptId }, true);
+            }
             if (scriptOutput == sol::nil)
                 return true;
-            const auto v36HandlersStart = Debug::V3Diagnostics::Clock::now();
+            const auto v36HandlersStart = Debug::V36LuaAddScriptTrace::startPhase();
+            std::optional<Debug::HitchTrace::Scope> handlersAttribution;
+            handlersAttribution.emplace("lua.script.extract_handlers", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                mNamePrefix, path.value());
             sol::object engineHandlers = sol::nil, eventHandlers = sol::nil;
             for (const auto& [key, value] : cast<sol::table>(scriptOutput))
             {
@@ -192,9 +219,10 @@ namespace LuaUtil
                 }
             }
 
+            handlersAttribution.reset();
             Debug::V36LuaAddScriptTrace::add(
                 Debug::V36LuaAddScriptTrace::Phase::HandlerExtraction, v36HandlersStart);
-            const auto v36InterfaceStart = Debug::V3Diagnostics::Clock::now();
+            const auto v36InterfaceStart = Debug::V36LuaAddScriptTrace::startPhase();
             if (script.mInterfaceName.empty() == script.mInterface.has_value())
             {
                 Log(Debug::Error) << debugName << ": 'interfaceName' should always be used together with 'interface'";
@@ -372,20 +400,69 @@ namespace LuaUtil
 
     void ScriptsContainer::receiveEvent(std::string_view eventName, std::string_view eventData)
     {
+        const bool diagnostic = Debug::HitchTrace::requested();
+        // Parent identifies container/event; nested handlers identify event/script.
+        Debug::HitchTrace::Scope dispatch("lua.event.dispatch", Debug::HitchTrace::CpuTiming::WallEnvelope,
+            mNamePrefix, eventName);
+        dispatch.setMetric(0, "payload_bytes", eventData.size());
+        std::uint64_t invokedHandlers = 0;
+        if (diagnostic)
+        {
+            dispatch.setMetric(1, "handler_count", 0);
+            dispatch.setMetric(2, "decode_outcome", 0); // 0 unattempted, 1 decoded, 2 error, 3 empty/nil.
+            dispatch.setMetric(3, "invoked_handlers", invokedHandlers);
+        }
         Debug::V33LuaTrace::CallbackScope v33DispatchTrace(
             "lua_event_dispatch", eventName, mNamePrefix, -1, "", eventName);
         LoadedData& data = ensureLoaded();
         auto it = data.mEventHandlers.find(eventName);
         if (it == data.mEventHandlers.end())
             return;
+        dispatch.setMetric(1, "handler_count", it->second.size());
         mLua.protectedCall([&](LuaView& view) {
             sol::object object;
             try
             {
-                object = LuaUtil::deserialize(view.sol(), eventData, mSerializer);
+                Debug::HitchTrace::Scope deserializeEvent("lua.event.deserialize",
+                    Debug::HitchTrace::CpuTiming::WallEnvelope, mNamePrefix, eventName);
+                deserializeEvent.setMetric(0, "payload_bytes", eventData.size());
+                if (diagnostic)
+                {
+                    deserializeEvent.setLink(dispatch.id());
+                    DeserializeMetrics metrics;
+                    auto publishMetrics = [&] {
+                        deserializeEvent.setMetric(1, "value_count", metrics.values);
+                        deserializeEvent.setMetric(2, "table_count", metrics.tables);
+                        deserializeEvent.setMetric(3, "max_depth", metrics.maxDepth);
+                        const auto start = deserializeEvent.startNs();
+                        const auto end = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            Debug::HitchTrace::Clock::now().time_since_epoch()).count();
+                        Debug::DiagnosticObserver::count(Debug::DiagnosticObserver::Category::LuaDecodeTimerBoundary);
+                        // A single supplemental row only for slow decodes,
+                        // including slow failures. Fast events add no forced
+                        // metadata rows, even if another child keeps dispatch.
+                        if (start && end - start >= 250000)
+                        {
+                            Debug::HitchTrace::Scope shape("lua.event.payload_shape", Debug::HitchTrace::CpuTiming::None,
+                                mNamePrefix, eventName);
+                            shape.setLink(deserializeEvent.id());
+                            shape.setMetric(0, "string_count", metrics.strings);
+                            shape.setMetric(1, "string_bytes", metrics.stringBytes);
+                            shape.setMetric(2, "custom_values", metrics.customValues);
+                            shape.setMetric(3, "custom_bytes", metrics.customBytes);
+                            shape.retain();
+                        }
+                    };
+                    try { object = LuaUtil::deserializeWithMetrics(view.sol(), eventData, metrics, mSerializer); }
+                    catch (...) { dispatch.setMetric(2, "decode_outcome", 2); publishMetrics(); throw; }
+                    publishMetrics();
+                    dispatch.setMetric(2, "decode_outcome", eventData.empty() ? 3 : 1);
+                }
+                else object = LuaUtil::deserialize(view.sol(), eventData, mSerializer);
             }
             catch (std::exception& e)
             {
+                if (diagnostic) dispatch.setMetric(2, "decode_outcome", 2);
                 Log(Debug::Error) << mNamePrefix << " can not parse eventData for '" << eventName << "': " << e.what();
                 return;
             }
@@ -395,6 +472,12 @@ namespace LuaUtil
                 const Handler& h = list[i - 1];
                 try
                 {
+                    Debug::HitchTrace::Scope handler("lua.event.handler", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                        eventName, diagnostic ? scriptPath(h.mScriptId).value() : std::string_view{});
+                    if (diagnostic) handler.setLink(dispatch.id());
+                    handler.setMetric(0, "script_id", h.mScriptId);
+                    handler.setMetric(1, "reverse_index", i - 1);
+                    if (diagnostic) dispatch.setMetric(3, "invoked_handlers", ++invokedHandlers);
                     const std::string_view v33ScriptPath = Debug::V33LuaTrace::enabled()
                         ? std::string_view(scriptPath(h.mScriptId).value())
                         : std::string_view{};
@@ -402,7 +485,10 @@ namespace LuaUtil
                         "lua_event_handler", eventName, mNamePrefix, h.mScriptId, v33ScriptPath, eventName);
                     sol::object res = LuaUtil::call({ this, h.mScriptId }, h.mFn, object);
                     if (res.is<bool>() && !res.as<bool>())
+                    {
+                        handler.setMetric(2, "stopped_dispatch", 1);
                         break; // Skip other handlers if 'false' was returned.
+                    }
                 }
                 catch (std::exception& e)
                 {
@@ -421,6 +507,8 @@ namespace LuaUtil
 
     void ScriptsContainer::callOnInit(LuaView& view, int scriptId, const sol::function& onInit, std::string_view data)
     {
+        Debug::HitchTrace::Scope hitchInit("lua.on_init", mNamePrefix,
+            Debug::HitchTrace::requested() ? scriptPath(scriptId).value() : std::string_view{});
         try
         {
             LuaUtil::call({ this, scriptId }, onInit, deserialize(view.sol(), data, mSerializer));
@@ -490,6 +578,7 @@ namespace LuaUtil
 
     void ScriptsContainer::load(const ESM::LuaScripts& data)
     {
+        Debug::HitchTrace::Scope loadSaved("lua.load.saved_data", Debug::HitchTrace::CpuTiming::WallEnvelope, mNamePrefix);
         removeAllScripts();
         const ScriptsConfiguration& cfg = mLua.getConfiguration();
 
@@ -559,6 +648,7 @@ namespace LuaUtil
 
     ScriptsContainer::LoadedData& ScriptsContainer::ensureLoaded()
     {
+        Debug::HitchTrace::Scope loaded("lua.ensure_loaded", mNamePrefix);
         mRequiredLoading = true;
         if (LoadedData* data = std::get_if<LoadedData>(&mData))
             return *data;
@@ -567,6 +657,7 @@ namespace LuaUtil
         LoadedData* dataPtr = nullptr;
         std::map<int, ScriptInfo> scripts;
         {
+            Debug::HitchTrace::Scope prepare("lua.load.prepare", Debug::HitchTrace::CpuTiming::WallEnvelope, mNamePrefix);
             Debug::V35LuaLoadTrace::PhaseScope v35Prepare(Debug::V35LuaLoadTrace::Phase::Prepare);
             UnloadedData& unloadedData = std::get<UnloadedData>(mData);
             savedScripts = std::move(unloadedData.mScripts);
@@ -590,6 +681,7 @@ namespace LuaUtil
 
         mLua.protectedCall([&](LuaView& view) {
             {
+                Debug::HitchTrace::Scope interfaces("lua.load.interfaces", Debug::HitchTrace::CpuTiming::WallEnvelope, mNamePrefix);
                 Debug::V35LuaLoadTrace::PhaseScope v35Interfaces(Debug::V35LuaLoadTrace::Phase::Interfaces);
                 data.mPublicInterfaces = sol::table(view.sol(), sol::create);
                 addPackage("openmw.interfaces", makeReadOnly(data.mPublicInterfaces));
@@ -615,6 +707,8 @@ namespace LuaUtil
                 }
                 if (onLoad)
                 {
+                    Debug::HitchTrace::Scope restore("lua.on_load", mNamePrefix,
+                        Debug::HitchTrace::requested() ? scriptPath(scriptId).value() : std::string_view{});
                     Debug::V35LuaLoadTrace::PhaseScope v35Load(Debug::V35LuaLoadTrace::Phase::InitLoad);
                     try
                     {
@@ -628,6 +722,10 @@ namespace LuaUtil
                     }
                 }
                 {
+                    Debug::HitchTrace::Scope restoreTimers("lua.load.restore_timers",
+                        Debug::HitchTrace::CpuTiming::WallEnvelope, mNamePrefix,
+                        Debug::HitchTrace::requested() ? scriptPath(scriptId).value() : std::string_view{});
+                    restoreTimers.setMetric(0, "saved_timer_count", scriptInfo.mSavedData->mTimers.size());
                     Debug::V35LuaLoadTrace::PhaseScope v35Timers(Debug::V35LuaLoadTrace::Phase::Timers);
                     for (const ESM::LuaTimer& savedTimer : scriptInfo.mSavedData->mTimers)
                     {
@@ -659,6 +757,9 @@ namespace LuaUtil
         });
 
         {
+            Debug::HitchTrace::Scope heaps("lua.load.timer_heaps", Debug::HitchTrace::CpuTiming::WallEnvelope, mNamePrefix);
+            heaps.setMetric(0, "simulation_queue", data.mSimulationTimersQueue.size());
+            heaps.setMetric(1, "game_queue", data.mGameTimersQueue.size());
             Debug::V35LuaLoadTrace::PhaseScope v35Heap(Debug::V35LuaLoadTrace::Phase::Heap);
             std::make_heap(data.mSimulationTimersQueue.begin(), data.mSimulationTimersQueue.end());
             std::make_heap(data.mGameTimersQueue.begin(), data.mGameTimersQueue.end());
@@ -800,10 +901,31 @@ namespace LuaUtil
 
     unsigned ScriptsContainer::updateTimerQueue(std::vector<Timer>& timerQueue, double time, TimerType type)
     {
+        const std::string_view domain = type == TimerType::SIMULATION_TIME ? "simulation" : "game";
+        Debug::HitchTrace::Scope queue("lua.timer.queue", Debug::HitchTrace::CpuTiming::WallEnvelope, mNamePrefix, domain);
+        queue.setMetric(0, "queue_before", timerQueue.size());
         unsigned fired = 0;
         while (!timerQueue.empty() && timerQueue.front().mTime <= time)
         {
             const Timer& timer = timerQueue.front();
+            Debug::HitchTrace::Scope delivery("lua.timer.deliver", Debug::HitchTrace::CpuTiming::WallEnvelope,
+                Debug::HitchTrace::requested()
+                    ? (timer.mSerializable ? std::string_view(std::get<std::string>(timer.mCallback)) : "<unsavable>")
+                    : std::string_view{},
+                Debug::HitchTrace::requested() ? scriptPath(timer.mScriptId).value() : std::string_view{});
+            delivery.setMetric(0, "queue_length", timerQueue.size());
+            delivery.setMetric(1, "script_id", timer.mScriptId);
+            delivery.setMetric(2, "serializable", timer.mSerializable);
+            if (Debug::HitchTrace::requested())
+            {
+                // Both supplied time domains are in seconds. Bound conversion
+                // for unusual non-finite/very large script-scheduled values.
+                const double lateness = std::max(0.0, time - timer.mTime);
+                const auto maximum = std::numeric_limits<std::uint64_t>::max();
+                const double micros = lateness * 1e6;
+                delivery.setMetric(3, "lateness_us", !std::isfinite(micros) || micros >= static_cast<double>(maximum)
+                    ? maximum : static_cast<std::uint64_t>(micros));
+            }
             std::string callbackName;
             std::string detail;
             std::string_view scriptPathValue;
@@ -826,11 +948,14 @@ namespace LuaUtil
             timerQueue.pop_back();
             ++fired;
         }
+        queue.setMetric(1, "queue_after", timerQueue.size());
+        queue.setMetric(2, "fired", fired);
         return fired;
     }
 
     void ScriptsContainer::processTimers(double simulationTime, double gameTime, bool idleTimerFastPath)
     {
+        Debug::HitchTrace::Scope timers("lua.timer.process", Debug::HitchTrace::CpuTiming::WallEnvelope, mNamePrefix);
         if (LoadedData* data = std::get_if<LoadedData>(&mData))
         {
             const bool simulationDue
@@ -838,6 +963,7 @@ namespace LuaUtil
             const bool gameDue = !data->mGameTimersQueue.empty() && data->mGameTimersQueue.front().mTime <= gameTime;
             if (idleTimerFastPath && !simulationDue && !gameDue)
             {
+                timers.setMetric(0, "idle_fast_path", 1);
                 Debug::V33LuaTrace::recordTimerContainer(false, true, 0, 0);
                 return;
             }
@@ -855,14 +981,105 @@ namespace LuaUtil
             gameFired = updateTimerQueue(data.mGameTimersQueue, gameTime, TimerType::GAME_TIME);
         });
         Debug::V33LuaTrace::recordTimerContainer(due, false, simulationFired, gameFired);
+        timers.setMetric(1, "simulation_fired", simulationFired);
+        timers.setMetric(2, "game_fired", gameFired);
     }
 
     static constexpr float instructionCountAvgCoef = 1.0f / 30; // averaging over approximately 30 frames
 
-    void ScriptsContainer::statsNextFrame()
+    float ScriptsContainer::decayedInstructionCount(const Script& script, std::uint64_t& steps) const
     {
+        assert(script.mStatsFrame <= mStatsFrame);
+        std::uint64_t frames = mStatsFrame - script.mStatsFrame;
+        float average = script.mStats.mAvgInstructionCount;
+        if (frames == 0)
+            return average;
+        if (average == 0)
+            return 0;
+        // Replay exactly the ordinary float operations instead of pow: folding
+        // them changes rounding and can change the existing <5 zero decision.
+        // Finite positive floats reach that cutoff within a few thousand steps,
+        // independent of the size of an idle epoch gap. No loop over idle frames
+        // remains after the average reaches zero. Reads do not write script state.
+        if (!std::isfinite(average))
+        {
+            average *= 1 - instructionCountAvgCoef;
+            ++steps;
+            return average < 5 ? 0 : average;
+        }
+        while (frames != 0)
+        {
+            --frames;
+            average *= 1 - instructionCountAvgCoef;
+            ++steps;
+            if (average < 5)
+                return 0;
+        }
+        return average;
+    }
+
+    void ScriptsContainer::materializeInstructionStats(Script& script)
+    {
+        if (script.mStatsFrame == mStatsFrame)
+            return;
+        script.mStats.mAvgInstructionCount
+            = decayedInstructionCount(script, mLua.mInstructionStatisticsWork.mWriteDecaySteps);
+        script.mStats.mFrameInstructionCount = 0;
+        script.mStatsFrame = mStatsFrame;
+    }
+
+    void ScriptsContainer::setLazyInstructionStatistics(bool enabled)
+    {
+        if (mLazyInstructionStatistics == enabled)
+            return;
         if (LoadedData* data = std::get_if<LoadedData>(&mData))
         {
+            for (auto& [scriptId, script] : data->mScripts)
+            {
+                materializeInstructionStats(script);
+                ++mLua.mInstructionStatisticsWork.mModeTransitionScriptVisits;
+            }
+        }
+        mLazyInstructionStatistics = enabled;
+    }
+
+    void ScriptsContainer::statsNextFrame()
+    {
+        auto& work = mLua.mInstructionStatisticsWork;
+        ++work.mContainerFrameBoundaries;
+        if (mLazyInstructionStatistics)
+            ++work.mLazyFrameBoundaries;
+        // Unsigned epoch wrap is handled before increment. The exceptional
+        // rebase performs the same one-frame decay/reset and retains current
+        // statistics, rather than accidentally reviving stale frame counts.
+        if (mStatsFrame == std::numeric_limits<std::uint64_t>::max())
+        {
+            if (LoadedData* data = std::get_if<LoadedData>(&mData))
+            {
+                for (auto& [scriptId, script] : data->mScripts)
+                {
+                    materializeInstructionStats(script);
+                    script.mStats.mAvgInstructionCount *= 1 - instructionCountAvgCoef;
+                    if (script.mStats.mAvgInstructionCount < 5)
+                        script.mStats.mAvgInstructionCount = 0;
+                    script.mStats.mFrameInstructionCount = 0;
+                    script.mStatsFrame = 0;
+                    ++work.mRebaseScriptVisits;
+                }
+            }
+            mStatsFrame = 0;
+            ++work.mEpochRebases;
+            return;
+        }
+        ++mStatsFrame;
+        if (LoadedData* data = std::get_if<LoadedData>(&mData))
+        {
+            if (mLazyInstructionStatistics)
+            {
+                work.mLazyScriptVisitsAvoided += data->mScripts.size();
+                return;
+            }
+            work.mOrdinaryScriptVisits += data->mScripts.size();
             for (auto& [scriptId, script] : data->mScripts)
             {
                 // The averaging formula is: averageValue = averageValue * (1-c) + newValue * c
@@ -870,6 +1087,7 @@ namespace LuaUtil
                 if (script.mStats.mAvgInstructionCount < 5)
                     script.mStats.mAvgInstructionCount = 0; // speeding up converge to zero if newValue is zero
                 script.mStats.mFrameInstructionCount = 0;
+                script.mStatsFrame = mStatsFrame;
             }
         }
     }
@@ -881,6 +1099,8 @@ namespace LuaUtil
             auto it = data->mScripts.find(scriptId);
             if (it != data->mScripts.end())
             {
+                if (mLazyInstructionStatistics)
+                    materializeInstructionStats(it->second);
                 it->second.mStats.mAvgInstructionCount += instructionCount * instructionCountAvgCoef;
                 it->second.mStats.mFrameInstructionCount += instructionCount;
             }
@@ -923,8 +1143,17 @@ namespace LuaUtil
         {
             for (auto& [id, script] : data->mScripts)
             {
-                stats[id].mAvgInstructionCount += script.mStats.mAvgInstructionCount;
-                stats[id].mFrameInstructionCount += script.mStats.mFrameInstructionCount;
+                if (mLazyInstructionStatistics)
+                {
+                    std::uint64_t steps = 0;
+                    stats[id].mAvgInstructionCount += decayedInstructionCount(script, steps);
+                    if (steps != 0)
+                        mLua.mInstructionStatisticsReadDecaySteps.fetch_add(steps, std::memory_order_relaxed);
+                }
+                else
+                    stats[id].mAvgInstructionCount += script.mStats.mAvgInstructionCount;
+                stats[id].mFrameInstructionCount
+                    += script.mStatsFrame == mStatsFrame ? script.mStats.mFrameInstructionCount : 0;
                 stats[id].mMemoryUsage += script.mStats.mMemoryUsage;
             }
         }

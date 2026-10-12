@@ -1,0 +1,846 @@
+{
+  "schema_version": 1,
+  "precedence": "Within each loaded file a canonical key wins over its legacy alias regardless of line order. Configuration layers retain their normal precedence.",
+  "aliases": [
+    {
+      "old_section": "Camera",
+      "old_key": "v3.21 full body first person",
+      "new_section": "Camera",
+      "new_key": "full body first person"
+    },
+    {
+      "old_section": "Camera",
+      "old_key": "v3.21 full body first person shadow compatibility",
+      "new_section": "Camera",
+      "new_key": "full body first person shadow compatibility"
+    },
+    {
+      "old_section": "Camera",
+      "old_key": "v3.21 full body first person forward offset",
+      "new_section": "Camera",
+      "new_key": "full body first person forward offset"
+    },
+    {
+      "old_section": "Camera",
+      "old_key": "v3.4 broaden occlusion",
+      "new_section": "Camera",
+      "new_key": "broaden occlusion"
+    },
+    {
+      "old_section": "Camera",
+      "old_key": "v3.5 coarse chunk occlusion",
+      "new_section": "Camera",
+      "new_key": "coarse chunk occlusion"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.6 performance profile",
+      "new_section": "Optimizations",
+      "new_key": "legacy performance profile"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.6 disable ram overdrive",
+      "new_section": "Optimizations",
+      "new_key": "disable legacy ram overdrive"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.6 disable lua fast path",
+      "new_section": "Optimizations",
+      "new_key": "disable legacy lua fast path"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.6 disable coarse chunk occlusion",
+      "new_section": "Optimizations",
+      "new_key": "disable legacy coarse chunk occlusion"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.19 focus cadence",
+      "new_section": "Camera",
+      "new_key": "focus refresh interval frames"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.20 adaptive focus cadence",
+      "new_section": "Camera",
+      "new_key": "focus refresh on camera change"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 completion governor mode",
+      "new_section": "Cells",
+      "new_key": "completed work governor mode"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 compile objects per frame",
+      "new_section": "Cells",
+      "new_key": "completed work compile objects per frame"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 merge sets per frame",
+      "new_section": "Cells",
+      "new_key": "completed work merge sets per frame"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 max deferred frames",
+      "new_section": "Cells",
+      "new_key": "completed work max deferred frames"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 forced merge sets",
+      "new_section": "Cells",
+      "new_key": "completed work forced merge sets"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 compile minimum milliseconds",
+      "new_section": "Cells",
+      "new_key": "completed work compile minimum milliseconds"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 compile conservative ratio",
+      "new_section": "Cells",
+      "new_key": "completed work compile conservative ratio"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 adaptive target milliseconds",
+      "new_section": "Cells",
+      "new_key": "completed work adaptive target milliseconds"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 adaptive frame ema alpha",
+      "new_section": "Cells",
+      "new_key": "completed work adaptive frame ema alpha"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 adaptive merge minimum",
+      "new_section": "Cells",
+      "new_key": "completed work adaptive merge minimum"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 adaptive merge maximum",
+      "new_section": "Cells",
+      "new_key": "completed work adaptive merge maximum"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 adaptive debt cap",
+      "new_section": "Cells",
+      "new_key": "completed work adaptive debt cap"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 adaptive debt repay per frame",
+      "new_section": "Cells",
+      "new_key": "completed work adaptive debt repay per frame"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 CP2 fairness mode",
+      "new_section": "Cells",
+      "new_key": "compile fairness mode"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 CP2 service sets per frame",
+      "new_section": "Cells",
+      "new_key": "compile fairness service sets per frame"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 CP2 class burst sets per frame",
+      "new_section": "Cells",
+      "new_key": "compile fairness class burst sets per frame"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 CP2 max deferred frames",
+      "new_section": "Cells",
+      "new_key": "compile fairness max deferred frames"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 CP2 forced sets",
+      "new_section": "Cells",
+      "new_key": "compile fairness forced sets"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.21 CP2 deficit cap",
+      "new_section": "Cells",
+      "new_key": "compile fairness deficit cap"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.6 async gpu profiler",
+      "new_section": "Optimizations",
+      "new_key": "async gpu profiler"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.6 far caster minimum pixels",
+      "new_section": "Shadows",
+      "new_key": "far caster minimum pixels"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.7 disable far caster pruning",
+      "new_section": "Optimizations",
+      "new_key": "disable legacy far caster pruning"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.7 active event fast path",
+      "new_section": "Lua",
+      "new_key": "bulk active event fast path"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.7 companion keyframe preload",
+      "new_section": "Cells",
+      "new_key": "companion keyframe preload"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.7 relaxed resource cache sweep",
+      "new_section": "Cells",
+      "new_key": "relaxed resource cache sweep"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.7 resource cache sweep seconds",
+      "new_section": "Cells",
+      "new_key": "resource cache sweep seconds"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.7 stabilize far shadow cascade",
+      "new_section": "Shadows",
+      "new_key": "stabilize far cascade"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.8 world batching mode",
+      "new_section": "Cells",
+      "new_key": "world batching mode"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.8 world batching merge multiplier",
+      "new_section": "Cells",
+      "new_key": "world batching merge multiplier"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.8 world batching min instances",
+      "new_section": "Cells",
+      "new_key": "world batching minimum instances"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.8 gpu residency mode",
+      "new_section": "Cells",
+      "new_key": "gpu residency mode"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.8 far shadow mode",
+      "new_section": "Shadows",
+      "new_key": "legacy far caster pruning mode"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.8 compile pacing mode",
+      "new_section": "Cells",
+      "new_key": "compile pacing mode"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.9 frontload mode",
+      "new_section": "Cells",
+      "new_key": "initial multi-view preload mode"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.9 batch optimizer mode",
+      "new_section": "Cells",
+      "new_key": "batch optimizer mode"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.9 proactive residency mode",
+      "new_section": "Cells",
+      "new_key": "proactive residency mode"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.10 fresh initial object paging",
+      "new_section": "Cells",
+      "new_key": "fresh initial object paging"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.10 preload post-transform",
+      "new_section": "Cells",
+      "new_key": "initial preload post-transform"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.11 active grid prepare mode",
+      "new_section": "Cells",
+      "new_key": "active grid prepare mode"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.12 predictor mode",
+      "new_section": "Cells",
+      "new_key": "boundary predictor mode"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.12 predictor lead seconds",
+      "new_section": "Cells",
+      "new_key": "boundary predictor lead seconds"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.12 lua precompile",
+      "new_section": "Lua",
+      "new_key": "precompile configured scripts"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.12 spatial batch mode",
+      "new_section": "Cells",
+      "new_key": "spatial batch mode"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.13 chunk quality mode",
+      "new_section": "Cells",
+      "new_key": "prepared chunk quality mode"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.14 lua dependency precompile mode",
+      "new_section": "Lua",
+      "new_key": "dependency precompile mode"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.14 lua package prototype reuse",
+      "new_section": "Lua",
+      "new_key": "package prototype reuse"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.14 groundcover compile mode",
+      "new_section": "Groundcover",
+      "new_key": "compile mode"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.14 postfx compile warmup",
+      "new_section": "Post Processing",
+      "new_key": "compile warmup"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.16 sfx metadata frontload",
+      "new_section": "Sound",
+      "new_key": "preload sound metadata"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.15 premerge state canonicalization",
+      "new_section": "Cells",
+      "new_key": "premerge state canonicalization"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.15 packetized premerge mode",
+      "new_section": "Cells",
+      "new_key": "packetized premerge mode"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.15 adaptive compile governor",
+      "new_section": "Cells",
+      "new_key": "adaptive compile governor"
+    },
+    {
+      "old_section": "V3",
+      "old_key": "v3.16 idle resource sweep",
+      "new_section": "Cells",
+      "new_key": "idle resource sweep"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "v3.2 exterior hibernation",
+      "new_section": "Cells",
+      "new_key": "exterior hibernation"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "v3.2 renderer insertion profiling",
+      "new_section": "Optimizations",
+      "new_key": "renderer insertion profiling"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "v3.2 gpu memory telemetry",
+      "new_section": "Optimizations",
+      "new_key": "gpu memory telemetry"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "v3.2 gpu memory management",
+      "new_section": "Cells",
+      "new_key": "gpu memory management"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "v3.2 gpu soft budget mb",
+      "new_section": "Cells",
+      "new_key": "gpu soft budget mb"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "v3.2 gpu hard budget mb",
+      "new_section": "Cells",
+      "new_key": "gpu hard budget mb"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "v3.2 streaming max defers",
+      "new_section": "Cells",
+      "new_key": "streaming max defers"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "v3.3 speculative preload budget",
+      "new_section": "Cells",
+      "new_key": "speculative preload jobs"
+    },
+    {
+      "old_section": "Shadows",
+      "old_key": "v3.3 far cascade update interval",
+      "new_section": "Shadows",
+      "new_key": "far cascade update interval"
+    },
+    {
+      "old_section": "Shadows",
+      "old_key": "v3.3 far cascade max texel drift",
+      "new_section": "Shadows",
+      "new_key": "far cascade max texel drift"
+    },
+    {
+      "old_section": "Shadows",
+      "old_key": "v3.5 allow dynamic far cascade reuse",
+      "new_section": "Shadows",
+      "new_key": "allow dynamic far cascade reuse"
+    },
+    {
+      "old_section": "Shadows",
+      "old_key": "v3.3 far cascade resolution divisor",
+      "new_section": "Shadows",
+      "new_key": "far cascade resolution divisor"
+    },
+    {
+      "old_section": "Lua",
+      "old_key": "v3.3 idle timer fast path",
+      "new_section": "Lua",
+      "new_key": "idle timer fast path"
+    },
+    {
+      "old_section": "Lua",
+      "old_key": "v3.20 engine event fast paths",
+      "new_section": "Lua",
+      "new_key": "engine event fast paths"
+    },
+    {
+      "old_section": "Lua",
+      "old_key": "v3.20 sound conversion cache",
+      "new_section": "Lua",
+      "new_key": "sound conversion cache"
+    },
+    {
+      "old_section": "Lua",
+      "old_key": "v3.20 sound query coalescing",
+      "new_section": "Lua",
+      "new_key": "sound query coalescing"
+    },
+    {
+      "old_section": "Lua",
+      "old_key": "v3.20 lua profiler recorder capability",
+      "new_section": "Lua",
+      "new_key": "profiler recorder capability"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "opimizedmw paging optimizer",
+      "new_section": "Cells",
+      "new_key": "paging optimizer"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "opimizedmw paging readiness split",
+      "new_section": "Cells",
+      "new_key": "paging readiness split"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw submission compaction",
+      "new_section": "Cells",
+      "new_key": "submission compaction"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw semantic premerge",
+      "new_section": "Cells",
+      "new_key": "semantic premerge"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw distant display lists",
+      "new_section": "Cells",
+      "new_key": "distant display lists"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw normalized static packets",
+      "new_section": "Cells",
+      "new_key": "normalized static packets"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw shadow static batching",
+      "new_section": "Shadows",
+      "new_key": "static batching"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw active shadow batching",
+      "new_section": "Shadows",
+      "new_key": "active batching"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw render handoff attribution",
+      "new_section": "Optimizations",
+      "new_key": "render handoff attribution"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw parallel template prefetch",
+      "new_section": "Cells",
+      "new_key": "parallel template prefetch"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw parallel template prefetch workers",
+      "new_section": "Cells",
+      "new_key": "parallel template prefetch workers"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw parallel template prefetch min templates",
+      "new_section": "Cells",
+      "new_key": "parallel template prefetch minimum templates"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw compile scheduler mode",
+      "new_section": "Cells",
+      "new_key": "compile scheduler mode"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw compile scheduler max budget ms",
+      "new_section": "Cells",
+      "new_key": "compile scheduler max budget milliseconds"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw compile scheduler credit cap ms",
+      "new_section": "Cells",
+      "new_key": "compile scheduler credit cap milliseconds"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw compile scheduler headroom ratio",
+      "new_section": "Cells",
+      "new_key": "compile scheduler headroom ratio"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw compile scheduler handoff threshold ms",
+      "new_section": "Cells",
+      "new_key": "compile scheduler handoff threshold milliseconds"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw compile scheduler max queue age frames",
+      "new_section": "Cells",
+      "new_key": "compile scheduler max queue age frames"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw compile scheduler delete budget ms",
+      "new_section": "Cells",
+      "new_key": "compile scheduler delete budget milliseconds"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw compile scheduler max objects per frame",
+      "new_section": "Cells",
+      "new_key": "compile scheduler max objects per frame"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw compile scheduler diagnostic threshold ms",
+      "new_section": "Cells",
+      "new_key": "compile scheduler diagnostic threshold milliseconds"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw heavy compile lane mode",
+      "new_section": "Cells",
+      "new_key": "heavy compile lane mode"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw heavy compile threshold ms",
+      "new_section": "Cells",
+      "new_key": "heavy compile threshold milliseconds"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw heavy compile min smooth frames",
+      "new_section": "Cells",
+      "new_key": "heavy compile minimum smooth frames"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw heavy compile min headroom ms",
+      "new_section": "Cells",
+      "new_key": "heavy compile minimum headroom milliseconds"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw terrain drawable prior ms",
+      "new_section": "Cells",
+      "new_key": "terrain drawable prior milliseconds"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw terrain phased compile",
+      "new_section": "Cells",
+      "new_key": "terrain phased compile"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw residency scheduler mode",
+      "new_section": "Cells",
+      "new_key": "residency scheduler mode"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw terrain immutable vertex reuse",
+      "new_section": "Cells",
+      "new_key": "terrain immutable vertex reuse"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw terrain resource phases",
+      "new_section": "Cells",
+      "new_key": "terrain resource phases"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw canonical terrain textures",
+      "new_section": "Cells",
+      "new_key": "canonical terrain textures"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw composite slicing",
+      "new_section": "Cells",
+      "new_key": "composite slicing"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw terrain split vertex buffers",
+      "new_section": "Cells",
+      "new_key": "terrain split vertex buffers"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw parallel actor binding",
+      "new_section": "Cells",
+      "new_key": "parallel actor binding"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw parallel terrain cpu prep",
+      "new_section": "Cells",
+      "new_key": "parallel terrain cpu preparation"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "optimizedmw osg threading mode",
+      "new_section": "Optimizations",
+      "new_key": "render threading mode"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "opimizedmw host pressure",
+      "new_section": "Cells",
+      "new_key": "host memory pressure"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "opimizedmw speculative budget",
+      "new_section": "Cells",
+      "new_key": "speculative memory budget"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "opimizedmw transient budget mb",
+      "new_section": "Cells",
+      "new_key": "speculative transient budget mb"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "opimizedmw host reserve mb",
+      "new_section": "Cells",
+      "new_key": "host memory reserve mb"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "opimizedmw commit reserve mb",
+      "new_section": "Cells",
+      "new_key": "commit memory reserve mb"
+    },
+    {
+      "old_section": "Shadows",
+      "old_key": "optimizedmw setting consistency",
+      "new_section": "Shadows",
+      "new_key": "setting consistency"
+    },
+    {
+      "old_section": "Groundcover",
+      "old_key": "optimizedmw gpu path",
+      "new_section": "Groundcover",
+      "new_key": "shader optimization mode"
+    },
+    {
+      "old_section": "Groundcover",
+      "old_key": "optimizedmw shadow receive",
+      "new_section": "Groundcover",
+      "new_key": "receive shadows"
+    },
+    {
+      "old_section": "Groundcover",
+      "old_key": "optimizedmw hierarchy",
+      "new_section": "Groundcover",
+      "new_key": "spatial hierarchy"
+    },
+    {
+      "old_section": "Groundcover",
+      "old_key": "optimizedmw density lod",
+      "new_section": "Groundcover",
+      "new_key": "density lod"
+    },
+    {
+      "old_section": "Groundcover",
+      "old_key": "optimizedmw cull input reuse",
+      "new_section": "Groundcover",
+      "new_key": "cull input reuse"
+    },
+    {
+      "old_section": "Groundcover",
+      "old_key": "optimizedmw lod2",
+      "new_section": "Groundcover",
+      "new_key": "geometry lod"
+    },
+    {
+      "old_section": "Groundcover",
+      "old_key": "optimizedmw front to back",
+      "new_section": "Groundcover",
+      "new_key": "front to back ordering"
+    },
+    {
+      "old_section": "Groundcover",
+      "old_key": "optimizedmw parallel preparation",
+      "new_section": "Groundcover",
+      "new_key": "parallel preparation"
+    },
+    {
+      "old_section": "Groundcover",
+      "old_key": "optimizedmw fast wind",
+      "new_section": "Groundcover",
+      "new_key": "reduced wind"
+    },
+    {
+      "old_section": "Groundcover",
+      "old_key": "optimizedmw minimum batch",
+      "new_section": "Groundcover",
+      "new_key": "minimum batch"
+    },
+    {
+      "old_section": "Groundcover",
+      "old_key": "optimizedmw lod near",
+      "new_section": "Groundcover",
+      "new_key": "lod near distance"
+    },
+    {
+      "old_section": "Groundcover",
+      "old_key": "optimizedmw lod far",
+      "new_section": "Groundcover",
+      "new_key": "lod far distance"
+    },
+    {
+      "old_section": "Lua",
+      "old_key": "optimizedmw object userdata cache",
+      "new_section": "Lua",
+      "new_key": "object userdata cache"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "v3 streaming scheduler",
+      "new_section": "Cells",
+      "new_key": "streaming scheduler"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "v3 streaming target frametime",
+      "new_section": "Cells",
+      "new_key": "streaming target frametime"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "v3 prepared instance cache",
+      "new_section": "Cells",
+      "new_key": "prepared instance cache"
+    },
+    {
+      "old_section": "Cells",
+      "old_key": "v3 prepared instance cache max",
+      "new_section": "Cells",
+      "new_key": "prepared instance cache maximum"
+    }
+  ]
+}

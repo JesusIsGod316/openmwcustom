@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_SHADERMANAGER_H
 
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -21,6 +22,7 @@ namespace osgViewer
 
 namespace Shader
 {
+    namespace AssetGeometry { struct Epoch; }
     struct HotReloadManager;
     /// @brief Reads shader template files and turns them into a concrete shader, based on a list of define's.
     /// @par Shader templates can get the value of a define with the syntax @define.
@@ -62,6 +64,9 @@ namespace Shader
 
         /// Get (a copy of) the DefineMap used to construct all shaders
         DefineMap getGlobalDefines();
+        // Generation identity for bounded preparation/retry bookkeeping only;
+        // it does not authorize any shader or candidate representation.
+        std::uint64_t assetGeneration() const noexcept;
 
         /// Set the DefineMap used to construct all shaders
         /// @param defines The DefineMap to use
@@ -99,6 +104,9 @@ namespace Shader
         void getLinkedShaders(osg::ref_ptr<osg::Shader> shader, const std::vector<std::string>& linkedShaderNames,
             const DefineMap& defines);
         void addLinkedShaders(osg::ref_ptr<osg::Shader> shader, osg::ref_ptr<osg::Program> program);
+        void attachAssetSource(osg::Shader& shader, const std::string& templateName, const DefineMap& defines,
+            bool regeneration = false);
+        void attachIndirectSource(osg::Shader& shader, const std::string& templateName, const DefineMap& defines);
 
         std::filesystem::path mPath;
 
@@ -112,7 +120,7 @@ namespace Shader
         typedef std::map<MapKey, osg::ref_ptr<osg::Shader>> ShaderMap;
         ShaderMap mShaders;
 
-        typedef std::map<std::pair<osg::ref_ptr<osg::Shader>, osg::ref_ptr<osg::Shader>>, osg::ref_ptr<osg::Program>>
+        typedef std::multimap<std::pair<osg::ref_ptr<osg::Shader>, osg::ref_ptr<osg::Shader>>, osg::ref_ptr<osg::Program>>
             ProgramMap;
         ProgramMap mPrograms;
 
@@ -127,6 +135,7 @@ namespace Shader
         int mMaxTextureUnits = 0;
         int mReservedTextureUnits = 0;
         std::unique_ptr<HotReloadManager> mHotReloadManager;
+        std::shared_ptr<AssetGeometry::Epoch> mAssetEpoch;
         struct ReservedTextureUnits
         {
             int index = -1;

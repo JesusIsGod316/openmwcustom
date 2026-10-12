@@ -1,0 +1,234 @@
+OPTIMIZATION SETTINGS NAME REFERENCE
+
+Existing configurations keep working. A descriptive key wins over its old
+alias in the same file, in either order. Normal configuration-layer precedence
+is preserved, including user settings overriding shipped defaults. Saves use
+descriptive keys. Unknown settings are not renamed.
+
+The legacy performance profile preserves historical overrides. Set it false
+to use the individual controls. The editable OptimizedMW_Optimizations.cfg
+does this explicitly and retains the promoted Lua, occlusion and shadow
+foundation using their direct controls. RAM retention uses the lower Headroom
+profile. Benchmark selections use frozen settings rather than this template.
+
+NEW INDEPENDENT CONTROL
+[Cells] generated static lod active grid = false
+Set true to allow the selected L1 asset mechanism on certified static members
+of the active grid. L1 benchmark selections set it true; the asset control and
+H1-only selections set it false. Custom configuration preserves your value.
+The L1 asset switch, object paging active grid, paging optimizer, paging
+readiness split, active grid prepare mode 1/2 and prepared chunk quality
+mode 1/2 are also required. The current benchmark foundation already supplies
+these controls. Disabling this setting retains the distant-only L1 path.
+Ordinary strong preparation precedes optional L1 cooking; resource denial
+keeps that strong control. Collision, picking, shadows and secondary views
+retain original geometry. Selection alone does not establish runtime use.
+
+ADDITIONAL INDEPENDENT CONTROLS
+[Lua] protected call reuse = false
+Startup-only private registry reuse of the zero-upvalue protected-call C
+trampoline. Nested jobs remain stack-local; lua_pcall, error propagation,
+script initialization and event order remain ordinary. Caller environments
+keep the original boundary. Measured closure counts establish engagement.
+[Optimizations] paged static vertex arrays = false
+Certified ordinary paging geometry may retain native vertex-array layouts.
+Exact source, context, native storage and alias ownership must remain valid.
+Changed inputs use live ordinary fallback. First draw after preparation still
+uses conservative setup. Metadata cap excludes driver storage. No indirect
+submission, quality reduction or dynamic barrier removal is enabled.
+[Optimizations] owned cell cull snapshots = false
+Cell-root-owned direct-child bounds and classification, invalidated by the
+same OSG dirty-bound contract as ordinary traversal. Current cull order and
+MSOC decisions remain; callbacks that change bounds select live fallback.
+Metadata is capped at 4096 children/root and 8 MiB total with safe refusal.
+[Optimizations] unchanged transform bounds = false
+Only identical finite setter inputs avoid dirtyBound. Real changes, signed
+zero assignment, nonfinite inputs and independent child dirtying remain.
+[Cells] scene template coalescing = false
+Concurrent misses can adopt an already finished template in the same exact
+manager/VFS/shader generation. No wait or second decoder. An in-place file
+edit still requires the existing explicit reload/invalidation contract.
+[Optimizations] temporal history lookup = false
+Bounded exact instance index over existing previous motion surfaces. First
+compatible match and all material/pose checks remain. Does not enable DLSS,
+jitter or dense motion. Requires the separately enabled dynamic producer.
+[Cells] preload priority promotion = false
+Move an already admitted, still-queued cell job into the near-future lane and
+enqueue new near-future jobs there. Preserve existing urgent/front jobs, FIFO
+within each lane, the same capacity/owner and four-start background fairness.
+No additional workers or changes to a running producer's memory policy.
+Queue-start counts prove scheduling engagement, not CPU readiness/adoption.
+[Cells] paging score value reuse = false
+Requires actual paging vertex-cache optimization work. Reuse exact float
+power-function results within a single preparation job. Triangle scoring,
+tie order and index output remain the control contract. Large valences keep
+ordinary computation. This targets preparation cost, not draw-call count.
+[Optimizations] indirect projection proof reuse = false
+Requires the indirect pipeline. Reuse the successful full projection-family
+proof inside that same draw's held source-reader scope and exact State/Program.
+The initial full source/import check and actual consumed projection remain.
+[Optimizations] indirect early admission fallback = false
+Requires the indirect pipeline. When the existing cached admission sample
+refuses new private storage, draw live ordinary geometry before optional proof.
+Contended inspections also use the ordinary path without waiting. Existing
+owners retain their proof/fence rules; budgets and memory floors are unchanged.
+
+[Cells] lod retain source indices = false
+Requires the L1 lane. Share immutable source primitives while cooking;
+only actual reduced outputs receive new indices/EBOs. Cache-hit admission
+is independent. Control retains the existing deep primitive copy.
+[Optimizations] indirect command reuse = false
+Requires the opaque indirect or GPU visibility pipeline. Reuse populated
+CPU command slots; refill a slot after GPU visibility has changed it.
+Existing slot fences, pressure admission and ordinary fallbacks remain.
+
+[Optimizations] indirect context capability reuse = false
+Requires the indirect lane. Reuse current-owner version/function metadata;
+resolve GPU-only functions only for actual GPU requests. Mutable bindings,
+program readiness, pressure admission and fence retirement still apply.
+[Optimizations] gpu visibility opportunity filter = false
+Requires GPU visibility. Strictly contained immutable bounds use original
+primitives without private allocation, dispatch or submission. Partial,
+ambiguous and unsupported projections keep the existing GPU/control path.
+
+LEGACY LOCATION -> DESCRIPTIVE LOCATION
+[Camera] v3.21 full body first person -> [Camera] full body first person
+[Camera] v3.21 full body first person shadow compatibility -> [Camera] full body first person shadow compatibility
+[Camera] v3.21 full body first person forward offset -> [Camera] full body first person forward offset
+[Camera] v3.4 broaden occlusion -> [Camera] broaden occlusion
+[Camera] v3.5 coarse chunk occlusion -> [Camera] coarse chunk occlusion
+[V3] v3.6 performance profile -> [Optimizations] legacy performance profile
+[V3] v3.6 disable ram overdrive -> [Optimizations] disable legacy ram overdrive
+[V3] v3.6 disable lua fast path -> [Optimizations] disable legacy lua fast path
+[V3] v3.6 disable coarse chunk occlusion -> [Optimizations] disable legacy coarse chunk occlusion
+[V3] v3.19 focus cadence -> [Camera] focus refresh interval frames
+[V3] v3.20 adaptive focus cadence -> [Camera] focus refresh on camera change
+[V3] v3.21 completion governor mode -> [Cells] completed work governor mode
+[V3] v3.21 compile objects per frame -> [Cells] completed work compile objects per frame
+[V3] v3.21 merge sets per frame -> [Cells] completed work merge sets per frame
+[V3] v3.21 max deferred frames -> [Cells] completed work max deferred frames
+[V3] v3.21 forced merge sets -> [Cells] completed work forced merge sets
+[V3] v3.21 compile minimum milliseconds -> [Cells] completed work compile minimum milliseconds
+[V3] v3.21 compile conservative ratio -> [Cells] completed work compile conservative ratio
+[V3] v3.21 adaptive target milliseconds -> [Cells] completed work adaptive target milliseconds
+[V3] v3.21 adaptive frame ema alpha -> [Cells] completed work adaptive frame ema alpha
+[V3] v3.21 adaptive merge minimum -> [Cells] completed work adaptive merge minimum
+[V3] v3.21 adaptive merge maximum -> [Cells] completed work adaptive merge maximum
+[V3] v3.21 adaptive debt cap -> [Cells] completed work adaptive debt cap
+[V3] v3.21 adaptive debt repay per frame -> [Cells] completed work adaptive debt repay per frame
+[V3] v3.21 CP2 fairness mode -> [Cells] compile fairness mode
+[V3] v3.21 CP2 service sets per frame -> [Cells] compile fairness service sets per frame
+[V3] v3.21 CP2 class burst sets per frame -> [Cells] compile fairness class burst sets per frame
+[V3] v3.21 CP2 max deferred frames -> [Cells] compile fairness max deferred frames
+[V3] v3.21 CP2 forced sets -> [Cells] compile fairness forced sets
+[V3] v3.21 CP2 deficit cap -> [Cells] compile fairness deficit cap
+[V3] v3.6 async gpu profiler -> [Optimizations] async gpu profiler
+[V3] v3.6 far caster minimum pixels -> [Shadows] far caster minimum pixels
+[V3] v3.7 disable far caster pruning -> [Optimizations] disable legacy far caster pruning
+[V3] v3.7 active event fast path -> [Lua] bulk active event fast path
+[V3] v3.7 companion keyframe preload -> [Cells] companion keyframe preload
+[V3] v3.7 relaxed resource cache sweep -> [Cells] relaxed resource cache sweep
+[V3] v3.7 resource cache sweep seconds -> [Cells] resource cache sweep seconds
+[V3] v3.7 stabilize far shadow cascade -> [Shadows] stabilize far cascade
+[V3] v3.8 world batching mode -> [Cells] world batching mode
+[V3] v3.8 world batching merge multiplier -> [Cells] world batching merge multiplier
+[V3] v3.8 world batching min instances -> [Cells] world batching minimum instances
+[V3] v3.8 gpu residency mode -> [Cells] gpu residency mode
+[V3] v3.8 far shadow mode -> [Shadows] legacy far caster pruning mode
+[V3] v3.8 compile pacing mode -> [Cells] compile pacing mode
+[V3] v3.9 frontload mode -> [Cells] initial multi-view preload mode
+[V3] v3.9 batch optimizer mode -> [Cells] batch optimizer mode
+[V3] v3.9 proactive residency mode -> [Cells] proactive residency mode
+[V3] v3.10 fresh initial object paging -> [Cells] fresh initial object paging
+[V3] v3.10 preload post-transform -> [Cells] initial preload post-transform
+[V3] v3.11 active grid prepare mode -> [Cells] active grid prepare mode
+[V3] v3.12 predictor mode -> [Cells] boundary predictor mode
+[V3] v3.12 predictor lead seconds -> [Cells] boundary predictor lead seconds
+[V3] v3.12 lua precompile -> [Lua] precompile configured scripts
+[V3] v3.12 spatial batch mode -> [Cells] spatial batch mode
+[V3] v3.13 chunk quality mode -> [Cells] prepared chunk quality mode
+[V3] v3.14 lua dependency precompile mode -> [Lua] dependency precompile mode
+[V3] v3.14 lua package prototype reuse -> [Lua] package prototype reuse
+[V3] v3.14 groundcover compile mode -> [Groundcover] compile mode
+[V3] v3.14 postfx compile warmup -> [Post Processing] compile warmup
+[V3] v3.16 sfx metadata frontload -> [Sound] preload sound metadata
+[V3] v3.15 premerge state canonicalization -> [Cells] premerge state canonicalization
+[V3] v3.15 packetized premerge mode -> [Cells] packetized premerge mode
+[V3] v3.15 adaptive compile governor -> [Cells] adaptive compile governor
+[V3] v3.16 idle resource sweep -> [Cells] idle resource sweep
+[Cells] v3.2 exterior hibernation -> [Cells] exterior hibernation
+[Cells] v3.2 renderer insertion profiling -> [Optimizations] renderer insertion profiling
+[Cells] v3.2 gpu memory telemetry -> [Optimizations] gpu memory telemetry
+[Cells] v3.2 gpu memory management -> [Cells] gpu memory management
+[Cells] v3.2 gpu soft budget mb -> [Cells] gpu soft budget mb
+[Cells] v3.2 gpu hard budget mb -> [Cells] gpu hard budget mb
+[Cells] v3.2 streaming max defers -> [Cells] streaming max defers
+[Cells] v3.3 speculative preload budget -> [Cells] speculative preload jobs
+[Shadows] v3.3 far cascade update interval -> [Shadows] far cascade update interval
+[Shadows] v3.3 far cascade max texel drift -> [Shadows] far cascade max texel drift
+[Shadows] v3.5 allow dynamic far cascade reuse -> [Shadows] allow dynamic far cascade reuse
+[Shadows] v3.3 far cascade resolution divisor -> [Shadows] far cascade resolution divisor
+[Lua] v3.3 idle timer fast path -> [Lua] idle timer fast path
+[Lua] v3.20 engine event fast paths -> [Lua] engine event fast paths
+[Lua] v3.20 sound conversion cache -> [Lua] sound conversion cache
+[Lua] v3.20 sound query coalescing -> [Lua] sound query coalescing
+[Lua] v3.20 lua profiler recorder capability -> [Lua] profiler recorder capability
+[Cells] opimizedmw paging optimizer -> [Cells] paging optimizer
+[Cells] opimizedmw paging readiness split -> [Cells] paging readiness split
+[Cells] optimizedmw submission compaction -> [Cells] submission compaction
+[Cells] optimizedmw semantic premerge -> [Cells] semantic premerge
+[Cells] optimizedmw distant display lists -> [Cells] distant display lists
+[Cells] optimizedmw normalized static packets -> [Cells] normalized static packets
+[Cells] optimizedmw shadow static batching -> [Shadows] static batching
+[Cells] optimizedmw active shadow batching -> [Shadows] active batching
+[Cells] optimizedmw render handoff attribution -> [Optimizations] render handoff attribution
+[Cells] optimizedmw parallel template prefetch -> [Cells] parallel template prefetch
+[Cells] optimizedmw parallel template prefetch workers -> [Cells] parallel template prefetch workers
+[Cells] optimizedmw parallel template prefetch min templates -> [Cells] parallel template prefetch minimum templates
+[Cells] optimizedmw compile scheduler mode -> [Cells] compile scheduler mode
+[Cells] optimizedmw compile scheduler max budget ms -> [Cells] compile scheduler max budget milliseconds
+[Cells] optimizedmw compile scheduler credit cap ms -> [Cells] compile scheduler credit cap milliseconds
+[Cells] optimizedmw compile scheduler headroom ratio -> [Cells] compile scheduler headroom ratio
+[Cells] optimizedmw compile scheduler handoff threshold ms -> [Cells] compile scheduler handoff threshold milliseconds
+[Cells] optimizedmw compile scheduler max queue age frames -> [Cells] compile scheduler max queue age frames
+[Cells] optimizedmw compile scheduler delete budget ms -> [Cells] compile scheduler delete budget milliseconds
+[Cells] optimizedmw compile scheduler max objects per frame -> [Cells] compile scheduler max objects per frame
+[Cells] optimizedmw compile scheduler diagnostic threshold ms -> [Cells] compile scheduler diagnostic threshold milliseconds
+[Cells] optimizedmw heavy compile lane mode -> [Cells] heavy compile lane mode
+[Cells] optimizedmw heavy compile threshold ms -> [Cells] heavy compile threshold milliseconds
+[Cells] optimizedmw heavy compile min smooth frames -> [Cells] heavy compile minimum smooth frames
+[Cells] optimizedmw heavy compile min headroom ms -> [Cells] heavy compile minimum headroom milliseconds
+[Cells] optimizedmw terrain drawable prior ms -> [Cells] terrain drawable prior milliseconds
+[Cells] optimizedmw terrain phased compile -> [Cells] terrain phased compile
+[Cells] optimizedmw residency scheduler mode -> [Cells] residency scheduler mode
+[Cells] optimizedmw terrain immutable vertex reuse -> [Cells] terrain immutable vertex reuse
+[Cells] optimizedmw terrain resource phases -> [Cells] terrain resource phases
+[Cells] optimizedmw canonical terrain textures -> [Cells] canonical terrain textures
+[Cells] optimizedmw composite slicing -> [Cells] composite slicing
+[Cells] optimizedmw terrain split vertex buffers -> [Cells] terrain split vertex buffers
+[Cells] optimizedmw parallel actor binding -> [Cells] parallel actor binding
+[Cells] optimizedmw parallel terrain cpu prep -> [Cells] parallel terrain cpu preparation
+[Cells] optimizedmw osg threading mode -> [Optimizations] render threading mode
+[Cells] opimizedmw host pressure -> [Cells] host memory pressure
+[Cells] opimizedmw speculative budget -> [Cells] speculative memory budget
+[Cells] opimizedmw transient budget mb -> [Cells] speculative transient budget mb
+[Cells] opimizedmw host reserve mb -> [Cells] host memory reserve mb
+[Cells] opimizedmw commit reserve mb -> [Cells] commit memory reserve mb
+[Shadows] optimizedmw setting consistency -> [Shadows] setting consistency
+[Groundcover] optimizedmw gpu path -> [Groundcover] shader optimization mode
+[Groundcover] optimizedmw shadow receive -> [Groundcover] receive shadows
+[Groundcover] optimizedmw hierarchy -> [Groundcover] spatial hierarchy
+[Groundcover] optimizedmw density lod -> [Groundcover] density lod
+[Groundcover] optimizedmw cull input reuse -> [Groundcover] cull input reuse
+[Groundcover] optimizedmw lod2 -> [Groundcover] geometry lod
+[Groundcover] optimizedmw front to back -> [Groundcover] front to back ordering
+[Groundcover] optimizedmw parallel preparation -> [Groundcover] parallel preparation
+[Groundcover] optimizedmw fast wind -> [Groundcover] reduced wind
+[Groundcover] optimizedmw minimum batch -> [Groundcover] minimum batch
+[Groundcover] optimizedmw lod near -> [Groundcover] lod near distance
+[Groundcover] optimizedmw lod far -> [Groundcover] lod far distance
+[Lua] optimizedmw object userdata cache -> [Lua] object userdata cache
+[Cells] v3 streaming scheduler -> [Cells] streaming scheduler
+[Cells] v3 streaming target frametime -> [Cells] streaming target frametime
+[Cells] v3 prepared instance cache -> [Cells] prepared instance cache
+[Cells] v3 prepared instance cache max -> [Cells] prepared instance cache maximum

@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 
+#include "hitchtrace.hpp"
 #include "v3diagnostics.hpp"
 #include "v3hitchtelemetry.hpp"
 
@@ -86,6 +87,11 @@ namespace Debug::V36LuaAddScriptTrace
 
     inline thread_local Recorder* sRecorder = nullptr;
 
+    inline V3Diagnostics::Clock::time_point startPhase() noexcept
+    {
+        return sRecorder ? V3Diagnostics::Clock::now() : V3Diagnostics::Clock::time_point{};
+    }
+
     class ScriptScope
     {
     public:
@@ -122,7 +128,8 @@ namespace Debug::V36LuaAddScriptTrace
     {
     public:
         explicit PhaseScope(Phase phase)
-            : mRecorder(sRecorder)
+            : mHitch(phaseName(phase))
+            , mRecorder(sRecorder)
             , mPhase(phase)
             , mStart(mRecorder ? V3Diagnostics::Clock::now() : V3Diagnostics::Clock::time_point{})
         {
@@ -138,6 +145,15 @@ namespace Debug::V36LuaAddScriptTrace
         PhaseScope& operator=(const PhaseScope&) = delete;
 
     private:
+        static std::string_view phaseName(Phase phase)
+        {
+            constexpr std::array<std::string_view, PhaseCount> names = {
+                "lua.script_hidden_setup", "lua.script_chunk", "lua.script_environment",
+                "lua.script_common_packages", "lua.script_container_packages", "lua.script_require",
+                "lua.script_module", "lua.script_body", "lua.script_handlers", "lua.script_interfaces" };
+            return names[static_cast<std::size_t>(phase)];
+        }
+        Debug::HitchTrace::Scope mHitch;
         Recorder* mRecorder;
         Phase mPhase;
         V3Diagnostics::Clock::time_point mStart;

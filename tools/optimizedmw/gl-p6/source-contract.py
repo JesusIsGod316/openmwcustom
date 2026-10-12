@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from settings_contract import SettingsContract
 
 root = Path(__file__).resolve().parents[3]
+settings = SettingsContract(root)
 cells = (root / "components/settings/categories/cells.hpp").read_text()
 defaults = (root / "files/settings-default.cfg").read_text()
 classified = (root / "components/resource/v321classifiedcompileset.hpp").read_text()
@@ -18,11 +22,11 @@ launcher = (root / "tools/optimizedmw/gl-p6/OptimizedMW_GL-P6_Test.ps1").read_te
 cmake = (root / "CMakeLists.txt").read_text()
 
 checks = {
-    "default_off": all(token in defaults for token in (
-        "optimizedmw residency scheduler mode = 0",
-        "optimizedmw terrain immutable vertex reuse = false",
-        "optimizedmw terrain resource phases = false",
-        "optimizedmw terrain split vertex buffers = false")),
+    "default_off": all(settings.default("Cells", key, expected) for key, expected in (
+        ("optimizedmw residency scheduler mode", "0"),
+        ("optimizedmw terrain immutable vertex reuse", "false"),
+        ("optimizedmw terrain resource phases", "false"),
+        ("optimizedmw terrain split vertex buffers", "false"))),
     "settings_declared": all(token in cells for token in (
         "mOptimizedMWResidencySchedulerMode",
         "mOptimizedMWTerrainImmutableVertexReuse",

@@ -1,3 +1,4 @@
+#include <components/debug/hitchtrace.hpp>
 #include "keyframemanager.hpp"
 
 #include <array>
@@ -19,6 +20,9 @@
 
 #include "animation.hpp"
 #include "objectcache.hpp"
+#include "animationdependencies.hpp"
+#include "preloadestimate.hpp"
+#include <optional>
 #include "scenemanager.hpp"
 
 namespace Resource
@@ -207,21 +211,72 @@ namespace Resource
     {
     }
 
-    osg::ref_ptr<const SceneUtil::KeyframeHolder> KeyframeManager::get(VFS::Path::NormalizedView name)
+    osg::ref_ptr<const SceneUtil::KeyframeHolder> KeyframeManager::get(
+        VFS::Path::NormalizedView name, std::uint64_t maximumPreloadEstimate)
     {
+        Debug::HitchTrace::Scope hitchKeyframes("resource.keyframe_lookup", {}, name.value());
+        Debug::ResourceLifecycle::RequestScope lifecycle(Debug::ResourceLifecycle::Kind::Keyframe,
+            name.value(), mVFS, SpeculativeScope::active(), mCache.get());
+        const auto sourceGeneration = animationDependencyLifetimeEnabled() ? mVFS->getIndexGeneration() : 0;
         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(name);
 
         if (obj != nullptr)
             return osg::ref_ptr<const SceneUtil::KeyframeHolder>(static_cast<SceneUtil::KeyframeHolder*>(obj.get()));
 
+        // Only the candidate's bounded optional worker participates. Demand
+        // loading retains the original synchronous path and never joins it.
+        const bool boundedPreload = animationDependencyPreloadEnabled() && SpeculativeScope::active()
+            && name.extension() == VFS::Path::ExtensionView("kf");
+        auto claim = boundedPreload
+            ? SpeculativeScope::claim(std::to_string(mVFS->getIndexGeneration()) + "|keyframe|" + std::string(name.value()))
+            : SpeculativeBudget::Claim{};
+        std::optional<SpeculativeScope::Stage> memoryStage;
+        std::uint64_t ownerEstimate = 0;
         osg::ref_ptr<SceneUtil::KeyframeHolder> loaded(new SceneUtil::KeyframeHolder);
         constexpr VFS::Path::ExtensionView kf("kf");
         if (name.extension() == kf)
         {
             auto file = std::make_shared<Nif::NIFFile>(name);
             Nif::Reader reader(*file, mEncoder);
-            reader.parse(mVFS->get(name));
-            NifOsg::Loader::loadKf(*file, *loaded.get());
+            if (boundedPreload)
+            {
+                auto stream = mVFS->get(name);
+                const auto estimate = estimateStream(*stream, false);
+                ownerEstimate = estimate.retained;
+                if (estimate.retained > maximumPreloadEstimate) throw SpeculativeDeferred{};
+                memoryStage.emplace(estimate.peak, estimate.retained);
+                Debug::HitchTrace::Scope detail("resource.keyframe_parse");
+                reader.parse(std::move(stream));
+            }
+            else
+            {
+                auto stream = mVFS->get(name);
+                if (animationWarmLeaseEnabled())
+                {
+                    try
+                    {
+                        // Stamp from the ACTUAL parsed source, never reopen a
+                        // later filesystem revision on a warm hit. Required
+                        // loads are not admitted/denied by optional budgeting.
+                        ownerEstimate = estimateStream(*stream, false).retained;
+                    }
+                    catch (const SpeculativeDeferred&)
+                    {
+                        // An unsupported seek is only an unknown ownership
+                        // estimate. Reopen the original demand stream so its
+                        // parser does not inherit a failed metadata seek.
+                        stream = mVFS->get(name);
+                    }
+                }
+                Debug::HitchTrace::Scope detail("resource.keyframe_parse");
+                reader.parse(std::move(stream));
+            }
+
+            {
+                Debug::HitchTrace::Scope detail("resource.keyframe_build", Debug::HitchTrace::CpuTiming::Scoped);
+                NifOsg::Loader::loadKf(*file, *loaded.get());
+            }
+
         }
         else
         {
@@ -234,8 +289,92 @@ namespace Resource
                 scene->accept(rav);
             }
         }
-        mCache->addEntryToObjectCache(name.value(), loaded);
+        mCache->addEntryToObjectCache(name.value(), loaded, 0.0,
+            sourceGeneration, ownerEstimate);
         return loaded;
+    }
+
+    ObjectCacheLease KeyframeManager::getReadyLease(
+        VFS::Path::NormalizedView name, std::uint64_t maximumPreloadEstimate)
+    {
+        const auto generation = mVFS->getIndexGeneration();
+        const auto value = get(name, maximumPreloadEstimate);
+        auto lease = mCache->getLeaseFromObjectCache(name, value.get(), generation);
+        if (animationWarmLeaseEnabled())
+        {
+            Debug::HitchTrace::Scope receipt("animation.keyframe_ready_lease", {}, name.value());
+            receipt.retain();
+            receipt.setMetric(0, "outcome", 3); // missing/stale owner
+            receipt.setMetric(1, "estimated_bytes", 0);
+            receipt.setMetric(2, "charged_bytes", lease.bytes());
+            receipt.setMetric(3, "lifecycle_id", lease.mLifecycle);
+            if (!lease || !lease.mCharge || generation != mVFS->getIndexGeneration())
+                return {};
+            if (lease.bytes() && lease.mOwnerEstimate > lease.bytes())
+            {
+                receipt.setMetric(0, "outcome", 7); // positive charge is below its immutable estimate
+                return {};
+            }
+            try
+            {
+                // Even a charged warm hit must admit this NEW optional owner.
+                // Already-owned progress imports never call this path.
+                auto admission = SpeculativeScope::reserveOwnerEstimate(mCache->speculativeBudget(), 0);
+                if (!lease.bytes())
+                {
+                    if (name.extension() != VFS::Path::ExtensionView("kf"))
+                    {
+                        receipt.setMetric(0, "outcome", 7); // no immutable KF size contract
+                        return {};
+                    }
+                    // Already stamped under the same cache publication as the
+                    // generation-tagged payload; no VFS reopen/hash/parse here.
+                    const auto estimate = lease.mOwnerEstimate;
+                    receipt.setMetric(1, "estimated_bytes", estimate);
+                    if (!estimate)
+                    {
+                        receipt.setMetric(0, "outcome", 7); // unknown publication footprint
+                        return {};
+                    }
+                    if (estimate > maximumPreloadEstimate)
+                    {
+                        receipt.setMetric(0, "outcome", 5); // local retention cap
+                        return {};
+                    }
+                    auto reservation = SpeculativeScope::reserveOwnerEstimate(mCache->speculativeBudget(), estimate);
+                    if (generation != mVFS->getIndexGeneration()
+                        || !mCache->promoteReadyLease(name, lease, estimate, reservation))
+                    {
+                        receipt.setMetric(0, "outcome", 9); // generation/revision/charge winner changed
+                        return {};
+                    }
+                    receipt.setMetric(0, "outcome", 2); // admitted canonical warm charge
+                }
+                else
+                    receipt.setMetric(0, "outcome", 1); // existing positive immutable charge
+                receipt.setMetric(2, "charged_bytes", lease.bytes());
+                if (lease.bytes() > maximumPreloadEstimate)
+                {
+                    receipt.setMetric(0, "outcome", 5);
+                    return {};
+                }
+                if (generation != mVFS->getIndexGeneration() || !isReadyLeaseCurrent(name, lease))
+                {
+                    receipt.setMetric(0, "outcome", 9);
+                    return {};
+                }
+                return lease;
+            }
+            catch (const SpeculativeDeferred&)
+            {
+                receipt.setMetric(0, "outcome", 8); // pressure/headroom/scope admission; retryable caller
+                throw;
+            }
+        }
+        if (!lease || !lease.mCharge || !lease.bytes() || lease.bytes() > maximumPreloadEstimate
+            || generation != mVFS->getIndexGeneration())
+            return {}; // unknown/stale owners are not optional free pins
+        return lease;
     }
 
     void KeyframeManager::reportStats(unsigned int frameNumber, osg::Stats* stats) const

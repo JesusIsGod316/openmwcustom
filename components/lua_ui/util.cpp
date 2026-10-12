@@ -24,6 +24,7 @@ namespace LuaUi
         MyGUI::FactoryManager::getInstance().registerFactory<LuaWidget>("Widget");
         MyGUI::FactoryManager::getInstance().registerFactory<LuaText>("Widget");
         MyGUI::FactoryManager::getInstance().registerFactory<LuaTextEdit>("Widget");
+        MyGUI::FactoryManager::getInstance().registerFactory<LuaReflowEditBox>("Widget");
         MyGUI::FactoryManager::getInstance().registerFactory<LuaWindow>("Widget");
         MyGUI::FactoryManager::getInstance().registerFactory<LuaImage>("Widget");
         MyGUI::FactoryManager::getInstance().registerFactory<LuaTileRect>("BasisSkin");
