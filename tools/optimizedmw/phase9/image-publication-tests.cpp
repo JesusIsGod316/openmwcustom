@@ -124,7 +124,34 @@ namespace
         { supportsExtension(extension, "real-reader publication observation"); }
         ReadResult readImage(std::istream& stream, const osgDB::Options* options) const override
         {
-            auto result = original->readImage(stream, options);
+            ReadResult result;
+            {
+                std::unique_lock lock(mutex);
+                if (sharedImage)
+                {
+                    // Both real ImageManager calls first miss their cache. The
+                    // second shared return waits for the first caller's entire
+                    // postprocess/publication, avoiding unsupported concurrent
+                    // mutation of one Image while preserving the shared-return
+                    // custom decoder case under test.
+                    if (!borrowedWrappers && sharedReturns++ && !sharedChanged.wait_for(lock, std::chrono::seconds(5),
+                            [&] { return sharedCallerComplete; }))
+                        throw std::runtime_error("shared reader caller completion timed out");
+                    if (borrowedWrappers)
+                    {
+                        osg::ref_ptr<osg::Image> wrapper = new osg::Image;
+                        wrapper->setImage(sharedImage->s(), sharedImage->t(), sharedImage->r(),
+                            sharedImage->getInternalTextureFormat(), sharedImage->getPixelFormat(),
+                            sharedImage->getDataType(), sharedImage->data(), osg::Image::NO_DELETE,
+                            sharedImage->getPacking(), sharedImage->getRowLength());
+                        wrapper->setOrigin(sharedImage->getOrigin());
+                        wrapper->setMipmapLevels(sharedImage->getMipmapLevels());
+                        result = ReadResult(wrapper.get());
+                    }
+                    else result = ReadResult(sharedImage.get());
+                }
+            }
+            if (!result.validImage()) result = original->readImage(stream, options);
             if (result.validImage())
             {
                 auto* image = result.getImage();
@@ -141,11 +168,21 @@ namespace
             return result;
         }
         void reset()
-        { std::lock_guard lock(mutex); decoded.clear(); releaseAction = {}; dynamic.store(false); alternateDescriptor.store(false); }
+        {
+            std::lock_guard lock(mutex);
+            decoded.clear(); releaseAction = {}; dynamic.store(false); alternateDescriptor.store(false);
+            sharedImage = nullptr; sharedReturns = 0; sharedCallerComplete = false; borrowedWrappers = false;
+        }
         std::vector<osg::observer_ptr<osg::Image>> observations() const
         { std::lock_guard lock(mutex); return decoded; }
         void onRelease(std::function<void()> action)
         { std::lock_guard lock(mutex); releaseAction = std::move(action); }
+        void returnShared(osg::Image* image)
+        { std::lock_guard lock(mutex); sharedImage = image; sharedReturns = 0; sharedCallerComplete = false; borrowedWrappers = false; }
+        void returnBorrowedBacking(osg::Image* image)
+        { std::lock_guard lock(mutex); sharedImage = image; borrowedWrappers = true; }
+        void callerComplete()
+        { std::lock_guard lock(mutex); sharedCallerComplete = true; sharedChanged.notify_all(); }
         osg::ref_ptr<osgDB::ReaderWriter> original;
         std::atomic<bool> dynamic{false};
         std::atomic<bool> alternateDescriptor{false};
@@ -153,6 +190,11 @@ namespace
         mutable std::mutex mutex;
         mutable std::vector<osg::observer_ptr<osg::Image>> decoded;
         std::function<void()> releaseAction;
+        osg::ref_ptr<osg::Image> sharedImage;
+        mutable std::condition_variable sharedChanged;
+        mutable unsigned sharedReturns = 0;
+        mutable bool sharedCallerComplete = false;
+        bool borrowedWrappers = false;
     };
     struct ReaderSwap
     {
@@ -227,17 +269,26 @@ namespace
         return result;
     }
     using Pair = std::pair<osg::ref_ptr<osg::Image>, osg::ref_ptr<osg::Image>>;
-    Pair race(Fixture& f, bool flipSecond = false, bool optionalSecond = false, std::function<void()> beforeRelease = {})
+    Pair race(Fixture& f, bool flipSecond = false, bool optionalSecond = false,
+        std::function<void()> beforeRelease = {}, ObservedReader* completion = nullptr)
     {
         f.file->arm();
-        auto a = std::async(std::launch::async, [&] { return f.manager->getImage(f.path); });
+        auto a = std::async(std::launch::async, [&] {
+            auto image = f.manager->getImage(f.path);
+            if (completion) completion->callerComplete();
+            return image;
+        });
         auto b = std::async(std::launch::async, [&] {
             if (optionalSecond)
             {
                 SpeculativeScope scope(&f.budget, sample, &f.budget, SpeculativePriority::Background);
-                return f.manager->getImage(f.path, flipSecond);
+                auto image = f.manager->getImage(f.path, flipSecond);
+                if (completion) completion->callerComplete();
+                return image;
             }
-            return f.manager->getImage(f.path, flipSecond);
+            auto image = f.manager->getImage(f.path, flipSecond);
+            if (completion) completion->callerComplete();
+            return image;
         });
         const bool both = f.file->wait(2);
         if (both && beforeRelease) beforeRelease();
@@ -308,6 +359,41 @@ int main() try
     ordinaryCases("png", pngBytes);
     ordinaryCases("dds", ddsBytes);
     ordinaryCases("dds", dxt1(), 8);
+    {
+        Fixture baseline("dds", ddsBytes, false);
+        auto alreadyShared = baseline.manager->getImage(baseline.path);
+        require(alreadyShared != baseline.manager->getWarningImage(), "shared decoder seed failed real DDS decoding");
+        ReaderSwap sharedReader("dds"); sharedReader.observed->returnShared(alreadyShared);
+        Fixture f("dds", ddsBytes, true);
+        auto images = race(f, false, false, {}, sharedReader.observed);
+        const auto s = f.manager->publicationStats();
+        require(images.first == alreadyShared && images.second == alreadyShared,
+            "custom decoder did not return its actual already shared Image to both missed calls");
+        const auto observations = sharedReader.observed->observations();
+        require(observations.size() == 2 && observations[0].get() == alreadyShared.get()
+            && observations[1].get() == alreadyShared.get(), "shared decoder fixture did not observe both real loader calls");
+        require(s.publications == 1 && s.winners == 1 && s.discardedImages == 0 && s.discardedBytes == 0,
+            "already shared decoder object was reported as a distinct discarded payload");
+        require(f.manager->getImageLease(f.path, alreadyShared) && f.budget.stats().knownOwnerBytes
+            == alreadyShared->getTotalSizeInBytesIncludingMipmaps(), "shared return changed exact image lease or double charged payload");
+    }
+    {
+        Fixture baseline("dds", ddsBytes, false);
+        auto backingOwner = baseline.manager->getImage(baseline.path);
+        ReaderSwap borrowedReader("dds"); borrowedReader.observed->returnBorrowedBacking(backingOwner);
+        Fixture f("dds", ddsBytes, true);
+        auto images = race(f);
+        const auto s = f.manager->publicationStats();
+        require(images.first != images.second && images.first->data() == backingOwner->data()
+            && images.second->data() == backingOwner->data(), "custom decoder did not return distinct borrowed wrappers over one actual backing");
+        require(images.first->getAllocationMode() == osg::Image::NO_DELETE
+            && images.second->getAllocationMode() == osg::Image::NO_DELETE,
+            "borrowed wrapper fixture accidentally acquired the backing allocation");
+        require(s.publications == 2 && s.winners == 0 && s.discardedImages == 0 && s.discardedBytes == 0 && s.ineligible == 2,
+            "borrowed shared backing was coalesced or reported as a distinct discarded payload");
+        require(digest(*images.first) == digest(*backingOwner) && digest(*images.second) == digest(*backingOwner),
+            "ordinary borrowed fallback changed source metadata/pixels");
+    }
     ReaderSwap readers("tga");
     {
         Fixture f("tga", tgaBytes, true); readers.observed->reset();

@@ -80,7 +80,7 @@ namespace
     bool canonicalEligible(const osg::Image* image)
     {
         return image && image->data() && image->getDataVariance() != osg::Object::DYNAMIC
-            && !image->requiresUpdateCall();
+            && !image->requiresUpdateCall() && image->getAllocationMode() != osg::Image::NO_DELETE;
     }
 
     // Semantic decoded payload, not allocator capacity or resident RAM. OSG's
@@ -502,9 +502,15 @@ namespace Resource
                                 && canonicalPayloadBytes(*ready) == decodedBytes)
                             {
                                 winner = ready;
-                                if (winner != image)
+                                ++mPublicationWinners;
+                                // ReadResult and this local are the two decoder
+                                // owners. A shared plugin result or borrowed
+                                // backing can be canonically returned, but it
+                                // proves no distinct payload release here.
+                                if (ready != image.get() && ready->data() != image->data()
+                                    && image->referenceCount() == 2
+                                    && image->getAllocationMode() != osg::Image::NO_DELETE)
                                 {
-                                    ++mPublicationWinners;
                                     ++mDiscardedImages;
                                     mDiscardedBytes.fetch_add(decodedBytes, std::memory_order_relaxed);
                                 }
