@@ -7,6 +7,7 @@
 #include <components/debug/debuglog.hpp>
 #include <components/files/constrainedfilestream.hpp>
 #include <components/files/conversion.hpp>
+#include <components/files/constrainedreadpolicy.hpp>
 
 namespace VFS
 {
@@ -89,7 +90,17 @@ namespace VFS
         if(ec) return {};
         // ConstrainedFileStream owns an 8 KiB inline buffer and at most 64 KiB
         // optional refill backing. Include generous stream/path/trace overhead.
+#ifdef _WIN32
+        // Keep the same successful required reader, not a second source open.
+        // Include the actual optional refill lane and bounded path/trace slack.
+        const auto pathBytes=Files::pathToUnicodeString(mPath).size();
+        const auto retained=pathBytes<=4096
+            ? (Files::ConstrainedReadPolicy::Options::startup().refillBytes==Files::ConstrainedReadPolicy::CandidateBytes
+                ? 128ull*1024 : 32ull*1024) : 0;
+        return SourceOpenEstimate{size,1024*1024,retained};
+#else
         return SourceOpenEstimate{size,1024*1024};
+#endif
     }
 
     std::filesystem::file_time_type FileSystemArchiveFile::getLastModified() const

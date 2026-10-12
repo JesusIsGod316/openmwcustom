@@ -5,6 +5,7 @@
 #include "imagepayload.hpp"
 #include "speculativebudget.hpp"
 #include <components/vfs/manager.hpp>
+#include <components/files/constrainedfilestream.hpp>
 
 #include <osgDB/Options>
 #include <osgDB/Registry>
@@ -100,6 +101,8 @@ namespace Resource::ImageSource
         std::uint64_t maximumOpenPeakBytes = 64 * SpeculativeBudget::MiB;
         // This allowance is admission, not proof of every plugin allocation.
         std::uint64_t decoderScratchAllowance = 8 * SpeculativeBudget::MiB;
+        bool retainStableReader = false;
+        std::uint64_t maximumStableReaderBytes = 128 * 1024;
     };
     struct Layout
     {
@@ -130,6 +133,32 @@ namespace Resource::ImageSource
         // never inferred from whatever GL allocation currently survives.
         bool imageManagerPostprocess = false, disableFlip = false, killAlpha = false;
         friend auto operator<=>(const Revision&, const Revision&) = default;
+    };
+    class StableReader final
+    {
+    public:
+        explicit StableReader(Files::IStreamPtr reader,std::uint64_t bytes)
+            : mReader(std::move(reader)),mBytes(bytes) {}
+        void adopt(SpeculativeBudget* budget,SpeculativeBudget::Stage& reservation,std::uint64_t estimate)
+        { mCharge=budget->track({this,28},estimate,false,&reservation,true); }
+        bool read(DerivedAssets::Bytes& bytes) const
+        {
+            if (bytes.size()!=mBytes) return false;
+            std::lock_guard lock(mMutex);
+            mReader->clear();mReader->seekg(0,std::ios::beg);
+            if (!*mReader) return false;
+            mReader->read(reinterpret_cast<char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));
+            return bool(*mReader) && mReader->peek()==std::char_traits<char>::eof() && !mReader->bad();
+        }
+        std::uint64_t bytes() const noexcept { return mBytes; }
+    private:
+        // Actual reader/handle dies before its retained estimate. No borrowed
+        // VFS/File/archive pointer survives here. The opened stream owns its
+        // fixed physical source region; replay never reopens a path/provider.
+        SpeculativeBudget::ChargePtr mCharge;
+        Files::IStreamPtr mReader;
+        const std::uint64_t mBytes;
+        mutable std::mutex mMutex;
     };
     class Authority final
     {
@@ -162,6 +191,7 @@ namespace Resource::ImageSource
             SpeculativeBudget::Stage reservation; // Buffer dies before admission.
             DerivedAssets::Bytes bytes;
             std::uint64_t generation=0;
+            std::shared_ptr<const StableReader> stable;
         };
         std::optional<Snapshot> snapshot(VFS::Path::NormalizedView path, SpeculativeBudget* budget,
             const OpenGlPressureSample& sample, const Config& config, std::uint64_t expectedGeneration=0) const
@@ -192,6 +222,20 @@ namespace Resource::ImageSource
                 mVfs->getIndexGeneration()};
             input->read(reinterpret_cast<char*>(result.bytes.data()),static_cast<std::streamsize>(result.bytes.size()));
             if (!*input || input->peek()!=std::char_traits<char>::eof() || input->bad()) return {};
+            if (config.retainStableReader && estimate->stableReaderBytes
+                && estimate->stableReaderBytes<=config.maximumStableReaderBytes
+                && estimate->stableReaderBytes<=estimate->openPeakBytes
+#ifdef _WIN32
+                && typeid(*input)==typeid(Files::ConstrainedFileStream)
+                && static_cast<const Files::ConstrainedFileStream*>(input.get())->usesOwnedBuffer()
+#else
+                && false // No portable immutable-file sharing contract yet.
+#endif
+                )
+            {
+                auto stable=std::make_shared<StableReader>(std::move(input),result.bytes.size());
+                stable->adopt(budget,result.reservation,estimate->stableReaderBytes);result.stable=std::move(stable);
+            }
             return result;
         }
     private:
@@ -254,7 +298,7 @@ namespace Resource::ImageSource
                 Revision revision{authority->identity(),source->generation,std::string(path.value()),
                     DerivedAssets::digest(source->bytes),payloadDigest(expected,*layout),extension,reader->className(),
                     std::move(options),std::move(*layout)};
-                auto recipe=std::shared_ptr<Recipe>(new Recipe(std::move(authority),std::move(revision),config));
+                auto recipe=std::shared_ptr<Recipe>(new Recipe(std::move(authority),std::move(revision),config,source->stable));
                 auto decoded=recipe->decode(source->bytes,*reader);
                 if (!decoded || !recipe->matches(*decoded) || !recipe->mAuthority->current(source->generation)) return {};
                 return recipe;
@@ -281,7 +325,7 @@ namespace Resource::ImageSource
                 Revision revision{authority->identity(),source.generation,std::string(path.value()),
                     DerivedAssets::digest(source.bytes),payloadDigest(image,*layout),normalized,reader.className(),
                     std::move(options),*layout,true,disableFlip,killAlpha};
-                return std::shared_ptr<Recipe>(new Recipe(std::move(authority),std::move(revision),config));
+                return std::shared_ptr<Recipe>(new Recipe(std::move(authority),std::move(revision),config,source.stable));
             }
             catch (...) { return {}; }
         }
@@ -331,6 +375,33 @@ namespace Resource::ImageSource
             }
             catch (...) { return {}; }
         }
+        bool hasStableReader() const noexcept { return bool(mStable); }
+        // Explicit independent source owner. Unlike reconstruct(), this does
+        // not borrow/revive VFS or select a new winner after manager/index
+        // teardown. It decodes only the original owned Windows file region and
+        // checks its sealed source/pixel SHA256. New winners keep new keys.
+        osg::ref_ptr<osg::Image> reconstructStableOwned(SpeculativeBudget* budget,
+            const OpenGlPressureSample& sample) const noexcept
+        {
+            try
+            {
+                if (!mStable || !budget || mStable->bytes()>mConfig.maximumSourceBytes) return {};
+                auto sourceReservation=budget->reserve(sample,mStable->bytes(),SpeculativePriority::Background,true);
+                if (sourceReservation.future()!=mStable->bytes()) return {};
+                DerivedAssets::Bytes bytes(static_cast<std::size_t>(mStable->bytes()));
+                if (!mStable->read(bytes) || DerivedAssets::digest(bytes)!=mRevision.sourceSha256) return {};
+                const auto bound=preflight(bytes,mRevision.extension,mConfig);
+                if (!bound || mRevision.layout.bytes>bound) return {};
+                auto reservation=reserveDecode(budget,sample,bound,mConfig);
+                if (!reservation.future()) return {};
+                auto* reader=osgDB::Registry::instance()->getReaderWriterForExtension(mRevision.extension);
+                if (!reader || std::string_view(reader->className())!=mRevision.readerClass) return {};
+                auto image=decode(bytes,*reader);
+                if (!image || !matches(*image) || !adoptBacking(*image,budget,reservation)) return {};
+                return image;
+            }
+            catch (...) { return {}; }
+        }
         osg::ref_ptr<osg::Image> cloneOwned(const osg::Image& original,SpeculativeBudget* budget,
             const OpenGlPressureSample& sample) const noexcept
         {
@@ -359,8 +430,9 @@ namespace Resource::ImageSource
             catch (...) { return {}; }
         }
     private:
-        Recipe(std::shared_ptr<Authority> authority,Revision revision,Config config)
-            : mAuthority(std::move(authority)),mRevision(std::move(revision)),mConfig(config) {}
+        Recipe(std::shared_ptr<Authority> authority,Revision revision,Config config,
+            std::shared_ptr<const StableReader> stable={})
+            : mAuthority(std::move(authority)),mRevision(std::move(revision)),mConfig(config),mStable(std::move(stable)) {}
         static std::uint32_t le32(const DerivedAssets::Bytes& bytes,std::size_t offset)
         {
             std::uint32_t result=0;
@@ -453,6 +525,7 @@ namespace Resource::ImageSource
         const std::shared_ptr<Authority> mAuthority;
         const Revision mRevision;
         const Config mConfig;
+        const std::shared_ptr<const StableReader> mStable;
     };
 }
 #endif

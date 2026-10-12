@@ -15,6 +15,7 @@ namespace Files
             , mBuffer(std::move(buffer))
         {
         }
+        bool usesOwnedBuffer() const noexcept { return std::istream::rdbuf()==mBuffer.get(); }
 
     private:
         std::unique_ptr<Buffer> mBuffer;

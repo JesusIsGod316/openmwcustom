@@ -12,6 +12,7 @@
 #include <components/bsa/compressedbsafile.hpp>
 
 #include <components/toutf8/toutf8.hpp>
+#include <components/files/constrainedreadpolicy.hpp>
 
 #include <algorithm>
 #include <memory>
@@ -45,7 +46,18 @@ namespace VFS
             // inspect a stream length; they need a separate qualified contract.
             if constexpr(std::is_same_v<FileType,Bsa::BSAFile>)
             {
-                if(typeid(*this)==typeid(BsaArchiveFile)) return SourceOpenEstimate{mInfo->mFileSize,1024*1024};
+                if(typeid(*this)==typeid(BsaArchiveFile))
+                {
+#ifdef _WIN32
+                    const auto pathBytes=mFile->getFile()->getFilename().size();
+                    const auto retained=pathBytes<=4096
+                        ? (Files::ConstrainedReadPolicy::Options::startup().refillBytes==Files::ConstrainedReadPolicy::CandidateBytes
+                            ? 128ull*1024 : 32ull*1024) : 0;
+                    return SourceOpenEstimate{mInfo->mFileSize,1024*1024,retained};
+#else
+                    return SourceOpenEstimate{mInfo->mFileSize,1024*1024};
+#endif
+                }
             }
             return {};
         }

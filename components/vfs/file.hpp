@@ -16,6 +16,11 @@ namespace VFS
         // Conservative peak owned by open()/the resulting stream, including
         // optional refill backing. Admission evidence, never source identity.
         std::uint64_t openPeakBytes=0;
+        // Positive only for a known reader whose open handle owns the exact
+        // immutable source until close. Windows constrained readers already
+        // use FILE_SHARE_READ (without write/delete sharing). This is an
+        // estimated retained stream/handle allowance, not a kernel RAM census.
+        std::uint64_t stableReaderBytes=0;
     };
     class File
     {
