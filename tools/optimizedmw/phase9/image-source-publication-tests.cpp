@@ -77,8 +77,9 @@ namespace
     }
     void paddedTga()
     {
-        // Real Morrowind 16-bit/one-alpha-bit normalization allocates RGB rows
-        // at packing4. Seven RGB pixels leave three unused bytes per row.
+        // Actual Morrowind alpha normalization uses OSG's default packing1.
+        // Keep that production path separate from the supported padded-layout
+        // property below; a synthetic layout is not production engagement.
         VFS::Manager vfs;auto archive=std::make_unique<Archive>("textures/padded.tga");
         archive->file.bytes=Bytes(18+7*5*2,0);auto& bytes=archive->file.bytes;
         bytes[2]=2;bytes[12]=7;bytes[14]=5;bytes[16]=16;bytes[17]=1;
@@ -87,17 +88,25 @@ namespace
         SpeculativeBudget budget({512*SpeculativeBudget::MiB,4,1,256*SpeculativeBudget::MiB,64*SpeculativeBudget::MiB,1});
         ImageManager manager(&vfs,120);manager.setSpeculativeBudget(&budget);manager.configureImageSources(true,sample,&budget);
         auto image=manager.getImage(path);const auto recipe=ImageManager::imageSourceRecipe(*image);
-        require(image && recipe && image->getPixelFormat()==GL_RGB && image->getPacking()==4
-            && imagePayloadExtent(*image).bytes==120 && recipe->revision().killAlpha,
-            "Actual TGA decoder and Morrowind alpha normalization create the padded source fixture");
-        for (unsigned y=0;y<5;++y)std::fill(image->data()+y*24+21,image->data()+y*24+24,0x5a);
-        require(recipe->matches(*image),"Unused row padding cannot change immutable decoded-pixel identity");
+        require(image && recipe && image->getPixelFormat()==GL_RGB && image->getPacking()==1
+            && imagePayloadExtent(*image).bytes==105 && recipe->revision().killAlpha,
+            "Actual TGA decoder and Morrowind alpha normalization preserve their observed tight RGB layout");
         auto reconstructed=recipe->reconstruct(&budget,sample(&budget));
         require(reconstructed && recipe->matches(*reconstructed.image)
             && reconstructed.image->getPixelFormat()==GL_RGB && reconstructed.image->getOrigin()==image->getOrigin(),
-            "Actual padded TGA reconstructs exact normalized pixels independently of allocator padding");
+            "Actual TGA reconstructs the observed normalized RGB pixels/origin without relabeling variance");
         image->data()[0]^=1;
         require(!recipe->matches(*image),"Changed visible texel is rejected even without a dirty notification");
+        osg::ref_ptr<osg::Image> padded=new osg::Image;
+        padded->allocateImage(7,5,1,GL_RGB,GL_UNSIGNED_BYTE,4);std::memset(padded->data(),0,120);
+        const auto layout=ImageSource::Layout::of(*padded);
+        require(layout && layout->bytes==120,"Controlled supported padded RGB layout has checked backing and actual default variance");
+        const auto before=ImageSource::payloadDigest(*padded,*layout);
+        for (unsigned y=0;y<5;++y)std::fill(padded->data()+y*24+21,padded->data()+y*24+24,0x5a);
+        require(ImageSource::payloadDigest(*padded,*layout)==before,
+            "Supported-layout decoded-pixel digest ignores bytes which texture upload does not consume");
+        padded->data()[0]=1;
+        require(ImageSource::payloadDigest(*padded,*layout)!=before,"Supported-layout digest still detects changed visible RGB texels");
     }
 }
 int main(int argc,char** argv) try
