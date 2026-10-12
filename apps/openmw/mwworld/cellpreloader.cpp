@@ -1223,10 +1223,13 @@ namespace MWWorld
             mResourceSystem->speculativeBudget() && Resource::ramRetentionEnabled(4));
         if (static_cast<bool>(Settings::cells().mV316IdleResourceSweep) || mResourceSystem->speculativeBudget())
             mV316ResourceSweepQueue = new SceneUtil::WorkQueue(1);
+        mResourceSystem->attachLoadingNifMaintenanceQueue(mV316ResourceSweepQueue.get());
     }
 
     CellPreloader::~CellPreloader()
     {
+        if (mV316ResourceSweepQueue)
+            mResourceSystem->detachLoadingNifMaintenanceQueue(mV316ResourceSweepQueue.get());
         if (mColdRetention)
             Log(Debug::Info) << std::dec << "OptimizedMW cold preload owners: retired=" << mColdRetired
                 << " indexed=" << mColdRetention->size() << " index_available=" << mColdRetention->available()

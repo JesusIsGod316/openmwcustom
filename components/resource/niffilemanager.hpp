@@ -31,6 +31,10 @@ namespace Resource
         // Startup-only C2. Legacy shortens the ordinary TTL; explicit v2 can
         // retain a short parsed-source tier even when Normal's ordinary TTL is0.
         void setColdRetentionSeconds(double seconds,bool independent=false);
+        // Startup-only. The loading pressure worker must preserve actual
+        // shared source consumers, not only references to its cache wrapper.
+        void setLoadingTrimEnabled(bool enabled);
+        std::size_t trimUnusedForLoading(std::size_t maximum);
         double effectiveExpiryDelay() const noexcept
         { return mColdRetentionSeconds>0 ? (mIndependentColdRetention ? mColdRetentionSeconds
             : (std::min)(mExpiryDelay,mColdRetentionSeconds)) : mExpiryDelay; }
@@ -41,6 +45,8 @@ namespace Resource
     private:
         double mColdRetentionSeconds = 0;
         bool mIndependentColdRetention=false;
+        bool mLoadingTrimEnabled = false;
+        void configureExternalSourceOwners();
     };
 
 }

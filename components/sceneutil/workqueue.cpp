@@ -1,4 +1,5 @@
 #include "workqueue.hpp"
+#include "workqueuepublication.hpp"
 
 #include <components/debug/debuglog.hpp>
 #include <components/debug/hitchtrace.hpp>
@@ -15,6 +16,12 @@
 
 namespace SceneUtil
 {
+    namespace
+    {
+        std::atomic_uint64_t sPostPublicationDiagnosticFailures{ 0 };
+    }
+    std::uint64_t workQueuePublicationDiagnosticFailures() noexcept
+    { return sPostPublicationDiagnosticFailures.load(std::memory_order_relaxed); }
 
     void WorkItem::waitTillDone()
     {
@@ -140,6 +147,10 @@ namespace SceneUtil
         {
             std::unique_lock<std::mutex> lock(mMutex);
             if (enqueue) metadata.mQueued = Debug::HitchTrace::Clock::now();
+#ifdef OPENMW_WORKQUEUE_PUBLICATION_TEST_HOOKS
+            if (WorkQueuePublicationTestHooks::beforePublication)
+                WorkQueuePublicationTestHooks::beforePublication();
+#endif
             if (front || priority == Priority::Urgent)
                 mQueue.push_front({ std::move(item), metadata, Priority::Urgent });
             else if (priority == Priority::NearFuture && mQueue.size() <= 256)
@@ -161,15 +172,26 @@ namespace SceneUtil
             }
             mCondition.notify_one();
         }
-        if (profile)
+        // Once published, callers must not be told enqueue failed: they may
+        // release or resubmit that exact owned item. Diagnostic allocation is
+        // therefore exception-contained AFTER publication, never queue policy.
+        try
         {
-            std::ostringstream row;
-            row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs() << ','
-                << Debug::V3Diagnostics::threadId() << ',' << Debug::V3Diagnostics::csvQuote("enqueue") << ',' << itemId << ','
-                << Debug::V3Diagnostics::csvQuote(typeName) << ',' << queueDepth << ','
-                << mV3ActiveThreads.load(std::memory_order_relaxed) << ",0";
-            writer.writeLine(row.str());
+#ifdef OPENMW_WORKQUEUE_PUBLICATION_TEST_HOOKS
+            if (WorkQueuePublicationTestHooks::afterPublicationDiagnostic)
+                WorkQueuePublicationTestHooks::afterPublicationDiagnostic();
+#endif
+            if (profile)
+            {
+                std::ostringstream row;
+                row << Debug::V3HitchTelemetry::currentFrame() << ',' << Debug::V3Diagnostics::epochMs() << ','
+                    << Debug::V3Diagnostics::threadId() << ',' << Debug::V3Diagnostics::csvQuote("enqueue") << ',' << itemId << ','
+                    << Debug::V3Diagnostics::csvQuote(typeName) << ',' << queueDepth << ','
+                    << mV3ActiveThreads.load(std::memory_order_relaxed) << ",0";
+                writer.writeLine(row.str());
+            }
         }
+        catch (...) { sPostPublicationDiagnosticFailures.fetch_add(1, std::memory_order_relaxed); }
     }
 
     bool WorkQueue::promoteWorkItem(const WorkItem* item)

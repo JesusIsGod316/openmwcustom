@@ -1933,6 +1933,8 @@ void OMW::Engine::prepareEngine()
                      << static_cast<int>(Settings::cells().mV32GpuHardBudgetMb) << " MiB";
     mResourceSystem = std::make_unique<Resource::ResourceSystem>(mVFS.get(), effectiveResourceCacheExpiry,
         &mEncoder.get()->getStatelessEncoder(), Settings::RamCache::retainNifFiles());
+    mResourceSystem->configureLoadingNifMaintenance(
+        Settings::Manager::getBool("loading nif maintenance", "Cells"));
     mResourceSystem->getImageManager()->configureCanonicalPublication(Settings::cells().mCanonicalImagePublication);
     Log(Debug::Info) << "OptimizedMW canonical image publication: enabled="
         << static_cast<bool>(Settings::cells().mCanonicalImagePublication)

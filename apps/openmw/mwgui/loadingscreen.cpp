@@ -57,7 +57,12 @@ namespace MWGui
         findSplashScreens();
     }
 
-    LoadingScreen::~LoadingScreen() {}
+    LoadingScreen::~LoadingScreen()
+    {
+        // Engine destroys the GUI before the world/resource system. Do not
+        // leave a loading-phase callback authorized during that teardown.
+        mResourceSystem->setLoadingNifMaintenanceActive(false);
+    }
 
     void LoadingScreen::findSplashScreens()
     {
@@ -150,6 +155,8 @@ namespace MWGui
         if (mNestedLoadingCount++ > 0 && mMainWidget->getVisible())
             return;
 
+        mResourceSystem->setLoadingNifMaintenanceActive(true);
+
         mLoadingOnTime = mTimer.time_m();
 
         // Assign dummy bounding sphere callback to avoid the bounding sphere of the entire scene being recomputed after
@@ -179,6 +186,8 @@ namespace MWGui
     {
         if (--mNestedLoadingCount > 0)
             return;
+
+        mResourceSystem->setLoadingNifMaintenanceActive(false);
 
         if (mLastRenderTime < mLoadingOnTime)
         {
@@ -320,6 +329,10 @@ namespace MWGui
 
     void LoadingScreen::draw()
     {
+        // Request before visual throttling; retirement runs only on the
+        // existing idle worker and never makes the loading caller wait.
+        const auto* loadingStamp = mViewer->getFrameStamp();
+        mResourceSystem->requestLoadingNifMaintenance(loadingStamp ? loadingStamp->getReferenceTime() : 0.0);
         if (!needToDrawLoadingScreen())
             return;
 

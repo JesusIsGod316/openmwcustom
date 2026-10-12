@@ -21,6 +21,29 @@ def runtime_fixture(game):
 
 
 class Benchmarks(unittest.TestCase):
+    def test_loading_nif_gate_requires_real_retirement_and_clean_owned_completion(self):
+        line = ('OptimizedMW loading NIF maintenance: enabled=1 requests=10 queued=3 completed=2 skipped=1 '
+                'errors=0 scanned=8 removed=1 released_charge_bytes=64 '
+                'enqueue_diagnostic_failures_all_queues=0 scope=parsed_cache_only_not_process_RAM\n')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for old, new in (('enabled=1', 'enabled=0'), ('removed=1', 'removed=0'),
+                             ('errors=0', 'errors=1'), ('queues=0', 'queues=1')):
+                (root/'openmw.log').write_text(line.replace(old, new))
+                self.assertFalse(matrix.engagement(root, {'loading nif maintenance':'true'})['all_requested_positive'])
+            (root/'openmw.log').write_text(line)
+            result = matrix.engagement(root, {'loading nif maintenance':'true'})
+            self.assertTrue(result['all_requested_positive'])
+            self.assertEqual(result['loading_nif_lifetime_work']['counts']['removed'], 1)
+            self.assertIn('logical charges', result['loading_nif_lifetime_work']['limit'])
+            for bad in ('', line+line, line.replace('removed=1', 'removed=unknown'),
+                        line.replace('scanned=8', 'scanned=257'), line.replace('removed=1', 'removed=17'),
+                        line.replace('queued=3', 'queued=1'), line.replace('requests=10', 'requests=2'),
+                        line.replace('removed=1', 'removed=18446744073709551616')):
+                (root/'openmw.log').write_text(bad)
+                with self.assertRaises(ValueError):
+                    matrix.engagement(root, {'loading nif maintenance':'true'})
+
     def test_memory_diagnostics_are_explicit_and_typed(self):
         self.assertEqual(matrix.memory_diagnostic_arguments({}),[])
         self.assertEqual(matrix.memory_diagnostic_arguments({'memory_diagnostics':False}),[])

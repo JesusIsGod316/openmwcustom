@@ -144,10 +144,39 @@ def analyze(profile):
     return result
 
 
+def loading_nif_lifetime_work(text):
+    """Actual parsed-cache retirements; counters never claim resident RAM savings."""
+    rows = re.findall(r'OptimizedMW loading NIF maintenance:([^\r\n]*)', text)
+    if len(rows) != 1:
+        raise ValueError('Expected exactly one final loading NIF maintenance receipt')
+    fields = dict(re.findall(r'\b(\w+)=(\S+)', rows[0]))
+    names = ('enabled', 'requests', 'queued', 'completed', 'skipped', 'errors',
+             'scanned', 'removed', 'released_charge_bytes', 'enqueue_diagnostic_failures_all_queues')
+    counts = {}
+    for name in names:
+        value = fields.get(name, '')
+        if not re.fullmatch(r'\d+', value) or int(value) > (1 << 64)-1:
+            raise ValueError('Missing or malformed loading NIF count: '+name)
+        counts[name] = int(value)
+    if fields.get('scope') != 'parsed_cache_only_not_process_RAM' or counts['enabled'] not in (0, 1):
+        raise ValueError('Loading NIF receipt has an unknown scope or enabled state')
+    if (counts['queued'] > counts['requests'] or counts['completed']+counts['skipped'] > counts['queued']
+            or counts['removed'] > counts['completed']*8 or counts['scanned'] > counts['completed']*128):
+        raise ValueError('Loading NIF receipt has incoherent task or release counts')
+    return {'scope': 'game_lifetime_completed_parsed_cache_retirements', 'counts': counts,
+            'positive': bool(counts['enabled'] and counts['completed'] and counts['removed']
+                             and not counts['errors'] and not counts['enqueue_diagnostic_failures_all_queues']),
+            'limit': 'Cache entries and logical charges; independently sample process/system recovery and frame cost'}
+
+
 def engagement(profile, requested, asset_mask=0, architecture_mask=0, work=None, lua_work=None):
     text = (profile/'openmw.log').read_text(encoding='utf-8-sig')
     positive = {}
     image_lifetime = None
+    nif_lifetime = None
+    if requested.get('loading nif maintenance') == 'true':
+        nif_lifetime = loading_nif_lifetime_work(text)
+        positive['loading_nif_maintenance'] = nif_lifetime['positive']
     if requested.get('canonical image publication') == 'true':
         image_lifetime = image_publication_work.lifetime_work(profile)
         positive['canonical_image_publication'] = image_publication_work.positive_engagement(image_lifetime, requested=True)
@@ -231,6 +260,7 @@ def engagement(profile, requested, asset_mask=0, architecture_mask=0, work=None,
             and indirect_work.positive_counts(lua_work, 'reused_total'))
     return {'positive_work': positive, 'all_requested_positive': all(positive.values()),
             'image_publication_lifetime_work': image_lifetime,
+            'loading_nif_lifetime_work': nif_lifetime,
             'limit': 'Preparation/dispatch engagement; visible resource adoption and performance require separate evidence'}
 
 

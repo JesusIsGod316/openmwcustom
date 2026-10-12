@@ -21,6 +21,11 @@ namespace osg
     class State;
 }
 
+namespace SceneUtil
+{
+    class WorkQueue;
+}
+
 namespace ToUTF8
 {
     class StatelessUtf8Encoder;
@@ -36,6 +41,7 @@ namespace Resource
     class KeyframeManager;
     class BaseResourceManager;
     class AnimBlendRulesManager;
+    struct LoadingNifMaintenanceState;
 
     /// @brief Wrapper class that constructs and provides access to the most commonly used resource subsystems.
     /// @par Resource subsystems can be used with multiple OpenGL contexts, just like the OSG equivalents, but
@@ -70,6 +76,14 @@ namespace Resource
         std::optional<PreloadAdmission::Reservation> reserveOptionalPreload()
         { return mHostMemoryBudget.reserveOptionalPreload(); }
         PreloadAdmission::Stats preloadAdmissionStats() const { return mHostMemoryBudget.preloadAdmissionStats(); }
+
+        // Startup-only configuration. LoadingScreen is the UI-owner caller;
+        // the borrowed queue is the existing one-thread idle sweep queue.
+        void configureLoadingNifMaintenance(bool enabled);
+        void attachLoadingNifMaintenanceQueue(SceneUtil::WorkQueue* queue);
+        void detachLoadingNifMaintenanceQueue(SceneUtil::WorkQueue* queue = nullptr);
+        void setLoadingNifMaintenanceActive(bool active) noexcept;
+        void requestLoadingNifMaintenance(double referenceTime) noexcept;
 
         /// Indicates to each resource manager to clear the cache, i.e. to drop cached objects that are no longer
         /// referenced.
@@ -114,6 +128,8 @@ namespace Resource
         std::unique_ptr<NifFileManager> mNifFileManager;
         std::unique_ptr<KeyframeManager> mKeyframeManager;
         std::unique_ptr<AnimBlendRulesManager> mAnimBlendRulesManager;
+        // Destroyed/joined before managers and their borrowed charge ledger.
+        std::unique_ptr<LoadingNifMaintenanceState> mLoadingNifMaintenance;
 
         // Store the base classes separately to get convenient access to the common interface
         // Here users can register their own resourcemanager as well

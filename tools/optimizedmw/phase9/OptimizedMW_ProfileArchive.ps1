@@ -195,6 +195,24 @@ function Test-Phase9TraceCapture {
     $streamLoss=[ordered]@{}
     $resourceRows=0;$resourceIncoherent=0;$resourceReported=$null;$resourceCapacity=32768
     if($TraceRequested){
+        # New engines declare the queue's publication diagnostic contract.
+        # A caught formatting failure does not undo the actual enqueue, but its
+        # missing metadata must not qualify as a complete diagnostic trace.
+        $engineLog=Join-Path $ProfileDir 'openmw.log'
+        if(Test-Path -LiteralPath $engineLog){
+            $engineText=Get-Content -LiteralPath $engineLog -Raw
+            $queueRows=[regex]::Matches($engineText,'(?m)OptimizedMW loading NIF maintenance:[^\r\n]*enqueue_diagnostic_failures_all_queues=([^\s]+)')
+            $declared=$engineText -match 'OptimizedMW loading NIF maintenance policy:'
+            if($declared -or $queueRows.Count){
+                $queueLoss=[uint64]0
+                if($queueRows.Count -ne 1 -or -not [uint64]::TryParse($queueRows[0].Groups[1].Value,[ref]$queueLoss)){
+                    [void]$reasons.Add('Missing, duplicate or malformed enqueue diagnostic publication receipt')
+                }else{
+                    $streamLoss['enqueue_publication_diagnostic_failures']=$queueLoss
+                    if($queueLoss -gt 0){[void]$reasons.Add("Enqueue metadata loss after successful publication: $queueLoss")}
+                }
+            }
+        }
         $status=Join-Path $ProfileDir 'p9-draw-phases.csv.status.txt'
         $frames=Join-Path $ProfileDir 'p9-draw-phases.csv.frames.csv'
         if(-not (Test-Path -LiteralPath $status)){[void]$reasons.Add('Missing renderer coverage status')}

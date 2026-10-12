@@ -102,6 +102,10 @@ add_executable(p9-owned-cell-cull owned-cell-cull-tests.cpp ${ROOT}/components/s
 add_executable(p9-temporal-history-lookup temporal-history-lookup-tests.cpp)
 add_test(NAME p9-temporal-history-lookup COMMAND p9-temporal-history-lookup)
 set_tests_properties(p9-temporal-history-lookup PROPERTIES TIMEOUT 45)
+add_executable(p9-diagnostic-namespace diagnostic-namespace-tests.cpp)
+target_link_libraries(p9-diagnostic-namespace PRIVATE Threads::Threads)
+add_test(NAME p9-diagnostic-namespace COMMAND p9-diagnostic-namespace)
+set_tests_properties(p9-diagnostic-namespace PROPERTIES TIMEOUT 30)
 target_link_libraries(p9-owned-cell-cull PRIVATE ${OPENSCENEGRAPH_LIBRARIES})
 add_test(NAME p9-owned-cell-cull COMMAND p9-owned-cell-cull)
 set_tests_properties(p9-owned-cell-cull PROPERTIES TIMEOUT 45)
@@ -143,6 +147,10 @@ set_tests_properties(p9-shared-context-preparation PROPERTIES TIMEOUT 45 ENVIRON
 add_executable(p9-persistent-opaque-packets persistent-opaque-packets-tests.cpp)
 target_link_libraries(p9-persistent-opaque-packets PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
 add_test(NAME p9-persistent-opaque-packets COMMAND p9-persistent-opaque-packets)
+add_executable(p9-retained-material-bucket-prototype retained-material-bucket-tests.cpp)
+target_link_libraries(p9-retained-material-bucket-prototype PRIVATE ${OPENSCENEGRAPH_LIBRARIES} OpenGL::GL Threads::Threads)
+add_test(NAME p9-retained-material-bucket-prototype COMMAND p9-retained-material-bucket-prototype)
+set_tests_properties(p9-retained-material-bucket-prototype PROPERTIES TIMEOUT 60)
 add_test(NAME p9-persistent-opaque-packets-deep COMMAND p9-persistent-opaque-packets --deep)
 add_executable(p9-gpu-indirect-packets gpu-indirect-packets-tests.cpp)
 target_compile_definitions(p9-gpu-indirect-packets PRIVATE OPENMW_INDIRECT_PACKET_TEST_HOOKS)
@@ -266,6 +274,44 @@ target_compile_definitions(p9-cold-image-cache PRIVATE OPENMW_COLD_IMAGE_TEST_HO
 target_link_libraries(p9-cold-image-cache PRIVATE
   ${OPENSCENEGRAPH_LIBRARIES} ${P9_CLOUD_OSGDB_LIBRARY} OpenGL::GL Threads::Threads LZ4::LZ4)
 add_test(NAME p9-cold-image-cache COMMAND p9-cold-image-cache)
+# Match the production double-precision Bullet ABI, including Debian's explicit
+# float64 package rather than silently selecting its ordinary float library.
+find_package(Bullet CONFIGS BulletConfig-float64.cmake QUIET COMPONENTS BulletCollision LinearMath)
+if(BULLET_FOUND)
+  if(NOT IS_ABSOLUTE "${BULLET_INCLUDE_DIRS}")
+    set(BULLET_INCLUDE_DIRS "${BULLET_ROOT_DIR}/${BULLET_INCLUDE_DIRS}")
+  endif()
+else()
+  find_package(Bullet REQUIRED)
+endif()
+include("${ROOT}/cmake/CheckBulletPrecision.cmake")
+if(NOT HAS_DOUBLE_PRECISION_BULLET)
+  message(FATAL_ERROR "Parsed NIF fixture requires the production double-precision Bullet ABI")
+endif()
+add_executable(p9-loading-nif-maintenance loading-nif-maintenance-tests.cpp
+  ${ROOT}/components/resource/niffilemanager.cpp ${ROOT}/components/resource/cachestats.cpp
+  ${ROOT}/components/resource/bulletshape.cpp
+  ${ROOT}/components/vfs/manager.cpp ${ROOT}/components/sceneutil/workqueue.cpp
+  ${ROOT}/components/files/hash.cpp ${ROOT}/components/files/conversion.cpp
+  ${ROOT}/components/files/constrainedfilestreambuf.cpp
+  ${ROOT}/extern/smhasher/MurmurHash3.cpp ${ROOT}/components/toutf8/toutf8.cpp)
+foreach(nif_source base controller data effect extra niffile nifstream node particle physics property texture)
+  target_sources(p9-loading-nif-maintenance PRIVATE ${ROOT}/components/nif/${nif_source}.cpp)
+endforeach()
+if(WIN32)
+  target_sources(p9-loading-nif-maintenance PRIVATE ${ROOT}/components/platform/filewin32.cpp)
+else()
+  target_sources(p9-loading-nif-maintenance PRIVATE ${ROOT}/components/platform/fileposix.cpp)
+endif()
+target_include_directories(p9-loading-nif-maintenance PRIVATE
+  ${BULLET_INCLUDE_DIRS} ${ROOT}/extern/smhasher/include ${ROOT}/extern/smhasher/include/smhasher)
+target_compile_definitions(p9-loading-nif-maintenance PRIVATE OPENMW_WORKQUEUE_PUBLICATION_TEST_HOOKS=1 BT_USE_DOUBLE_PRECISION)
+target_link_libraries(p9-loading-nif-maintenance PRIVATE ${OPENSCENEGRAPH_LIBRARIES} ${BULLET_LIBRARIES} OpenGL::GL Threads::Threads)
+if(NOT MSVC)
+  target_compile_options(p9-loading-nif-maintenance PRIVATE -Wno-error=unused-parameter)
+endif()
+add_test(NAME p9-loading-nif-maintenance COMMAND p9-loading-nif-maintenance)
+set_tests_properties(p9-loading-nif-maintenance PROPERTIES TIMEOUT 60)
 add_executable(p9-image-publication image-publication-tests.cpp
   ${ROOT}/components/resource/coldimage.cpp ${ROOT}/components/resource/imagemanager.cpp
   ${ROOT}/components/resource/cachestats.cpp ${ROOT}/components/vfs/manager.cpp
@@ -337,7 +383,7 @@ if(P9_REAL_READER_FIXTURE)
   if(NOT EXISTS "${P9_READER_BSA_FIXTURE}")
     message(FATAL_ERROR "P9_REAL_READER_FIXTURE requires an existing P9_READER_BSA_FIXTURE")
   endif()
-  find_package(Bullet REQUIRED)
+  # The parsed-NIF fixture above has already selected and checked the exact ABI.
   find_library(P9_READER_OSGDB_LIBRARY NAMES osgDB REQUIRED)
   add_executable(p9-constrained-readers constrained-reader-tests.cpp
     ${ROOT}/components/files/hash.cpp ${ROOT}/components/files/constrainedfilestreambuf.cpp

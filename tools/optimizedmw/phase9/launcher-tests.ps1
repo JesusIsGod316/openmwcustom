@@ -222,6 +222,20 @@ try{
     $lost=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
     if($lost.valid_leaf_capture -ne $false -or $lost.stream_loss.gl_rows_dropped -ne 2){throw 'Selected GL trace loss ignored'}
 
+    @('rows_dropped=0','frame_rows_dropped=0') | Set-Content -LiteralPath (Join-Path $temp 'p9-draw-phases.csv.gl-status.txt')
+    $queueDeclaration='OptimizedMW loading NIF maintenance policy: enabled=0 pressure_only=1'
+    $queueReceipt='OptimizedMW loading NIF maintenance: enabled=0 enqueue_diagnostic_failures_all_queues=0 scope=parsed_cache_only_not_process_RAM'
+    @($queueDeclaration,$queueReceipt) | Set-Content -LiteralPath (Join-Path $temp 'openmw.log')
+    $goodQueue=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
+    if($goodQueue.valid_leaf_capture -ne $true -or $goodQueue.stream_loss.enqueue_publication_diagnostic_failures -ne 0){throw 'Intact enqueue publication receipt rejected'}
+    foreach($queueCase in @(@($queueDeclaration),@($queueDeclaration,$queueReceipt.Replace('queues=0','queues=2')),
+        @($queueDeclaration,$queueReceipt.Replace('queues=0','queues=unknown')),@($queueDeclaration,$queueReceipt,$queueReceipt))){
+        $queueCase | Set-Content -LiteralPath (Join-Path $temp 'openmw.log')
+        $lostQueue=Test-Phase9TraceCapture -ProfileDir $temp -TraceRequested $true
+        if($lostQueue.valid_leaf_capture -ne $false){throw 'Missing or lost enqueue metadata accepted as a complete diagnostic trace'}
+    }
+    @($queueDeclaration,$queueReceipt) | Set-Content -LiteralPath (Join-Path $temp 'openmw.log')
+
     $temporalHeader='dlss_ready,frame,context,submitted,history_valid,previous_frame,render_w,render_h,output_w,output_h,color_ptr,depth_ptr,motion_ptr,input_mask,writer_dropped_total'
     $temporalRow='0,2,0,1,1,1,32,32,64,64,123,456,789,63,0'
     @($temporalHeader,$temporalRow,'# v3_async_diagnostics_dropped_lines=0') | Set-Content -LiteralPath (Join-Path $temp 'p9-temporal-inputs.csv')

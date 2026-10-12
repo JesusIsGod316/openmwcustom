@@ -250,11 +250,14 @@ namespace Resource
             return true;
         }
 
-        void update(double referenceTime, double expiryDelay)
+        // The parsed-source loading candidate alone opts into preserving its
+        // actual shared consumers even when expiryDelay is exactly zero.
+        // Default behavior and cache-only expiry timestamps remain unchanged.
+        void update(double referenceTime, double expiryDelay, bool preserveExternalOwners = false)
         {
             Debug::HitchTrace::Scope scan("resource.cache_expiry_scan", Debug::HitchTrace::CpuTiming::WallEnvelope);
             if (auto* budget = CacheMaintenanceScope::current())
-            { maintain(referenceTime, expiryDelay, false, *budget); return; }
+            { maintain(referenceTime, expiryDelay, false, *budget, 128, 8, preserveExternalOwners); return; }
             std::vector<Item> objectsToRemove;
             {
                 const double expiryTime = referenceTime - expiryDelay;
@@ -266,11 +269,12 @@ namespace Resource
 
                     // update last usage timestamp if item is being referenced externally
                     // or initialize if not set
-                    if (externallyOwned(item) || item.mLastUsage == 0)
+                    const bool external = externallyOwned(item);
+                    if (external || item.mLastUsage == 0)
                         item.mLastUsage = referenceTime;
 
                     // skip items that have been accessed since expiryTime
-                    if (item.mLastUsage > expiryTime)
+                    if (item.mLastUsage > expiryTime || (preserveExternalOwners && external))
                         return false;
 
                     ++mExpired;
@@ -632,7 +636,8 @@ namespace Resource
         }
 
         std::size_t maintain(double referenceTime, double expiryDelay, bool pressure,
-            CacheMaintenanceBudget& budget, std::size_t scanLimit = 128, std::size_t removeLimit = 8)
+            CacheMaintenanceBudget& budget, std::size_t scanLimit = 128, std::size_t removeLimit = 8,
+            bool preserveExternalOwners = false)
         {
             Debug::HitchTrace::Scope scan("resource.cache_bounded_scan", Debug::HitchTrace::CpuTiming::WallEnvelope);
             scanLimit = (std::min)(scanLimit, std::size_t(128));
@@ -660,9 +665,11 @@ namespace Resource
                     }
                     else
                     {
-                        if (externallyOwned(item) || item.mLastUsage == 0)
+                        const bool external = externallyOwned(item);
+                        if (external || item.mLastUsage == 0)
                             item.mLastUsage = referenceTime;
-                        eligible = item.mLastUsage <= referenceTime - expiryDelay;
+                        eligible = item.mLastUsage <= referenceTime - expiryDelay
+                            && !(preserveExternalOwners && external);
                     }
                     reachedEnd = std::next(it) == mItems.end();
                     if (eligible && budget.release(item.mCharge ? item.mCharge->bytes() : 0))

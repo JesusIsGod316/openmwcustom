@@ -92,16 +92,32 @@ namespace Resource
     {
         mColdRetentionSeconds = std::isfinite(seconds) && seconds > 0 ? seconds : 0;
         mIndependentColdRetention=independent && mColdRetentionSeconds>0;
-        mCache->setExternalOwnerTest(mColdRetentionSeconds > 0
+        configureExternalSourceOwners();
+    }
+
+    void NifFileManager::setLoadingTrimEnabled(bool enabled)
+    {
+        mLoadingTrimEnabled = enabled;
+        configureExternalSourceOwners();
+    }
+
+    void NifFileManager::configureExternalSourceOwners()
+    {
+        mCache->setExternalOwnerTest(mColdRetentionSeconds > 0 || mLoadingTrimEnabled
             ? +[](const osg::Object* object) noexcept {
                 const auto* holder = dynamic_cast<const NifFileHolder*>(object);
                 return holder && holder->mNifFile.use_count() > 1;
             } : nullptr);
     }
 
+    std::size_t NifFileManager::trimUnusedForLoading(std::size_t maximum)
+    {
+        return mLoadingTrimEnabled ? mCache->trimUnused(maximum, 128) : 0;
+    }
+
     void NifFileManager::updateCache(double referenceTime)
     {
-        mCache->update(referenceTime,effectiveExpiryDelay());
+        mCache->update(referenceTime, effectiveExpiryDelay(), mLoadingTrimEnabled);
     }
 
     Nif::NIFFilePtr NifFileManager::get(VFS::Path::NormalizedView name)
