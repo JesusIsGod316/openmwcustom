@@ -50,13 +50,24 @@ namespace
             std::copy(color.begin(), color.end(), result->data() + 4 * i);
         return result;
     }
+    std::size_t payloadBytes(const osg::Image& image)
+    {
+        if (image.s()!=32 || image.t()!=32 || image.r()!=1 || !image.isDataContiguous() || image.isMipmap())
+            throw std::runtime_error("Outside this native fixture's checked payload layouts");
+        // OSG3.6.5's no-mip getTotalSize path multiplies compressed row bytes
+        // by pixel rows instead of block rows. Never hash beyond the DDS
+        // reader's allocation. Its checked single-level size calculation is
+        // the same calculation that reader uses for these native fixtures.
+        return osg::Image::computeImageSizeInBytes(image.s(),image.t(),image.r(),
+            image.getPixelFormat(),image.getDataType(),image.getPacking());
+    }
     std::uint64_t fingerprint(const osg::Image& image)
     {
         // Fixture corruption detector, NOT a collision-free production content
         // revision. Real factories still need immutable winning-provider and
         // verified source-content revision authority, including in-place edits.
         std::uint64_t value = 14695981039346656037ull;
-        for (std::size_t i = 0; i < image.getTotalSizeInBytesIncludingMipmaps(); ++i)
+        for (std::size_t i = 0; i < payloadBytes(image); ++i)
             value = (value ^ image.data()[i]) * 1099511628211ull;
         return value;
     }
@@ -71,7 +82,7 @@ namespace
             return {image.s(), image.t(), image.r(), image.getInternalTextureFormat(),
                 static_cast<int>(image.getPixelFormat()), static_cast<int>(image.getDataType()),
                 static_cast<int>(image.getPacking()), image.getRowLength(), static_cast<int>(image.getOrigin()),
-                image.getTotalSizeInBytesIncludingMipmaps(), image.getMipmapLevels()};
+                payloadBytes(image), image.getMipmapLevels()};
         }
     };
     struct Identity
@@ -338,11 +349,13 @@ int main() try
 
     // Exact ordinary VFS stream + installed DDS reader, preserving compression.
     auto provider=std::make_shared<Provider>(); auto dds=provider->read();
-    std::cout << "DDS source: compressed=" << dds->isCompressed() << " bytes="
+    std::cout << "DDS source: compressed=" << dds->isCompressed() << " legacy_OSG_reported_bytes="
               << dds->getTotalSizeInBytesIncludingMipmaps() << " format=" << dds->getPixelFormat()
               << " internal=" << dds->getInternalTextureFormat() << " levels=" << dds->getNumMipmapLevels()
-              << " dimensions=" << dds->s() << "x" << dds->t() << '\n';
-    require(dds->isCompressed() && dds->getTotalSizeInBytesIncludingMipmaps()==512, "Actual DDS reader preserves compressed CPU storage");
+              << " dimensions=" << dds->s() << "x" << dds->t() << " checked_payload_bytes=" << payloadBytes(*dds) << '\n';
+    require(dds->isCompressed() && payloadBytes(*dds)==512, "Actual DDS reader preserves the exact compressed payload span");
+    require(dds->getTotalSizeInBytesIncludingMipmaps()==2048,
+        "Reproduced OSG3.6.5 single-level compressed payload accounting overestimate");
     const auto revision=provider->vfs.getIndexGeneration();
     const std::weak_ptr<Provider> weak=provider;
     auto vfsRecipe=std::make_shared<Recipe>(Identity{2,revision,1,fingerprint(*dds),"textures/identity.dds",Layout::of(*dds)},
