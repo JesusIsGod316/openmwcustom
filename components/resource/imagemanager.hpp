@@ -43,6 +43,17 @@ namespace Resource
         ObjectCacheLease prepareImage(VFS::Path::NormalizedView path, std::uint64_t maximumEstimate,
             std::uint64_t retainedLimit = UINT64_MAX);
         void setPreciseRawDdsPreload(bool enabled) { mPreciseRawDdsPreload = enabled; }
+        // Startup-only. Required loaders still decode independently; this only
+        // coalesces completed immutable publications for the exact source.
+        // The ordinary control and existing cold-cache path are unchanged.
+        void configureCanonicalPublication(bool enabled);
+        struct PublicationStats
+        {
+            bool enabled = false;
+            std::uint64_t publications = 0, winners = 0, discardedImages = 0, discardedBytes = 0;
+            std::uint64_t revisionDeclines = 0, epochDeclines = 0, ineligible = 0, lookupRevisionMisses = 0;
+        };
+        PublicationStats publicationStats() const noexcept;
 
         osg::Image* getWarningImage();
         // Startup-only. No codec, cold index, sampler, or allocation when off.
@@ -64,6 +75,13 @@ namespace Resource
         std::atomic<std::uint64_t> mColdEpoch{0};
         // Publication only; never held while reading, encoding or decoding.
         mutable std::mutex mColdPublicationMutex;
+        bool mCanonicalPublication = false; // configured before workers start
+        std::atomic<std::uint64_t> mPublicationEpoch{0};
+        // Only completed publication/clear; never held across VFS or decoding.
+        mutable std::mutex mPublicationMutex;
+        std::atomic<std::uint64_t> mPublications{0}, mPublicationWinners{0}, mDiscardedImages{0}, mDiscardedBytes{0};
+        std::atomic<std::uint64_t> mPublicationRevisionDeclines{0}, mPublicationEpochDeclines{0};
+        std::atomic<std::uint64_t> mPublicationIneligible{0}, mLookupRevisionMisses{0};
 
         ImageManager(const ImageManager&);
         void operator=(const ImageManager&);

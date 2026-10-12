@@ -260,6 +260,19 @@ target_compile_definitions(p9-cold-image-cache PRIVATE OPENMW_COLD_IMAGE_TEST_HO
 target_link_libraries(p9-cold-image-cache PRIVATE
   ${OPENSCENEGRAPH_LIBRARIES} ${P9_CLOUD_OSGDB_LIBRARY} OpenGL::GL Threads::Threads LZ4::LZ4)
 add_test(NAME p9-cold-image-cache COMMAND p9-cold-image-cache)
+add_executable(p9-image-publication image-publication-tests.cpp
+  ${ROOT}/components/resource/coldimage.cpp ${ROOT}/components/resource/imagemanager.cpp
+  ${ROOT}/components/resource/cachestats.cpp ${ROOT}/components/vfs/manager.cpp
+  ${ROOT}/components/files/conversion.cpp ${ROOT}/components/sceneutil/workqueue.cpp
+  ${ROOT}/components/sceneutil/glextensions.cpp ${ROOT}/components/debug/debuglog.cpp
+  ${ROOT}/components/misc/hostmemory.cpp)
+target_link_libraries(p9-image-publication PRIVATE
+  ${OPENSCENEGRAPH_LIBRARIES} ${P9_CLOUD_OSGDB_LIBRARY} OpenGL::GL Threads::Threads LZ4::LZ4)
+if(WIN32)
+  target_link_libraries(p9-image-publication PRIVATE psapi)
+endif()
+add_test(NAME p9-image-publication COMMAND p9-image-publication)
+set_tests_properties(p9-image-publication PROPERTIES TIMEOUT 90)
 set_tests_properties(p9-cold-image-cache PROPERTIES TIMEOUT 90)
 if(WIN32)
   target_link_libraries(p9-cold-image-cache PRIVATE psapi)

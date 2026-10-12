@@ -336,6 +336,8 @@ namespace Settings
         SettingValue<bool> mPreloadDoors{ mIndex, "Cells", "preload doors" };
         SettingValue<float> mPreloadDistance{ mIndex, "Cells", "preload distance", makeMaxStrictSanitizerFloat(0) };
         SettingValue<bool> mPreloadInstances{ mIndex, "Cells", "preload instances" };
+        // Startup-only canonical publication for concurrent ordinary decoder misses.
+        SettingValue<bool> mCanonicalImagePublication{ mIndex, "Cells", "canonical image publication" };
         SettingValue<int> mPreloadCellCacheMin{ mIndex, "Cells", "preload cell cache min", makeMaxSanitizerInt(1) };
         SettingValue<int> mPreloadCellCacheMax{ mIndex, "Cells", "preload cell cache max", makeMaxSanitizerInt(1) };
         SettingValue<float> mPreloadCellExpiryDelay{ mIndex, "Cells", "preload cell expiry delay",

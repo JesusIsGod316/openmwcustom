@@ -53,6 +53,7 @@
 
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/niffilemanager.hpp>
+#include <components/resource/imagemanager.hpp>
 #include <components/resource/openmwcompileoperation.hpp>
 #include <components/resource/preparedterraintexture.hpp>
 #include <components/resource/compositecpumips.hpp>
@@ -1932,6 +1933,10 @@ void OMW::Engine::prepareEngine()
                      << static_cast<int>(Settings::cells().mV32GpuHardBudgetMb) << " MiB";
     mResourceSystem = std::make_unique<Resource::ResourceSystem>(mVFS.get(), effectiveResourceCacheExpiry,
         &mEncoder.get()->getStatelessEncoder(), Settings::RamCache::retainNifFiles());
+    mResourceSystem->getImageManager()->configureCanonicalPublication(Settings::cells().mCanonicalImagePublication);
+    Log(Debug::Info) << "OptimizedMW canonical image publication: enabled="
+        << static_cast<bool>(Settings::cells().mCanonicalImagePublication)
+        << "; concurrent decoded owners only, not a whole-process RAM ceiling";
     const auto effectiveParsedNifExpiry = mResourceSystem->getNifFileManager()->effectiveExpiryDelay();
     Log(Debug::Info) << "OptimizedMW parsed NIF cache policy: profile_retention="
         << Settings::RamCache::retainNifFiles() << " effective_ttl_s=" << effectiveParsedNifExpiry

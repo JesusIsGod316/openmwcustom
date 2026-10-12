@@ -51,7 +51,7 @@ namespace
         return warningImage;
     }
 
-    bool isS3TC(osg::Image* image)
+    bool isS3TC(const osg::Image* image)
     {
         switch (image->getPixelFormat())
         {
@@ -77,6 +77,68 @@ namespace
         return SceneUtil::getGLExtensions().isTextureCompressionS3TCSupported;
     }
 
+    bool canonicalEligible(const osg::Image* image)
+    {
+        return image && image->data() && image->getDataVariance() != osg::Object::DYNAMIC
+            && !image->requiresUpdateCall();
+    }
+
+    // Semantic decoded payload, not allocator capacity or resident RAM. OSG's
+    // generic size accessor is not a compressed-block capacity certificate.
+    // Decline unknown layouts instead of assigning a forecast byte saving.
+    std::uint64_t canonicalPayloadBytes(const osg::Image& image)
+    {
+        if (!image.isDataContiguous() || image.s() <= 0 || image.t() <= 0 || image.r() <= 0
+            || (image.getRowLength() && image.getRowLength() != image.s())
+            || (image.getPacking() != 1 && image.getPacking() != 2 && image.getPacking() != 4 && image.getPacking() != 8)
+            || image.getNumMipmapLevels() > 32)
+            return 0;
+        const bool compressed = image.isCompressed();
+        if (compressed && !isS3TC(&image)) return 0;
+        const auto blockBytes = compressed
+            ? osg::Image::computeBlockSize(image.getPixelFormat(), image.getPacking()) : 0;
+        if (compressed && !blockBytes) return 0;
+        int width = image.s(), height = image.t(), depth = image.r();
+        std::uint64_t total = 0, previousEnd = 0;
+        for (unsigned level = 0; level < image.getNumMipmapLevels(); ++level)
+        {
+            std::uint64_t bytes;
+            if (compressed)
+            {
+                const auto blocksX = (static_cast<std::uint64_t>(width) + 3) / 4;
+                const auto blocksY = (static_cast<std::uint64_t>(height) + 3) / 4;
+                if (blocksX > UINT64_MAX / blocksY || blocksX * blocksY > UINT64_MAX / depth
+                    || blocksX * blocksY * depth > UINT64_MAX / blockBytes)
+                    return 0;
+                bytes = blocksX * blocksY * depth * blockBytes;
+            }
+            else
+                bytes = osg::Image::computeImageSizeInBytes(width, height, depth,
+                    image.getPixelFormat(), image.getDataType(), image.getPacking());
+            const std::uint64_t offset = image.getMipmapOffset(level);
+            if (!bytes || offset < previousEnd || bytes > UINT64_MAX - offset || bytes > UINT64_MAX - total)
+                return 0;
+            previousEnd = offset + bytes;
+            total += bytes;
+            width = std::max(1, width / 2); height = std::max(1, height / 2); depth = std::max(1, depth / 2);
+        }
+        return total;
+    }
+
+    bool canonicalDescriptorMatches(const osg::Image& a, const osg::Image& b)
+    {
+        if (a.s() != b.s() || a.t() != b.t() || a.r() != b.r()
+            || a.getPixelFormat() != b.getPixelFormat() || a.getInternalTextureFormat() != b.getInternalTextureFormat()
+            || a.getDataType() != b.getDataType() || a.getOrigin() != b.getOrigin()
+            || a.getPacking() != b.getPacking() || a.getRowLength() != b.getRowLength()
+            || a.getPixelAspectRatio() != b.getPixelAspectRatio()
+            || a.getNumMipmapLevels() != b.getNumMipmapLevels() || a.getModifiedCount() != b.getModifiedCount())
+            return false;
+        for (unsigned level = 0; level < a.getNumMipmapLevels(); ++level)
+            if (a.getMipmapOffset(level) != b.getMipmapOffset(level)) return false;
+        return true;
+    }
+
 }
 
 namespace Resource
@@ -91,6 +153,16 @@ namespace Resource
 
     ImageManager::~ImageManager()
     {
+        if (mCanonicalPublication)
+        {
+            const auto s = publicationStats();
+            Log(Debug::Info) << "OptimizedMW canonical image publication: ordinary_enabled=" << !mColdCache
+                << " publications=" << s.publications << " winners=" << s.winners
+                << " discarded_images=" << s.discardedImages << " discarded_payload_bytes_cumulative=" << s.discardedBytes
+                << " revision_declines=" << s.revisionDeclines << " epoch_declines=" << s.epochDeclines
+                << " ineligible=" << s.ineligible << " lookup_revision_misses=" << s.lookupRevisionMisses
+                << " scope=completed_decoder_losers_not_resident_RAM_savings";
+        }
         if (mColdCache)
         {
             const auto v=mColdCache->stats();
@@ -101,6 +173,22 @@ namespace Resource
                 << " compressed_bytes=" << v.compressedBytes << " retained_bytes=" << v.retainedBytes
                 << " peak_transient_bytes=" << v.peakReservedBytes;
         }
+    }
+
+    void ImageManager::configureCanonicalPublication(bool enabled)
+    {
+        mCanonicalPublication = enabled;
+        Log(Debug::Info) << "OptimizedMW canonical image publication policy: enabled=" << enabled
+            << " scope=completed_immutable_exact_source_publication_only";
+    }
+
+    ImageManager::PublicationStats ImageManager::publicationStats() const noexcept
+    {
+        return {mCanonicalPublication && !mColdCache,
+            mPublications.load(std::memory_order_relaxed), mPublicationWinners.load(std::memory_order_relaxed),
+            mDiscardedImages.load(std::memory_order_relaxed), mDiscardedBytes.load(std::memory_order_relaxed),
+            mPublicationRevisionDeclines.load(std::memory_order_relaxed), mPublicationEpochDeclines.load(std::memory_order_relaxed),
+            mPublicationIneligible.load(std::memory_order_relaxed), mLookupRevisionMisses.load(std::memory_order_relaxed)};
     }
 
     std::uint64_t ImageManager::sourceRevision(bool disableFlip) const noexcept
@@ -160,6 +248,9 @@ namespace Resource
         Debug::HitchTrace::Scope hitchImage("resource.image_lookup", {}, path.value());
         const auto epoch = mColdCache ? mColdEpoch.load(std::memory_order_acquire) : 0;
         const auto lookupRevision = mColdCache ? sourceRevision(disableFlip) : 0;
+        const bool canonicalPublicationEnabled = mCanonicalPublication && !mColdCache;
+        const auto publicationEpoch = canonicalPublicationEnabled ? mPublicationEpoch.load(std::memory_order_acquire) : 0;
+        const auto canonicalRevision = canonicalPublicationEnabled ? sourceRevision(disableFlip) : 0;
         const auto cacheWarning = [&] {
             if (mColdCache)
             {
@@ -168,9 +259,38 @@ namespace Resource
                     && lookupRevision == sourceRevision(disableFlip))
                     mCache->addEntryToObjectCache(path.value(), mWarningImage,0.0,lookupRevision);
             }
+            else if (canonicalPublicationEnabled)
+            {
+                // Keep the displaced owner/charge alive until after the
+                // publication lock. A failed reader must not evict a completed
+                // exact-source immutable winner from another loader.
+                ObjectCacheLease previous;
+                std::lock_guard lock(mPublicationMutex);
+                if (publicationEpoch != mPublicationEpoch.load(std::memory_order_acquire))
+                    ++mPublicationEpochDeclines;
+                else if (!canonicalRevision || canonicalRevision != sourceRevision(disableFlip))
+                    ++mPublicationRevisionDeclines;
+                else
+                {
+                    previous = mCache->getLeaseFromObjectCache(path);
+                    const auto* ready = dynamic_cast<const osg::Image*>(previous.mValue.get());
+                    if (previous.mSourceRevision != canonicalRevision || ready == mWarningImage.get()
+                        || !canonicalEligible(ready))
+                        mCache->addEntryToObjectCache(path.value(), mWarningImage, 0.0, canonicalRevision);
+                }
+            }
             else mCache->addEntryToObjectCache(path.value(), mWarningImage);
         };
         osg::ref_ptr<osg::Object> obj = mCache->getRefFromObjectCache(path);
+        if (canonicalPublicationEnabled && obj)
+        {
+            const auto lease = mCache->getLeaseFromObjectCache(path, obj.get());
+            if (!canonicalRevision || !lease || lease.mSourceRevision != canonicalRevision)
+            {
+                ++mLookupRevisionMisses;
+                obj = nullptr;
+            }
+        }
         if (mColdCache && obj)
         {
             const auto currentRevision = sourceRevision(disableFlip);
@@ -356,6 +476,56 @@ namespace Resource
                         if (auto* canonical = dynamic_cast<osg::Image*>(winner.get())) image = canonical;
                     }
                 }
+                else if (canonicalPublicationEnabled)
+                {
+                    // Ordinary concurrent misses never wait for the decoder.
+                    // Their completed image and any displaced cache owner stay
+                    // alive outside the publication lock, including destruction
+                    // of a losing plugin image with a reentrant destructor.
+                    ObjectCacheLease previous;
+                    osg::ref_ptr<osg::Image> winner;
+                    const auto decodedBytes = canonicalEligible(image) ? canonicalPayloadBytes(*image) : 0;
+                    {
+                        std::lock_guard lock(mPublicationMutex);
+                        if (publicationEpoch != mPublicationEpoch.load(std::memory_order_acquire))
+                            ++mPublicationEpochDeclines;
+                        else if (!publicationRevision || publicationRevision != canonicalRevision
+                            || publicationRevision != sourceRevision(disableFlip))
+                            ++mPublicationRevisionDeclines;
+                        else
+                        {
+                            previous = mCache->getLeaseFromObjectCache(path);
+                            auto* ready = dynamic_cast<osg::Image*>(previous.mValue.get());
+                            if (decodedBytes && ready != mWarningImage.get()
+                                && canonicalEligible(ready) && previous.mSourceRevision == publicationRevision
+                                && canonicalDescriptorMatches(*ready, *image)
+                                && canonicalPayloadBytes(*ready) == decodedBytes)
+                            {
+                                winner = ready;
+                                if (winner != image)
+                                {
+                                    ++mPublicationWinners;
+                                    ++mDiscardedImages;
+                                    mDiscardedBytes.fetch_add(decodedBytes, std::memory_order_relaxed);
+                                }
+                            }
+                            else
+                            {
+                                if (!decodedBytes
+                                    || (ready && previous.mSourceRevision == publicationRevision
+                                        && (!canonicalEligible(ready)
+                                            || !canonicalDescriptorMatches(*ready, *image))))
+                                    ++mPublicationIneligible;
+                                mCache->addEntryToObjectCache(path.value(), image, 0.0, publicationRevision);
+                                ++mPublications;
+                            }
+                        }
+                    }
+                    // The original ReadResult also owns the decoded loser and
+                    // retires after this block; neither reference retires under
+                    // the publication or cache mutex.
+                    if (winner) image = std::move(winner);
+                }
                 else
                     mCache->addEntryToObjectCache(path.value(), image, 0.0,
                         publicationRevision == sourceRevision(disableFlip) ? publicationRevision : 0);
@@ -425,6 +595,18 @@ namespace Resource
         {
             std::lock_guard lock(mColdPublicationMutex);
             mColdEpoch.fetch_add(1, std::memory_order_acq_rel);
+            ResourceManager::clearCache();
+        }
+        else if (mCanonicalPublication)
+        {
+            {
+                // Invalidate pre-clear producers before the cache's own clear
+                // linearization. A producer that starts afterward may publish
+                // as ordinary concurrent clear permits. Final plugin/image
+                // destruction must never occur under the publication mutex.
+                std::lock_guard lock(mPublicationMutex);
+                mPublicationEpoch.fetch_add(1, std::memory_order_acq_rel);
+            }
             ResourceManager::clearCache();
         }
         else ResourceManager::clearCache();
